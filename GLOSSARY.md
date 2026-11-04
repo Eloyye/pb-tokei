@@ -138,15 +138,28 @@ A Hard Shot from the Midcourt or Backcourt.
 **Lob**:
 A Shot of Shot Class Lob, from any Zone.
 
+**Offensive Lob**:
+A Lob hit while the hitter's Team is Established.
+
+**Defensive Lob**:
+A Lob hit while the hitter's Team is not Established.
+
 **Overhead**:
 A Shot of Shot Class Overhead, from any Zone.
 _Avoid_: smash
 
 **Winner**:
-A Shot that goes in and that the opponent never touches.
+A Shot that goes in or hits an opponent, and that no opponent returns with the paddle.
 
 **Error**:
-A Shot that goes into the net or out, losing the Rally; if the opponent touches a ball and misses, the miss is the opponent's Error.
+Anything a Player does that loses the Rally for their Team: a Shot into the net or out, a kitchen fault, a double hit, or being hit by the ball; if a Player touches a ball and misses, the miss is that Player's Error.
+
+**Error Kind**:
+What an Error was: Net, Out, Kitchen Fault, Double Hit, or Body Hit (the Player was hit by the ball).
+
+**Shot Outcome**:
+Whether a Shot left the hitter's Team better placed (Advantage), worse placed (Disadvantage), or neither (Neutral), judged over the opponent's reply and the Team's follow-up.
+_Avoid_: shot success, shot quality
 
 **Put-away**:
 An Attack whose very next result is a Winner or an opponent's Error.
