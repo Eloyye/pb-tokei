@@ -1,1 +1,8 @@
-.DS_Store/
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Downloaded broadcasts live on disk only, never in git.
+footage/

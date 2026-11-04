@@ -1,0 +1,3 @@
+# Assisted Annotation has a 25% operator time budget
+
+Assisted Annotation must keep the Operator Time Ratio at or below 0.25, measured against the full broadcast length (dead time and replays included), and the ratio should fall over time without accuracy dropping on the Gold Set. Gold Annotation is exempt: it is slow on purpose and produces the benchmark. A pro doubles Match is about 1,000 Shots in a 70 to 90 minute broadcast, so the budget is roughly one second per Shot. That is why the system must pre-fill every Rally Log field and the operator only confirms or fixes; a workflow where the operator types each Shot from scratch cannot meet it.
