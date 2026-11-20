@@ -6,7 +6,9 @@ authors = [
     { name = "Eloy Ye", email = "yeluo.eloy@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "duckdb>=2.0.0",
+]
 
 [project.scripts]
 pb-tokei = "pb_tokei:main"

@@ -1,0 +1,455 @@
+"""Reading and writing the Rally Log in a DuckDB file."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from collections.abc import Callable, Sequence
+from enum import StrEnum
+from pathlib import Path
+from types import TracebackType
+from typing import Any, Self
+
+import duckdb
+
+from .model import (
+    UNKNOWN,
+    CameraView,
+    Certainty,
+    Challenge,
+    ContactKind,
+    CourtPoint,
+    Error,
+    ErrorKind,
+    Fact,
+    Franchise,
+    FranchiseId,
+    FranchiseMatch,
+    FranchiseMatchId,
+    Game,
+    Handedness,
+    Match,
+    MatchId,
+    ObservationGap,
+    Parity,
+    Player,
+    PlayerId,
+    PlaySegment,
+    Rally,
+    RefereeCall,
+    Ruling,
+    Score,
+    Shot,
+    ShotClass,
+    Team,
+    TeamId,
+    Tour,
+    Tournament,
+    TournamentId,
+    WinnerSource,
+    Zone,
+)
+from .schema import MATCH_CONTENT_TABLES, STATEMENTS
+
+Row = tuple[Any, ...]
+
+
+class RallyLog:
+    """The Rally Log store. Open it with `RallyLog.open(path)`; the schema is created if missing."""
+
+    def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
+        self._db = connection
+        for statement in STATEMENTS:
+            self._db.execute(statement)
+
+    @classmethod
+    def open(cls, path: Path | str) -> Self:
+        return cls(duckdb.connect(str(path)))
+
+    def close(self) -> None:
+        self._db.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    # --- Roster ---------------------------------------------------------------------------
+
+    def save_tournament(self, tournament: Tournament) -> None:
+        self._upsert(
+            "tournaments",
+            ["id", "name", "tour"],
+            [tournament.id, tournament.name, tournament.tour.value],
+        )
+
+    def get_tournament(self, tournament_id: TournamentId) -> Tournament:
+        id_, name, tour = self._one("SELECT * FROM tournaments WHERE id = ?", tournament_id)
+        return Tournament(TournamentId(id_), name, Tour(tour))
+
+    def save_player(self, player: Player) -> None:
+        self._upsert(
+            "players",
+            ["id", "name", "handedness"],
+            [player.id, player.name, player.handedness.value],
+        )
+
+    def get_player(self, player_id: PlayerId) -> Player:
+        id_, name, handedness = self._one("SELECT * FROM players WHERE id = ?", player_id)
+        return Player(PlayerId(id_), name, Handedness(handedness))
+
+    def save_team(self, team: Team) -> None:
+        """Saves a Team. Saving a second Team with the same two Players fails."""
+        low, high = team.player_ids
+        self._db.execute(
+            "INSERT INTO teams VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING", [team.id, low, high]
+        )
+
+    def get_team(self, team_id: TeamId) -> Team:
+        return _team(self._one("SELECT * FROM teams WHERE id = ?", team_id))
+
+    def find_team(self, player_a: PlayerId, player_b: PlayerId) -> Team | None:
+        low, high = sorted((player_a, player_b))
+        row = self._db.execute(
+            "SELECT * FROM teams WHERE player_low_id = ? AND player_high_id = ?", [low, high]
+        ).fetchone()
+        return None if row is None else _team(row)
+
+    def save_franchise(self, franchise: Franchise) -> None:
+        self._upsert("franchises", ["id", "name"], [franchise.id, franchise.name])
+
+    def get_franchise(self, franchise_id: FranchiseId) -> Franchise:
+        id_, name = self._one("SELECT * FROM franchises WHERE id = ?", franchise_id)
+        return Franchise(FranchiseId(id_), name)
+
+    def save_franchise_match(self, franchise_match: FranchiseMatch) -> None:
+        fm = franchise_match
+        self._upsert(
+            "franchise_matches",
+            ["id", "tournament_id", "franchise_a_id", "franchise_b_id"],
+            [fm.id, fm.tournament_id, fm.franchise_a_id, fm.franchise_b_id],
+        )
+
+    def get_franchise_match(self, franchise_match_id: FranchiseMatchId) -> FranchiseMatch:
+        id_, tournament, a, b = self._one(
+            "SELECT * FROM franchise_matches WHERE id = ?", franchise_match_id
+        )
+        return FranchiseMatch(
+            FranchiseMatchId(id_), TournamentId(tournament), FranchiseId(a), FranchiseId(b)
+        )
+
+    # --- Matches --------------------------------------------------------------------------
+
+    def save_match(self, match: Match) -> None:
+        """Saves a Match and replaces everything recorded under it (Games, Rallies, Shots...)."""
+        self._db.execute("BEGIN TRANSACTION")
+        try:
+            self._upsert(
+                "matches",
+                ["id", "tournament_id", "team_a_id", "team_b_id", "franchise_match_id"],
+                [
+                    match.id,
+                    match.tournament_id,
+                    match.team_a_id,
+                    match.team_b_id,
+                    match.franchise_match_id,
+                ],
+            )
+            for table in MATCH_CONTENT_TABLES:
+                self._db.execute(f"DELETE FROM {table} WHERE match_id = ?", [match.id])
+            self._insert_content(match)
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._db.execute("COMMIT")
+
+    def load_match(self, match_id: MatchId) -> Match:
+        _, tournament, team_a, team_b, franchise_match = self._one(
+            "SELECT * FROM matches WHERE id = ?", match_id
+        )
+        segments = tuple(
+            PlaySegment(start, end, CameraView(view))
+            for _, start, end, view in self._all(
+                "SELECT * FROM play_segments WHERE match_id = ? ORDER BY start_frame", match_id
+            )
+        )
+        return Match(
+            id=match_id,
+            tournament_id=TournamentId(tournament),
+            team_a_id=TeamId(team_a),
+            team_b_id=TeamId(team_b),
+            franchise_match_id=None
+            if franchise_match is None
+            else FranchiseMatchId(franchise_match),
+            games=self._load_games(match_id),
+            play_segments=segments,
+        )
+
+    # --- Writing match content ------------------------------------------------------------
+
+    def _insert_content(self, match: Match) -> None:
+        m = match.id
+        self._many(
+            "play_segments",
+            [[m, s.start_frame, s.end_frame, s.camera_view.value] for s in match.play_segments],
+        )
+        self._many("games", [[m, g.number] for g in match.games])
+        rallies, shots, positions, gaps = [], [], [], []
+        for game in match.games:
+            for rally in game.rallies:
+                rallies.append([m, game.number, *_rally_row(rally)])
+                for log_position, entry in enumerate(rally.entries):
+                    key = [m, game.number, rally.number, log_position]
+                    if isinstance(entry, ObservationGap):
+                        gaps.append([*key, entry.missing.value])
+                        continue
+                    shots.append([*key, *_shot_row(entry)])
+                    for player_id, position in entry.positions.items():
+                        positions.append([*key, player_id, *_point(position)])
+        self._many("rallies", rallies)
+        self._many("shots", shots)
+        self._many("shot_positions", positions)
+        self._many("observation_gaps", gaps)
+
+    # --- Reading match content ------------------------------------------------------------
+
+    def _load_games(self, match_id: MatchId) -> tuple[Game, ...]:
+        shots: dict[tuple[int, int], dict[int, Shot | ObservationGap]] = defaultdict(dict)
+        positions: dict[tuple[int, int, int], dict[PlayerId, Fact[CourtPoint]]] = defaultdict(dict)
+        for _, game, rally, pos, player, *point in self._all(
+            "SELECT * FROM shot_positions WHERE match_id = ?", match_id
+        ):
+            positions[game, rally, pos][PlayerId(player)] = _read_point(*point)
+        for _, game, rally, pos, *row in self._all(
+            "SELECT * FROM shots WHERE match_id = ?", match_id
+        ):
+            shots[game, rally][pos] = _read_shot(row, positions[game, rally, pos])
+        for _, game, rally, pos, missing in self._all(
+            "SELECT * FROM observation_gaps WHERE match_id = ?", match_id
+        ):
+            shots[game, rally][pos] = ObservationGap(Parity(missing))
+
+        rallies: dict[int, list[Rally]] = defaultdict(list)
+        for _, game, number, *row in self._all(
+            "SELECT * FROM rallies WHERE match_id = ? ORDER BY game_number, number", match_id
+        ):
+            entries = shots[game, number]
+            rallies[game].append(
+                _read_rally(number, row, tuple(entries[p] for p in sorted(entries)))
+            )
+
+        return tuple(
+            Game(number, tuple(rallies[number]))
+            for _, number in self._all(
+                "SELECT * FROM games WHERE match_id = ? ORDER BY number", match_id
+            )
+        )
+
+    # --- Plumbing -------------------------------------------------------------------------
+
+    def _upsert(self, table: str, columns: list[str], values: list[Any]) -> None:
+        placeholders = ", ".join("?" for _ in columns)
+        updates = ", ".join(f"{c} = excluded.{c}" for c in columns[1:])
+        self._db.execute(
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) "
+            f"ON CONFLICT (id) DO UPDATE SET {updates}",
+            values,
+        )
+
+    def _many(self, table: str, rows: Sequence[Sequence[Any]]) -> None:
+        if not rows:
+            return
+        placeholders = ", ".join("?" for _ in rows[0])
+        self._db.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+
+    def _one(self, sql: str, *params: Any) -> Row:
+        row = self._db.execute(sql, list(params)).fetchone()
+        if row is None:
+            raise KeyError(f"no row for {params}")
+        return row
+
+    def _all(self, sql: str, *params: Any) -> list[Row]:
+        return self._db.execute(sql, list(params)).fetchall()
+
+
+# --- Row conversion -----------------------------------------------------------------------
+
+
+def _team(row: Row) -> Team:
+    id_, low, high = row
+    return Team(TeamId(id_), (PlayerId(low), PlayerId(high)))
+
+
+def _fact(fact: Fact[Any]) -> list[Any]:
+    value = fact.value.value if isinstance(fact.value, StrEnum) else fact.value
+    return [value, fact.certainty.value]
+
+
+def _optional_fact(fact: Fact[Any] | None) -> list[Any]:
+    return [None, None] if fact is None else _fact(fact)
+
+
+def _point(fact: Fact[CourtPoint]) -> list[Any]:
+    point = fact.value
+    return [
+        None if point is None else point.x,
+        None if point is None else point.y,
+        fact.certainty.value,
+    ]
+
+
+def _read[T](value: Any, certainty: str | None, convert: Callable[[Any], T]) -> Fact[T]:
+    if certainty is None or certainty == Certainty.UNKNOWN:
+        return UNKNOWN
+    return Fact(convert(value), Certainty(certainty))
+
+
+def _read_point(x: float | None, y: float | None, certainty: str) -> Fact[CourtPoint]:
+    return _read((x, y), certainty, lambda xy: CourtPoint(*xy))
+
+
+def _rally_row(rally: Rally) -> list[Any]:
+    score = rally.score.value
+    challenge = rally.challenge
+    return [
+        rally.number,
+        rally.start_frame,
+        rally.end_frame,
+        None if score is None else score.serving,
+        None if score is None else score.receiving,
+        None if score is None else score.server_number,
+        rally.score.certainty.value,
+        *_fact(rally.serving_team_id),
+        *_fact(rally.server_id),
+        *_fact(rally.returner_id),
+        *_fact(rally.referee_call),
+        challenge is not None,
+        *_optional_fact(None if challenge is None else challenge.challenger_id),
+        *_optional_fact(None if challenge is None else challenge.original_call),
+        *_optional_fact(None if challenge is None else challenge.ruling),
+        *_fact(rally.winner_id),
+        None if rally.winner_source is None else rally.winner_source.value,
+    ]
+
+
+def _read_rally(
+    number: int, row: Sequence[Any], entries: tuple[Shot | ObservationGap, ...]
+) -> Rally:
+    (
+        start_frame,
+        end_frame,
+        serving,
+        receiving,
+        server_number,
+        score_certainty,
+        serving_team,
+        serving_team_c,
+        server,
+        server_c,
+        returner,
+        returner_c,
+        call,
+        call_c,
+        has_challenge,
+        challenger,
+        challenger_c,
+        original_call,
+        original_call_c,
+        ruling,
+        ruling_c,
+        winner,
+        winner_c,
+        winner_source,
+    ) = row
+    challenge = None
+    if has_challenge:
+        challenge = Challenge(
+            challenger_id=_read(challenger, challenger_c, PlayerId),
+            original_call=_read(original_call, original_call_c, str),
+            ruling=_read(ruling, ruling_c, Ruling),
+        )
+    return Rally(
+        number=number,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        score=_read((serving, receiving, server_number), score_certainty, lambda s: Score(*s)),
+        serving_team_id=_read(serving_team, serving_team_c, TeamId),
+        server_id=_read(server, server_c, PlayerId),
+        returner_id=_read(returner, returner_c, PlayerId),
+        referee_call=_read(call, call_c, RefereeCall),
+        challenge=challenge,
+        winner_id=_read(winner, winner_c, TeamId),
+        winner_source=None if winner_source is None else WinnerSource(winner_source),
+        entries=entries,
+    )
+
+
+def _shot_row(shot: Shot) -> list[Any]:
+    error = shot.error
+    return [
+        *_fact(shot.shot_number),
+        *_fact(shot.hitter_id),
+        *_fact(shot.contact_frame),
+        *_fact(shot.contact_zone),
+        *_fact(shot.shot_class),
+        *_fact(shot.contact_kind),
+        *_fact(shot.erne),
+        *_fact(shot.atp),
+        *_point(shot.landing),
+        error is not None,
+        *_optional_fact(None if error is None else error.kind),
+        *_optional_fact(None if error is None else error.player_id),
+    ]
+
+
+def _read_shot(row: Sequence[Any], positions: dict[PlayerId, Fact[CourtPoint]]) -> Shot:
+    (
+        number,
+        number_c,
+        hitter,
+        hitter_c,
+        frame,
+        frame_c,
+        zone,
+        zone_c,
+        shot_class,
+        shot_class_c,
+        kind,
+        kind_c,
+        erne,
+        erne_c,
+        atp,
+        atp_c,
+        landing_x,
+        landing_y,
+        landing_c,
+        has_error,
+        error_kind,
+        error_kind_c,
+        error_player,
+        error_player_c,
+    ) = row
+    error = None
+    if has_error:
+        error = Error(
+            kind=_read(error_kind, error_kind_c, ErrorKind),
+            player_id=_read(error_player, error_player_c, PlayerId),
+        )
+    return Shot(
+        shot_number=_read(number, number_c, int),
+        hitter_id=_read(hitter, hitter_c, PlayerId),
+        contact_frame=_read(frame, frame_c, int),
+        contact_zone=_read(zone, zone_c, Zone),
+        shot_class=_read(shot_class, shot_class_c, ShotClass),
+        contact_kind=_read(kind, kind_c, ContactKind),
+        erne=_read(erne, erne_c, bool),
+        atp=_read(atp, atp_c, bool),
+        landing=_read_point(landing_x, landing_y, landing_c),
+        error=error,
+        positions=positions,
+    )
