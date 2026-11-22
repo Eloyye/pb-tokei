@@ -14,7 +14,8 @@ from pb_tokei.footage import (
     FootageDownloadError,
     download_footage,
 )
-from pb_tokei.rally_log import MatchId, RallyLog
+from pb_tokei.rally_log import MatchId, MatchSummary, RallyLog
+from pb_tokei.roster import RosterError, read_roster, roster_template, set_up_match
 
 DEFAULT_DB_PATH = Path("rally_log.duckdb")
 
@@ -48,7 +49,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Path to the Rally Log DuckDB file (default when --match is set: {DEFAULT_DB_PATH}).",
     )
+
+    match = subparsers.add_parser("match", help="Set up and list Matches from Roster Files.")
+    match_commands = match.add_subparsers(dest="match_command", required=True)
+
+    new = match_commands.add_parser(
+        "new", help="Write a Roster File template with a fresh Match id."
+    )
+    new.add_argument("file", type=Path, help="Where to write the Roster File.")
+
+    add = match_commands.add_parser(
+        "add", help="Create the Match a Roster File describes, and print its id."
+    )
+    add.add_argument("file", type=Path, help="The Roster File (TOML).")
+    _db_argument(add)
+
+    list_ = match_commands.add_parser("list", help="List Matches with their rosters.")
+    list_.add_argument("--tournament", help="Only Matches at this Tournament (exact name).")
+    _db_argument(list_)
     return parser
+
+
+def _db_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_DB_PATH,
+        help=f"Path to the Rally Log DuckDB file (default: {DEFAULT_DB_PATH}).",
+    )
 
 
 def main(
@@ -61,6 +89,8 @@ def main(
 
     if args.command == "download":
         return _run_download(args, parser=parser, run=run)
+    if args.command == "match":
+        return _run_match(args)
 
     parser.error(f"Unknown command: {args.command}")
 
@@ -106,3 +136,42 @@ def _run_download(
 
     print(result.source_video.path)
     return 0
+
+
+def _run_match(args: argparse.Namespace) -> int:
+    if args.match_command == "new":
+        if args.file.exists():
+            print(f"error: {args.file} already exists", file=sys.stderr)
+            return 1
+        args.file.parent.mkdir(parents=True, exist_ok=True)
+        args.file.write_text(roster_template(), encoding="utf-8")
+        print(args.file)
+        return 0
+
+    if args.match_command == "add":
+        try:
+            roster = read_roster(args.file)
+            with RallyLog.open(args.db) as log:
+                match = set_up_match(log, roster)
+        except RosterError as exc:
+            print(f"error: {args.file}: {exc}", file=sys.stderr)
+            return 1
+        print(match.id)
+        return 0
+
+    if not args.db.is_file():
+        print(f"error: Rally Log database not found: {args.db}", file=sys.stderr)
+        return 1
+    with RallyLog.open(args.db) as log:
+        for summary in log.list_matches(args.tournament):
+            print(_match_line(summary))
+    return 0
+
+
+def _match_line(summary: MatchSummary) -> str:
+    teams = f"{' / '.join(summary.team_a)}  vs  {' / '.join(summary.team_b)}"
+    parts = [str(summary.id), summary.tournament, teams]
+    if summary.franchise_a is not None:
+        parts.append(f"({summary.franchise_a} vs {summary.franchise_b})")
+    parts.append("video" if summary.has_video else "no video")
+    return "  ".join(parts)

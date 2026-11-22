@@ -218,6 +218,9 @@ The broadcast camera a stretch of footage comes from; the Main View (high, behin
 A stretch of broadcast showing live play from the Main View or Sideline View, with replays, crowd shots, close-ups and graphics removed.
 _Avoid_: clip
 
+**Roster File**:
+The hand-written TOML file that sets up one Match: its Tournament, Teams, Players and optional Franchise Match and source video.
+
 **Rally Log**:
 The record of every Rally and Shot in a Match, holding only Observed and Inferred facts, including where all four Players stand at each Shot.
 

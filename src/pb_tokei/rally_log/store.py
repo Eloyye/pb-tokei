@@ -29,6 +29,7 @@ from .model import (
     Handedness,
     Match,
     MatchId,
+    MatchSummary,
     ObservationGap,
     Parity,
     Player,
@@ -136,6 +137,41 @@ class RallyLog:
             [fm.id, fm.tournament_id, fm.franchise_a_id, fm.franchise_b_id],
         )
 
+    def find_tournament(self, name: str, tour: Tour) -> Tournament | None:
+        row = self._db.execute(
+            "SELECT * FROM tournaments WHERE name = ? AND tour = ?", [name, tour.value]
+        ).fetchone()
+        return None if row is None else Tournament(TournamentId(row[0]), row[1], Tour(row[2]))
+
+    def find_player(self, name: str) -> Player | None:
+        row = self._db.execute("SELECT * FROM players WHERE name = ?", [name]).fetchone()
+        return None if row is None else Player(PlayerId(row[0]), row[1], Handedness(row[2]))
+
+    def find_franchise(self, name: str) -> Franchise | None:
+        row = self._db.execute("SELECT * FROM franchises WHERE name = ?", [name]).fetchone()
+        return None if row is None else Franchise(FranchiseId(row[0]), row[1])
+
+    def find_franchise_matches(
+        self, tournament_id: TournamentId, franchise_a: FranchiseId, franchise_b: FranchiseId
+    ) -> list[FranchiseMatch]:
+        """Every Franchise Match between the two Franchises at a Tournament, in either order."""
+        rows = self._all(
+            "SELECT * FROM franchise_matches WHERE tournament_id = ? AND ("
+            "(franchise_a_id = ? AND franchise_b_id = ?)"
+            " OR (franchise_a_id = ? AND franchise_b_id = ?)) ORDER BY id",
+            tournament_id,
+            franchise_a,
+            franchise_b,
+            franchise_b,
+            franchise_a,
+        )
+        return [
+            FranchiseMatch(
+                FranchiseMatchId(id_), TournamentId(tournament), FranchiseId(a), FranchiseId(b)
+            )
+            for id_, tournament, a, b in rows
+        ]
+
     def get_franchise_match(self, franchise_match_id: FranchiseMatchId) -> FranchiseMatch:
         id_, tournament, a, b = self._one(
             "SELECT * FROM franchise_matches WHERE id = ?", franchise_match_id
@@ -213,6 +249,45 @@ class RallyLog:
             "WHERE id = ?",
             [source_video.url, source_video.video_id, str(source_video.path), match_id],
         )
+
+    def list_matches(self, tournament: str | None = None) -> list[MatchSummary]:
+        """Every Match's roster by name, without loading its Games; optionally for one Tournament
+        name. Each Team's Players are in name order."""
+        rows = self._all(
+            """
+            SELECT m.id, t.name,
+                pa1.name, pa2.name, pb1.name, pb2.name,
+                fa.name, fb.name,
+                m.source_video_url IS NOT NULL
+            FROM matches m
+            JOIN tournaments t ON t.id = m.tournament_id
+            JOIN teams ta ON ta.id = m.team_a_id
+            JOIN players pa1 ON pa1.id = ta.player_low_id
+            JOIN players pa2 ON pa2.id = ta.player_high_id
+            JOIN teams tb ON tb.id = m.team_b_id
+            JOIN players pb1 ON pb1.id = tb.player_low_id
+            JOIN players pb2 ON pb2.id = tb.player_high_id
+            LEFT JOIN franchise_matches fm ON fm.id = m.franchise_match_id
+            LEFT JOIN franchises fa ON fa.id = fm.franchise_a_id
+            LEFT JOIN franchises fb ON fb.id = fm.franchise_b_id
+            WHERE ? IS NULL OR t.name = ?
+            ORDER BY t.name, m.id
+            """,
+            tournament,
+            tournament,
+        )
+        return [
+            MatchSummary(
+                id=MatchId(id_),
+                tournament=tournament_name,
+                team_a=_pair(a1, a2),
+                team_b=_pair(b1, b2),
+                franchise_a=fa,
+                franchise_b=fb,
+                has_video=bool(has_video),
+            )
+            for id_, tournament_name, a1, a2, b1, b2, fa, fb, has_video in rows
+        ]
 
     def load_match(self, match_id: MatchId) -> Match:
         (
@@ -339,6 +414,11 @@ class RallyLog:
 
 
 # --- Row conversion -----------------------------------------------------------------------
+
+
+def _pair(a: str, b: str) -> tuple[str, str]:
+    first, second = sorted((a, b))
+    return first, second
 
 
 def _team(row: Row) -> Team:

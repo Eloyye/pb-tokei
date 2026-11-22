@@ -308,3 +308,16 @@ class Match:
         if team_id == self.team_b_id:
             return self.team_a_id
         raise ValueError(f"Team {team_id} is not in Match {self.id}")
+
+
+@dataclass(frozen=True)
+class MatchSummary:
+    """A Match's roster, by name, without its Games: one line of a Match listing."""
+
+    id: MatchId
+    tournament: str
+    team_a: tuple[str, str]
+    team_b: tuple[str, str]
+    franchise_a: str | None
+    franchise_b: str | None
+    has_video: bool

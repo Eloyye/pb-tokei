@@ -14,6 +14,14 @@ uv run pb-tokei download <url>
 uv run pb-tokei download <url> --match <match-id> [--db rally_log.duckdb]
 ```
 
+Set up a Match from a Roster File (by convention kept in `rosters/`), then list Matches:
+
+```bash
+uv run pb-tokei match new rosters/<tournament>/<match>.toml
+uv run pb-tokei match add rosters/<tournament>/<match>.toml [--db rally_log.duckdb]
+uv run pb-tokei match list [--tournament <name>] [--db rally_log.duckdb]
+```
+
 ## Development
 
 ```bash
