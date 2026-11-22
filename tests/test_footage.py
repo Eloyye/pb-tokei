@@ -1,0 +1,401 @@
+import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+
+import pytest
+
+from pb_tokei import main
+from pb_tokei.footage import (
+    FORMAT_SELECTOR,
+    FORMAT_SORT,
+    FootageDownloadError,
+    download_footage,
+    find_existing_footage,
+)
+from pb_tokei.rally_log import (
+    Handedness,
+    Match,
+    MatchId,
+    Player,
+    PlayerId,
+    RallyLog,
+    SourceVideo,
+    Team,
+    TeamId,
+    Tour,
+    Tournament,
+    TournamentId,
+    new_id,
+)
+
+SAMPLE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+SAMPLE_SHORT_URL = "https://youtu.be/dQw4w9WgXcQ?t=15"
+SAMPLE_ID = "dQw4w9WgXcQ"
+
+
+class FakeYtDlp:
+    """Test double for yt-dlp CLI invocations."""
+
+    def __init__(
+        self,
+        *,
+        video_id: str = SAMPLE_ID,
+        ext: str = "mkv",
+        content: bytes = b"fake-60fps-video-bytes",
+        print_absolute_path: bool = False,
+    ) -> None:
+        self.video_id = video_id
+        self.ext = ext
+        self.content = content
+        self.print_absolute_path = print_absolute_path
+        self.calls: list[list[str]] = []
+
+    @property
+    def download_calls(self) -> list[list[str]]:
+        return [call for call in self.calls if "--skip-download" not in call]
+
+    def __call__(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        cmd = list(args)
+        self.calls.append(cmd)
+        if "--skip-download" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{self.video_id}\n", stderr="")
+
+        output_dir = Path(cmd[cmd.index("-P") + 1])
+        target = output_dir / f"{self.video_id}.{self.ext}"
+        target.write_bytes(self.content)
+        printed = target.resolve() if self.print_absolute_path else target
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{printed}\n", stderr="")
+
+
+def _create_match_in_db(db_path: Path) -> Match:
+    tournament = Tournament(TournamentId(new_id()), "Test Open", Tour.PPA)
+    players = [Player(PlayerId(new_id()), f"Player {i}", Handedness.RIGHT) for i in range(1, 5)]
+    team_a = Team(TeamId(new_id()), (players[0].id, players[1].id))
+    team_b = Team(TeamId(new_id()), (players[2].id, players[3].id))
+    match = Match(
+        id=MatchId(new_id()),
+        tournament_id=tournament.id,
+        team_a_id=team_a.id,
+        team_b_id=team_b.id,
+    )
+    with RallyLog.open(db_path) as log:
+        log.save_tournament(tournament)
+        for player in players:
+            log.save_player(player)
+        log.save_team(team_a)
+        log.save_team(team_b)
+        log.save_match(match)
+    return match
+
+
+# --- download_footage ---------------------------------------------------------------------
+
+
+def test_download_footage_prefers_highest_fps_and_returns_path(tmp_path: Path) -> None:
+    footage_dir = tmp_path / "footage"
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    result = download_footage(SAMPLE_URL, footage_dir, run=fake)
+
+    expected_path = footage_dir / f"{SAMPLE_ID}.mkv"
+    assert result.already_downloaded is False
+    assert result.source_video == SourceVideo(
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=expected_path
+    )
+    assert expected_path.is_file()
+
+    assert len(fake.download_calls) == 1
+    dl_cmd = fake.download_calls[0]
+    assert dl_cmd[0] == "yt-dlp"
+    assert "--no-playlist" in dl_cmd
+    assert "--no-overwrites" in dl_cmd
+    assert "--no-simulate" in dl_cmd
+    assert dl_cmd[dl_cmd.index("-f") + 1] == FORMAT_SELECTOR
+    assert dl_cmd[dl_cmd.index("-S") + 1] == FORMAT_SORT
+    assert dl_cmd[dl_cmd.index("-P") + 1] == str(footage_dir)
+    assert dl_cmd[dl_cmd.index("-o") + 1] == "%(id)s.%(ext)s"
+    assert dl_cmd[-2:] == ["--", SAMPLE_URL]
+
+
+def test_running_download_again_for_same_video_does_not_download_twice(tmp_path: Path) -> None:
+    footage_dir = tmp_path / "footage"
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="webm")
+
+    first = download_footage(SAMPLE_URL, footage_dir, run=fake)
+    second = download_footage(SAMPLE_SHORT_URL, footage_dir, run=fake)
+
+    assert first.already_downloaded is False
+    assert second.already_downloaded is True
+    assert second.source_video.path == first.source_video.path
+    assert second.source_video.video_id == SAMPLE_ID
+    assert second.source_video.url == SAMPLE_SHORT_URL
+    assert len(fake.download_calls) == 1
+
+
+def test_existing_footage_ignores_partial_converted_and_empty_files(tmp_path: Path) -> None:
+    footage_dir = tmp_path / "footage"
+    footage_dir.mkdir()
+    (footage_dir / f"{SAMPLE_ID}.mp4.part").write_bytes(b"partial")
+    (footage_dir / f"{SAMPLE_ID}.f299.mp4").write_bytes(b"video-only-stream")
+    (footage_dir / f"{SAMPLE_ID}.60fps.mp4").write_bytes(b"converted-file")
+    (footage_dir / f"{SAMPLE_ID}.json").write_text("{}")
+    (footage_dir / f"{SAMPLE_ID}.mp4").write_bytes(b"")  # empty file
+
+    assert find_existing_footage(footage_dir, SAMPLE_ID) is None
+
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4")
+    result = download_footage(SAMPLE_URL, footage_dir, run=fake)
+    assert result.already_downloaded is False
+    assert len(fake.download_calls) == 1
+    assert find_existing_footage(footage_dir, SAMPLE_ID) == footage_dir / f"{SAMPLE_ID}.mp4"
+
+
+def test_download_returns_consistent_relative_path_across_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4", print_absolute_path=True)
+
+    first = download_footage(SAMPLE_URL, Path("footage"), run=fake)
+    second = download_footage(SAMPLE_URL, Path("footage"), run=fake)
+
+    assert first.source_video.path == Path("footage") / f"{SAMPLE_ID}.mp4"
+    assert second.source_video.path == first.source_video.path
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "",
+        "   ",
+        "not-a-url",
+        "--exec=rm -rf /",
+        "file:///etc/passwd",
+        "https://example.com/watch?v=1\n--exec=bad",
+        "https://",
+    ],
+)
+def test_rejects_invalid_urls_without_running_yt_dlp(tmp_path: Path, bad_url: str) -> None:
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="http\\(s\\) URL"):
+        download_footage(bad_url, tmp_path / "footage", run=fake)
+
+    assert fake.calls == []
+
+
+def test_rejects_playlist_resolving_to_multiple_videos(tmp_path: Path) -> None:
+    def multi_id_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 0, stdout="id_one\nid_two\n", stderr="")
+
+    with pytest.raises(FootageDownloadError, match="multiple videos"):
+        download_footage(
+            "https://www.youtube.com/playlist?list=PL123", tmp_path, run=multi_id_runner
+        )
+
+
+@pytest.mark.parametrize("bad_id", ["..", ".", "../escape", "sub/id", "sub\\id", ".hidden"])
+def test_rejects_path_traversal_video_ids(tmp_path: Path, bad_id: str) -> None:
+    def bad_id_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 0, stdout=f"{bad_id}\n", stderr="")
+
+    with pytest.raises(FootageDownloadError, match="Invalid video ID"):
+        download_footage(SAMPLE_URL, tmp_path / "footage", run=bad_id_runner)
+
+
+def test_rejects_downloaded_file_outside_footage_dir(tmp_path: Path) -> None:
+    footage_dir = tmp_path / "footage"
+    escaped = tmp_path / f"{SAMPLE_ID}.mp4"
+    escaped.write_bytes(b"escaped")
+
+    def escaping_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        cmd = list(args)
+        if "--skip-download" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{SAMPLE_ID}\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{escaped}\n", stderr="")
+
+    with pytest.raises(FootageDownloadError, match="not a file inside"):
+        download_footage(SAMPLE_URL, footage_dir, run=escaping_runner)
+
+
+def test_rejects_empty_downloaded_file(tmp_path: Path) -> None:
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4", content=b"")
+
+    with pytest.raises(FootageDownloadError, match="empty"):
+        download_footage(SAMPLE_URL, tmp_path / "footage", run=fake)
+
+
+def test_surfaces_yt_dlp_failure_message(tmp_path: Path) -> None:
+    def failing_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            list(args), 1, stdout="", stderr="ERROR: Video unavailable"
+        )
+
+    with pytest.raises(FootageDownloadError, match="Video unavailable"):
+        download_footage(SAMPLE_URL, tmp_path / "footage", run=failing_runner)
+
+
+def test_raises_clear_error_when_yt_dlp_binary_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing_binary(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("No such file or directory: 'yt-dlp'")
+
+    monkeypatch.setattr(subprocess, "run", missing_binary)
+
+    with pytest.raises(FootageDownloadError, match="yt-dlp is not installed"):
+        download_footage(SAMPLE_URL, tmp_path / "footage")
+
+
+def test_rejects_footage_dir_that_is_a_file(tmp_path: Path) -> None:
+    not_a_dir = tmp_path / "footage"
+    not_a_dir.write_text("not a directory")
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="not a directory"):
+        download_footage(SAMPLE_URL, not_a_dir, run=fake)
+
+    assert fake.calls == []
+
+
+# --- CLI ----------------------------------------------------------------------------------
+
+
+def test_cli_download_prints_path_and_skips_second_download(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    footage_dir = tmp_path / "footage"
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    code1 = main(["download", SAMPLE_URL, "--footage-dir", str(footage_dir)], run=fake)
+    out1 = capsys.readouterr()
+    code2 = main(["download", SAMPLE_URL, "--footage-dir", str(footage_dir)], run=fake)
+    out2 = capsys.readouterr()
+
+    expected = f"{footage_dir / f'{SAMPLE_ID}.mkv'}\n"
+    assert code1 == 0
+    assert code2 == 0
+    assert out1.out == expected
+    assert out1.err == ""
+    assert out2.out == expected
+    assert out2.err == ""
+    assert len(fake.download_calls) == 1
+
+
+def test_cli_download_records_source_video_against_match(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "rally_log.duckdb"
+    footage_dir = tmp_path / "footage"
+    match = _create_match_in_db(db_path)
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4")
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(footage_dir),
+            "--match",
+            str(match.id),
+            "--db",
+            str(db_path),
+        ],
+        run=fake,
+    )
+    captured = capsys.readouterr()
+
+    expected_path = footage_dir / f"{SAMPLE_ID}.mp4"
+    assert code == 0
+    assert captured.out == f"{expected_path}\n"
+    with RallyLog.open(db_path) as log:
+        loaded = log.load_match(match.id)
+    assert loaded.source_video == SourceVideo(
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=expected_path
+    )
+
+
+def test_cli_download_fails_before_downloading_when_match_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "rally_log.duckdb"
+    _create_match_in_db(db_path)
+    fake = FakeYtDlp()
+    missing_id = str(new_id())
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(tmp_path / "footage"),
+            "--match",
+            missing_id,
+            "--db",
+            str(db_path),
+        ],
+        run=fake,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert captured.out == ""
+    assert missing_id in captured.err
+    assert fake.calls == []
+
+
+def test_cli_download_fails_without_creating_missing_db(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing_db = tmp_path / "does_not_exist.duckdb"
+    fake = FakeYtDlp()
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(tmp_path / "footage"),
+            "--match",
+            str(new_id()),
+            "--db",
+            str(missing_db),
+        ],
+        run=fake,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert captured.out == ""
+    assert "not found" in captured.err
+    assert not missing_db.exists()
+    assert fake.calls == []
+
+
+def test_cli_download_rejects_db_without_match(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["download", SAMPLE_URL, "--db", str(tmp_path / "rally_log.duckdb")])
+    assert exc_info.value.code == 2
+
+
+def test_cli_download_rejects_invalid_match_uuid(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["download", SAMPLE_URL, "--match", "not-a-uuid"])
+    assert exc_info.value.code == 2
+
+
+def test_cli_download_returns_nonzero_on_download_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def failing_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 1, stdout="", stderr="ERROR: network down")
+
+    code = main(
+        ["download", SAMPLE_URL, "--footage-dir", str(tmp_path / "footage")],
+        run=failing_runner,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert captured.out == ""
+    assert "network down" in captured.err

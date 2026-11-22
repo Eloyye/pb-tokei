@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from pb-tokei!")
+from pb_tokei.cli import main
+
+__all__ = ["main"]
