@@ -40,6 +40,7 @@ from .model import (
     Score,
     Shot,
     ShotClass,
+    SourceVideo,
     Team,
     TeamId,
     Tour,
@@ -146,18 +147,49 @@ class RallyLog:
     # --- Matches --------------------------------------------------------------------------
 
     def save_match(self, match: Match) -> None:
-        """Saves a Match and replaces everything recorded under it (Games, Rallies, Shots...)."""
+        """Saves a Match and replaces everything recorded under it (Games, Rallies, Shots...).
+
+        If `match.source_video` is None, any source video already recorded on the Match is kept.
+        """
+        video = match.source_video
         self._db.execute("BEGIN TRANSACTION")
         try:
-            self._upsert(
-                "matches",
-                ["id", "tournament_id", "team_a_id", "team_b_id", "franchise_match_id"],
+            self._db.execute(
+                """
+                INSERT INTO matches (
+                    id,
+                    tournament_id,
+                    team_a_id,
+                    team_b_id,
+                    franchise_match_id,
+                    source_video_url,
+                    source_video_id,
+                    source_video_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    tournament_id = excluded.tournament_id,
+                    team_a_id = excluded.team_a_id,
+                    team_b_id = excluded.team_b_id,
+                    franchise_match_id = excluded.franchise_match_id,
+                    source_video_url = COALESCE(
+                        excluded.source_video_url, matches.source_video_url
+                    ),
+                    source_video_id = COALESCE(
+                        excluded.source_video_id, matches.source_video_id
+                    ),
+                    source_video_path = COALESCE(
+                        excluded.source_video_path, matches.source_video_path
+                    )
+                """,
                 [
                     match.id,
                     match.tournament_id,
                     match.team_a_id,
                     match.team_b_id,
                     match.franchise_match_id,
+                    None if video is None else video.url,
+                    None if video is None else video.video_id,
+                    None if video is None else str(video.path),
                 ],
             )
             for table in MATCH_CONTENT_TABLES:
@@ -168,9 +200,37 @@ class RallyLog:
             raise
         self._db.execute("COMMIT")
 
+    def has_match(self, match_id: MatchId) -> bool:
+        row = self._db.execute("SELECT 1 FROM matches WHERE id = ?", [match_id]).fetchone()
+        return row is not None
+
+    def set_match_source_video(self, match_id: MatchId, source_video: SourceVideo) -> None:
+        """Records the downloaded broadcast video against an existing Match."""
+        if not self.has_match(match_id):
+            raise KeyError(f"no Match for {match_id}")
+        self._db.execute(
+            "UPDATE matches SET source_video_url = ?, source_video_id = ?, source_video_path = ? "
+            "WHERE id = ?",
+            [source_video.url, source_video.video_id, str(source_video.path), match_id],
+        )
+
     def load_match(self, match_id: MatchId) -> Match:
-        _, tournament, team_a, team_b, franchise_match = self._one(
-            "SELECT * FROM matches WHERE id = ?", match_id
+        (
+            tournament,
+            team_a,
+            team_b,
+            franchise_match,
+            video_url,
+            video_id,
+            video_path,
+        ) = self._one(
+            "SELECT tournament_id, team_a_id, team_b_id, franchise_match_id, "
+            "source_video_url, source_video_id, source_video_path "
+            "FROM matches WHERE id = ?",
+            match_id,
+        )
+        source_video = (
+            None if video_url is None else SourceVideo(video_url, video_id, Path(video_path))
         )
         segments = tuple(
             PlaySegment(start, end, CameraView(view))
@@ -186,6 +246,7 @@ class RallyLog:
             franchise_match_id=None
             if franchise_match is None
             else FranchiseMatchId(franchise_match),
+            source_video=source_video,
             games=self._load_games(match_id),
             play_segments=segments,
         )

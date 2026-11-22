@@ -100,8 +100,22 @@ CREATE TABLE IF NOT EXISTS matches (
     team_a_id UUID NOT NULL REFERENCES teams (id),
     team_b_id UUID NOT NULL REFERENCES teams (id),
     franchise_match_id UUID REFERENCES franchise_matches (id),
-    CHECK (team_a_id <> team_b_id)
+    source_video_url VARCHAR,
+    source_video_id VARCHAR,
+    source_video_path VARCHAR,
+    CHECK (team_a_id <> team_b_id),
+    CHECK (
+        (source_video_url IS NULL AND source_video_id IS NULL AND source_video_path IS NULL)
+        OR (
+            source_video_url IS NOT NULL
+            AND source_video_id IS NOT NULL
+            AND source_video_path IS NOT NULL
+        )
+    )
 )""",
+    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_url VARCHAR",
+    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_id VARCHAR",
+    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_path VARCHAR",
     f"""
 CREATE TABLE IF NOT EXISTS play_segments (
     match_id UUID NOT NULL,

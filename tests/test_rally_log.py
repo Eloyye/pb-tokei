@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from pb_tokei.rally_log import (
@@ -29,6 +30,7 @@ from pb_tokei.rally_log import (
     Score,
     Shot,
     ShotClass,
+    SourceVideo,
     Team,
     TeamId,
     Tour,
@@ -207,3 +209,156 @@ def test_roster_records_can_be_edited_after_a_match_uses_them(log: RallyLog) -> 
 
     assert log.get_player(P1.id) == renamed
     assert log.load_match(match.id) == match
+
+
+def test_match_source_video_round_trips(log: RallyLog) -> None:
+    video = SourceVideo(
+        url="https://www.youtube.com/watch?v=abc123XYZ00",
+        video_id="abc123XYZ00",
+        path=Path("footage/abc123XYZ00.mp4"),
+    )
+    match = replace(small_match(), source_video=video)
+
+    log.save_match(match)
+
+    assert log.load_match(match.id) == match
+
+
+def test_recording_source_video_against_existing_match_preserves_rallies(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    video = SourceVideo(
+        url="https://www.youtube.com/watch?v=abc123XYZ00",
+        video_id="abc123XYZ00",
+        path=Path("footage/abc123XYZ00.mkv"),
+    )
+
+    log.set_match_source_video(match.id, video)
+
+    assert log.load_match(match.id) == replace(match, source_video=video)
+
+
+def test_recording_source_video_for_missing_match_fails(log: RallyLog) -> None:
+    video = SourceVideo(
+        url="https://www.youtube.com/watch?v=abc123XYZ00",
+        video_id="abc123XYZ00",
+        path=Path("footage/abc123XYZ00.mp4"),
+    )
+
+    with pytest.raises(KeyError):
+        log.set_match_source_video(MatchId(new_id()), video)
+
+
+def test_source_video_rejects_empty_fields() -> None:
+    with pytest.raises(ValueError):
+        SourceVideo("", "abc123", Path("footage/abc123.mp4"))
+    with pytest.raises(ValueError):
+        SourceVideo("https://example.com/v", "   ", Path("footage/abc123.mp4"))
+    with pytest.raises(ValueError):
+        SourceVideo("https://example.com/v", "abc123", Path(""))
+
+
+def test_saving_a_match_without_source_video_preserves_recorded_video(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    video = SourceVideo(
+        url="https://www.youtube.com/watch?v=abc123XYZ00",
+        video_id="abc123XYZ00",
+        path=Path("footage/abc123XYZ00.mkv"),
+    )
+    log.set_match_source_video(match.id, video)
+
+    # Saving the Match again with source_video=None keeps the recorded source video.
+    edited = replace(match, games=())
+    log.save_match(edited)
+
+    assert log.load_match(match.id) == replace(edited, source_video=video)
+
+
+def test_saving_a_match_with_new_source_video_replaces_recorded_video(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    first = SourceVideo(
+        url="https://www.youtube.com/watch?v=first000001",
+        video_id="first000001",
+        path=Path("footage/first000001.mp4"),
+    )
+    second = SourceVideo(
+        url="https://www.youtube.com/watch?v=second00002",
+        video_id="second00002",
+        path=Path("footage/second00002.mkv"),
+    )
+    log.set_match_source_video(match.id, first)
+
+    log.save_match(replace(match, source_video=second))
+
+    assert log.load_match(match.id).source_video == second
+
+
+def test_source_video_columns_are_all_or_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "rally_log.duckdb"
+    match = small_match()
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+
+    with duckdb.connect(str(path)) as conn, pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            "UPDATE matches SET source_video_url = 'https://example.com/v' WHERE id = ?",
+            [match.id],
+        )
+
+
+def test_opening_an_older_database_adds_source_video_columns(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.duckdb"
+    match_id = MatchId(new_id())
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            "CREATE TABLE tournaments ("
+            "id UUID PRIMARY KEY, name VARCHAR NOT NULL, tour VARCHAR NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE players ("
+            "id UUID PRIMARY KEY, name VARCHAR NOT NULL, handedness VARCHAR NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE teams ("
+            "id UUID PRIMARY KEY, player_low_id UUID NOT NULL, player_high_id UUID NOT NULL)"
+        )
+        conn.execute("CREATE TABLE franchises (id UUID PRIMARY KEY, name VARCHAR NOT NULL)")
+        conn.execute(
+            "CREATE TABLE franchise_matches ("
+            "id UUID PRIMARY KEY, tournament_id UUID NOT NULL, "
+            "franchise_a_id UUID NOT NULL, franchise_b_id UUID NOT NULL)"
+        )
+        # Pre-PR 5-column matches table without source_video_* columns.
+        conn.execute(
+            "CREATE TABLE matches ("
+            "id UUID PRIMARY KEY, tournament_id UUID NOT NULL, "
+            "team_a_id UUID NOT NULL, team_b_id UUID NOT NULL, franchise_match_id UUID)"
+        )
+        conn.execute(
+            "INSERT INTO tournaments VALUES (?, ?, ?)",
+            [TOURNAMENT.id, TOURNAMENT.name, TOURNAMENT.tour.value],
+        )
+        for player in (P1, P2, P3, P4):
+            conn.execute(
+                "INSERT INTO players VALUES (?, ?, ?)",
+                [player.id, player.name, player.handedness.value],
+            )
+        conn.execute("INSERT INTO teams VALUES (?, ?, ?)", [SERVERS.id, *SERVERS.player_ids])
+        conn.execute("INSERT INTO teams VALUES (?, ?, ?)", [RECEIVERS.id, *RECEIVERS.player_ids])
+        conn.execute(
+            "INSERT INTO matches VALUES (?, ?, ?, ?, NULL)",
+            [match_id, TOURNAMENT.id, SERVERS.id, RECEIVERS.id],
+        )
+
+    video = SourceVideo(
+        url="https://www.youtube.com/watch?v=legacy00001",
+        video_id="legacy00001",
+        path=Path("footage/legacy00001.mp4"),
+    )
+    with RallyLog.open(path) as log:
+        assert log.load_match(match_id).source_video is None
+        log.set_match_source_video(match_id, video)
+        assert log.load_match(match_id).source_video == video

@@ -5,6 +5,15 @@ Statistics on professional side-out-scored doubles pickleball (PPA, APP, MLP), d
 - Vocabulary: [GLOSSARY.md](GLOSSARY.md)
 - Decisions: [docs/adr/](docs/adr/)
 
+## Usage
+
+Download broadcast footage into `footage/` (requires `yt-dlp` and `ffmpeg` on `PATH`):
+
+```bash
+uv run pb-tokei download <url>
+uv run pb-tokei download <url> --match <match-id> [--db rally_log.duckdb]
+```
+
 ## Development
 
 ```bash

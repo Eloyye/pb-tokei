@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal, NewType
 from uuid import UUID, uuid4
 
@@ -267,6 +268,23 @@ class PlaySegment:
 
 
 @dataclass(frozen=True)
+class SourceVideo:
+    """Broadcast footage downloaded on disk for a Match."""
+
+    url: str
+    video_id: str
+    path: Path
+
+    def __post_init__(self) -> None:
+        if not self.url.strip():
+            raise ValueError("SourceVideo url cannot be empty")
+        if not self.video_id.strip():
+            raise ValueError("SourceVideo video_id cannot be empty")
+        if not str(self.path) or str(self.path) == ".":
+            raise ValueError("SourceVideo path cannot be empty")
+
+
+@dataclass(frozen=True)
 class Match:
     """A Match between two Teams. In an MLP Franchise Match, Team A plays for Franchise A."""
 
@@ -275,6 +293,7 @@ class Match:
     team_a_id: TeamId
     team_b_id: TeamId
     franchise_match_id: FranchiseMatchId | None = None
+    source_video: SourceVideo | None = None
     games: tuple[Game, ...] = ()
     play_segments: tuple[PlaySegment, ...] = ()
 
