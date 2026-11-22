@@ -8,6 +8,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
 
+import duckdb
+
 from pb_tokei.footage import (
     DEFAULT_FOOTAGE_DIR,
     CommandRunner,
@@ -57,16 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
         "new", help="Write a Roster File template with a fresh Match id."
     )
     new.add_argument("file", type=Path, help="Where to write the Roster File.")
+    new.set_defaults(handler=_match_new)
 
     add = match_commands.add_parser(
         "add", help="Create the Match a Roster File describes, and print its id."
     )
     add.add_argument("file", type=Path, help="The Roster File (TOML).")
     _db_argument(add)
+    add.set_defaults(handler=_match_add)
 
     list_ = match_commands.add_parser("list", help="List Matches with their rosters.")
     list_.add_argument("--tournament", help="Only Matches at this Tournament (exact name).")
     _db_argument(list_)
+    list_.set_defaults(handler=_match_list)
     return parser
 
 
@@ -90,7 +95,7 @@ def main(
     if args.command == "download":
         return _run_download(args, parser=parser, run=run)
     if args.command == "match":
-        return _run_match(args)
+        return args.handler(args)
 
     parser.error(f"Unknown command: {args.command}")
 
@@ -138,33 +143,48 @@ def _run_download(
     return 0
 
 
-def _run_match(args: argparse.Namespace) -> int:
-    if args.match_command == "new":
-        if args.file.exists():
-            print(f"error: {args.file} already exists", file=sys.stderr)
-            return 1
+def _match_new(args: argparse.Namespace) -> int:
+    if args.file.exists():
+        print(f"error: {args.file} already exists", file=sys.stderr)
+        return 1
+    try:
         args.file.parent.mkdir(parents=True, exist_ok=True)
         args.file.write_text(roster_template(), encoding="utf-8")
-        print(args.file)
-        return 0
+    except OSError as exc:
+        print(f"error: cannot write {args.file}: {exc.strerror}", file=sys.stderr)
+        return 1
+    print(args.file)
+    return 0
 
-    if args.match_command == "add":
-        try:
-            roster = read_roster(args.file)
-            with RallyLog.open(args.db) as log:
-                match = set_up_match(log, roster)
-        except RosterError as exc:
-            print(f"error: {args.file}: {exc}", file=sys.stderr)
-            return 1
-        print(match.id)
-        return 0
 
+def _match_add(args: argparse.Namespace) -> int:
+    try:
+        roster = read_roster(args.file)
+    except RosterError as exc:
+        print(f"error: {args.file}: {exc}", file=sys.stderr)
+        return 1
+    try:
+        with RallyLog.open(args.db) as log:
+            match = set_up_match(log, roster)
+    except (RosterError, duckdb.Error, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(match.id)
+    return 0
+
+
+def _match_list(args: argparse.Namespace) -> int:
     if not args.db.is_file():
         print(f"error: Rally Log database not found: {args.db}", file=sys.stderr)
         return 1
-    with RallyLog.open(args.db) as log:
-        for summary in log.list_matches(args.tournament):
-            print(_match_line(summary))
+    try:
+        with RallyLog.open(args.db) as log:
+            summaries = log.list_matches(args.tournament)
+    except (duckdb.Error, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for summary in summaries:
+        print(_match_line(summary))
     return 0
 
 

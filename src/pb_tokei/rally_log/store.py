@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -60,6 +61,7 @@ class RallyLog:
 
     def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
         self._db = connection
+        self._transaction_depth = 0
         for statement in STATEMENTS:
             self._db.execute(statement)
 
@@ -80,6 +82,32 @@ class RallyLog:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+    @contextmanager
+    def transaction(self) -> Generator[None]:
+        """Runs the writes inside it as one transaction: all of them commit, or none do.
+
+        Nested uses join the outermost transaction, so a method that needs a transaction (such
+        as `save_match`) can also run inside a larger one.
+        """
+        if self._transaction_depth:
+            self._transaction_depth += 1
+            try:
+                yield
+            finally:
+                self._transaction_depth -= 1
+            return
+        self._db.execute("BEGIN TRANSACTION")
+        self._transaction_depth = 1
+        try:
+            yield
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        else:
+            self._db.execute("COMMIT")
+        finally:
+            self._transaction_depth = 0
 
     # --- Roster ---------------------------------------------------------------------------
 
@@ -188,8 +216,7 @@ class RallyLog:
         If `match.source_video` is None, any source video already recorded on the Match is kept.
         """
         video = match.source_video
-        self._db.execute("BEGIN TRANSACTION")
-        try:
+        with self.transaction():
             self._db.execute(
                 """
                 INSERT INTO matches (
@@ -231,10 +258,6 @@ class RallyLog:
             for table in MATCH_CONTENT_TABLES:
                 self._db.execute(f"DELETE FROM {table} WHERE match_id = ?", [match.id])
             self._insert_content(match)
-        except BaseException:
-            self._db.execute("ROLLBACK")
-            raise
-        self._db.execute("COMMIT")
 
     def has_match(self, match_id: MatchId) -> bool:
         row = self._db.execute("SELECT 1 FROM matches WHERE id = ?", [match_id]).fetchone()

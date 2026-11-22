@@ -254,10 +254,17 @@ def test_second_meeting_needs_a_pinned_franchise_match(tmp_path: Path) -> None:
                     )
                 ),
             )
-        with pytest.raises(RosterError, match="met more than once"):
-            set_up_match(
-                log, parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        ambiguous = parse_roster(
+            roster_toml(
+                tournament=MLP,
+                team_a=(("New Dallas One", "right"), ("New Dallas Two", "left")),
+                franchise_match=DALLAS_VS_MIAMI,
             )
+        )
+        with pytest.raises(RosterError, match="met more than once"):
+            set_up_match(log, ambiguous)
+        assert not log.has_match(ambiguous.match_id)
+        assert log.find_player("New Dallas One") is None
         pinned_final = set_up_match(
             log,
             parse_roster(
@@ -277,8 +284,41 @@ def test_pinned_franchise_match_must_agree(tmp_path: Path) -> None:
             ),
         )
         other = {"franchise_a": "Dallas Flash", "franchise_b": "St. Louis Shock", "id": pinned}
+        clash = parse_roster(
+            roster_toml(
+                tournament={"name": "MLP Columbus 2026", "tour": "mlp"},
+                team_a=(("Shock One", "right"), ("Shock Two", "left")),
+                franchise_match=other,
+            )
+        )
         with pytest.raises(RosterError, match="other Franchises"):
-            set_up_match(log, parse_roster(roster_toml(tournament=MLP, franchise_match=other)))
+            set_up_match(log, clash)
+        assert not log.has_match(clash.match_id)
+        assert log.find_franchise("St. Louis Shock") is None
+        assert log.find_player("Shock One") is None
+        assert log.find_tournament("MLP Columbus 2026", Tour.MLP) is None
+
+
+def test_failed_write_rolls_back_the_whole_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        roster = parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+
+        def fail(*_: object) -> None:
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(log, "_insert_content", fail)
+        with pytest.raises(RuntimeError, match="disk full"):
+            set_up_match(log, roster)
+        assert not log.has_match(roster.match_id)
+        assert log.find_tournament("MLP Dallas 2026", Tour.MLP) is None
+        assert log.find_player("Anna Bright") is None
+        assert log.find_franchise("Dallas Flash") is None
+
+        monkeypatch.undo()
+        set_up_match(log, roster)
+        assert log.has_match(roster.match_id)
 
 
 # --- Malformed Roster Files ---------------------------------------------------------------
@@ -302,6 +342,21 @@ def test_pinned_franchise_match_must_agree(tmp_path: Path) -> None:
         (roster_toml() + 'extra = "x"\n', "unknown keys: extra"),
         (roster_toml(video={"url": "u", "video_id": "v"}), "\\[video\\] is missing path"),
         ("id = [", "not valid TOML"),
+        (
+            roster_toml(
+                tournament=MLP,
+                franchise_match={"franchise_a": "Dallas Flash", "franchise_b": "Dallas Flash"},
+            ),
+            "can't play itself",
+        ),
+        (
+            roster_toml(tournament=MLP, franchise_match={**DALLAS_VS_MIAMI, "id": "final"}),
+            "\\[franchise_match\\] id is not a UUID",
+        ),
+        (
+            roster_toml(tournament=MLP, franchise_match={**DALLAS_VS_MIAMI, "round": "final"}),
+            "\\[franchise_match\\] has unknown keys: round",
+        ),
     ],
 )
 def test_malformed_roster_files_are_rejected(text: str, message: str) -> None:
@@ -314,3 +369,36 @@ def test_add_reports_bad_roster_file(tmp_path: Path, capsys: pytest.CaptureFixtu
     code, _, err = run(capsys, "match", "add", str(path), "--db", str(tmp_path / "log.duckdb"))
     assert code == 1
     assert err.startswith(f"error: {path}:")
+
+
+def test_add_reports_missing_roster_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "nope.toml"
+    code, _, err = run(capsys, "match", "add", str(path), "--db", str(tmp_path / "log.duckdb"))
+    assert code == 1
+    assert "cannot read Roster File" in err
+
+
+def test_existing_match_error_does_not_blame_the_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = str(tmp_path / "log.duckdb")
+    path = write(tmp_path, roster_toml())
+    run(capsys, "match", "add", str(path), "--db", db)
+    code, _, err = run(capsys, "match", "add", str(path), "--db", db)
+    assert code == 1
+    assert err.startswith("error: Match ")
+
+
+@pytest.mark.parametrize("command", ["add", "list"])
+def test_a_database_that_is_not_duckdb_is_an_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    db = write(tmp_path, "not a database", "log.duckdb")
+    args = ["match", command]
+    if command == "add":
+        args.append(str(write(tmp_path, roster_toml())))
+    code, _, err = run(capsys, *args, "--db", str(db))
+    assert code == 1
+    assert err.startswith("error: ")

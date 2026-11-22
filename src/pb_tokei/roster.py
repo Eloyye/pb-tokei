@@ -257,7 +257,8 @@ handedness = "right"
 def set_up_match(log: RallyLog, roster: Roster) -> Match:
     """Creates the Match a Roster File describes, finding or adding its Tournament, Players,
     Teams, Franchises and Franchise Match. Everything is checked before anything is written, and
-    only new records are written: re-saving one a Match already refers to fails in DuckDB."""
+    then written in one transaction. Only new records are written: in DuckDB, re-saving a record
+    that a Match already refers to fails."""
     if log.has_match(roster.match_id):
         raise RosterError(f"Match {roster.match_id} already exists")
     new: list[Callable[[], None]] = []
@@ -305,8 +306,6 @@ def set_up_match(log: RallyLog, roster: Roster) -> Match:
             # play for its Franchise A.
             team_a, team_b = team_b, team_a
 
-    for save in new:
-        save()
     match = Match(
         id=roster.match_id,
         tournament_id=tournament.id,
@@ -315,7 +314,10 @@ def set_up_match(log: RallyLog, roster: Roster) -> Match:
         franchise_match_id=None if franchise_match is None else franchise_match.id,
         source_video=roster.video,
     )
-    log.save_match(match)
+    with log.transaction():
+        for save in new:
+            save()
+        log.save_match(match)
     return match
 
 
