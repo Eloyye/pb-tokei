@@ -235,6 +235,36 @@ def test_surfaces_yt_dlp_failure_message(tmp_path: Path) -> None:
         download_footage(SAMPLE_URL, tmp_path / "footage", run=failing_runner)
 
 
+def test_falls_back_to_exit_status_when_yt_dlp_stderr_is_empty(tmp_path: Path) -> None:
+    def silent_failure_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 2, stdout="", stderr="   ")
+
+    with pytest.raises(FootageDownloadError, match="exit status 2"):
+        download_footage(SAMPLE_URL, tmp_path / "footage", run=silent_failure_runner)
+
+
+def test_rejects_empty_video_id_from_probe(tmp_path: Path) -> None:
+    def empty_probe_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 0, stdout="\n", stderr="")
+
+    with pytest.raises(FootageDownloadError, match="did not return a video ID"):
+        download_footage(SAMPLE_URL, tmp_path / "footage", run=empty_probe_runner)
+
+
+@pytest.mark.parametrize("download_stdout", ["", "   \n", "/tmp/one.mp4\n/tmp/two.mp4\n"])
+def test_rejects_unexpected_filepath_output_from_download(
+    tmp_path: Path, download_stdout: str
+) -> None:
+    def bad_filepath_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        cmd = list(args)
+        if "--skip-download" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{SAMPLE_ID}\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=download_stdout, stderr="")
+
+    with pytest.raises(FootageDownloadError, match="unexpected filepath output"):
+        download_footage(SAMPLE_URL, tmp_path / "footage", run=bad_filepath_runner)
+
+
 def test_raises_clear_error_when_yt_dlp_binary_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -372,16 +402,30 @@ def test_cli_download_fails_without_creating_missing_db(
     assert fake.calls == []
 
 
-def test_cli_download_rejects_db_without_match(tmp_path: Path) -> None:
+def test_cli_download_rejects_db_without_match(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeYtDlp()
+
     with pytest.raises(SystemExit) as exc_info:
-        main(["download", SAMPLE_URL, "--db", str(tmp_path / "rally_log.duckdb")])
+        main(["download", SAMPLE_URL, "--db", str(tmp_path / "rally_log.duckdb")], run=fake)
+
+    captured = capsys.readouterr()
     assert exc_info.value.code == 2
+    assert "--db requires --match" in captured.err
+    assert fake.calls == []
 
 
-def test_cli_download_rejects_invalid_match_uuid(tmp_path: Path) -> None:
+def test_cli_download_rejects_invalid_match_uuid(capsys: pytest.CaptureFixture[str]) -> None:
+    fake = FakeYtDlp()
+
     with pytest.raises(SystemExit) as exc_info:
-        main(["download", SAMPLE_URL, "--match", "not-a-uuid"])
+        main(["download", SAMPLE_URL, "--match", "not-a-uuid"], run=fake)
+
+    captured = capsys.readouterr()
     assert exc_info.value.code == 2
+    assert "Invalid --match UUID" in captured.err
+    assert fake.calls == []
 
 
 def test_cli_download_returns_nonzero_on_download_error(

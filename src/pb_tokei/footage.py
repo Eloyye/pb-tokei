@@ -44,45 +44,14 @@ class DownloadResult:
 def find_existing_footage(footage_dir: Path, video_id: str) -> Path | None:
     """Returns an existing downloaded video for `video_id` in `footage_dir`, or None."""
     _validate_video_id(video_id)
-    if not footage_dir.is_dir():
-        return None
-    prefix = f"{video_id}."
-    for entry in sorted(footage_dir.iterdir()):
-        if not entry.name.startswith(prefix) or not entry.is_file():
-            continue
-        ext = entry.name[len(prefix) :]
-        # Ignore multi-part extensions (.f137.mp4, .mp4.part, .60fps.mp4) and non-video files.
-        if "." in ext or ext.lower() not in VIDEO_EXTENSIONS:
-            continue
-        if entry.stat().st_size > 0:
-            return entry
-    return None
+    return _find_existing_footage(footage_dir, video_id)
 
 
 def probe_video_id(url: str, *, run: CommandRunner | None = None) -> str:
     """Queries yt-dlp for the single video ID of `url` without downloading media."""
     _validate_url(url)
     runner = _default_run if run is None else run
-    # --playlist-end 2 avoids fetching an entire playlist while still detecting multi-video URLs.
-    args = [
-        "yt-dlp",
-        "--no-playlist",
-        "--playlist-end",
-        "2",
-        "--skip-download",
-        "--print",
-        "%(id)s",
-        "--",
-        url,
-    ]
-    lines = _run_yt_dlp(runner, args)
-    if len(lines) != 1:
-        if len(lines) > 1:
-            raise FootageDownloadError(
-                f"URL resolved to multiple videos; pass a single video URL: {url}"
-            )
-        raise FootageDownloadError(f"yt-dlp did not return a video ID for {url}")
-    return _validate_video_id(lines[0])
+    return _probe_video_id(url, runner)
 
 
 def download_footage(
@@ -100,9 +69,9 @@ def download_footage(
         raise FootageDownloadError(f"Footage path is not a directory: {footage_dir}")
 
     runner = _default_run if run is None else run
-    video_id = probe_video_id(url, run=runner)
+    video_id = _probe_video_id(url, runner)
 
-    existing = find_existing_footage(footage_dir, video_id)
+    existing = _find_existing_footage(footage_dir, video_id)
     if existing is not None:
         return DownloadResult(
             source_video=SourceVideo(url=url, video_id=video_id, path=existing),
@@ -151,6 +120,47 @@ def download_footage(
     )
 
 
+def _find_existing_footage(footage_dir: Path, video_id: str) -> Path | None:
+    if not footage_dir.is_dir():
+        return None
+    prefix = f"{video_id}."
+    for entry in sorted(footage_dir.iterdir()):
+        if not entry.name.startswith(prefix) or not entry.is_file():
+            continue
+        ext = entry.name[len(prefix) :]
+        # Ignore multi-part extensions (.f137.mp4, .mp4.part, .60fps.mp4) and non-video files.
+        if "." in ext or ext.lower() not in VIDEO_EXTENSIONS:
+            continue
+        if entry.stat().st_size > 0:
+            return entry
+    return None
+
+
+def _probe_video_id(url: str, runner: CommandRunner) -> str:
+    # --playlist-end 2 avoids fetching an entire playlist while still detecting multi-video URLs.
+    args = [
+        "yt-dlp",
+        "--no-playlist",
+        "--playlist-end",
+        "2",
+        "--skip-download",
+        "--print",
+        "%(id)s",
+        "--",
+        url,
+    ]
+    lines = _run_yt_dlp(runner, args)
+    if len(lines) != 1:
+        if len(lines) > 1:
+            raise FootageDownloadError(
+                f"URL resolved to multiple videos; pass a single video URL: {url}"
+            )
+        raise FootageDownloadError(f"yt-dlp did not return a video ID for {url}")
+    video_id = lines[0]
+    _validate_video_id(video_id)
+    return video_id
+
+
 def _default_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(args, capture_output=True, text=True, check=False)
@@ -168,23 +178,20 @@ def _run_yt_dlp(runner: CommandRunner, args: Sequence[str]) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _validate_url(url: str) -> str:
+def _validate_url(url: str) -> None:
     if not url or any(ch.isspace() for ch in url):
         raise FootageDownloadError(f"Expected an http(s) URL, got: {url!r}")
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise FootageDownloadError(f"Expected an http(s) URL, got: {url!r}")
-    return url
 
 
-def _validate_video_id(video_id: str) -> str:
+def _validate_video_id(video_id: str) -> None:
     if (
         not video_id
-        or video_id in {".", ".."}
         or video_id.startswith(".")
         or "/" in video_id
         or "\\" in video_id
         or "\x00" in video_id
     ):
         raise FootageDownloadError(f"Invalid video ID from yt-dlp: {video_id!r}")
-    return video_id

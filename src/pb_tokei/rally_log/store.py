@@ -147,22 +147,40 @@ class RallyLog:
     # --- Matches --------------------------------------------------------------------------
 
     def save_match(self, match: Match) -> None:
-        """Saves a Match and replaces everything recorded under it (Games, Rallies, Shots...)."""
+        """Saves a Match and replaces everything recorded under it (Games, Rallies, Shots...).
+
+        If `match.source_video` is None, any source video already recorded on the Match is kept.
+        """
         video = match.source_video
         self._db.execute("BEGIN TRANSACTION")
         try:
-            self._upsert(
-                "matches",
-                [
-                    "id",
-                    "tournament_id",
-                    "team_a_id",
-                    "team_b_id",
-                    "franchise_match_id",
-                    "source_video_url",
-                    "source_video_id",
-                    "source_video_path",
-                ],
+            self._db.execute(
+                """
+                INSERT INTO matches (
+                    id,
+                    tournament_id,
+                    team_a_id,
+                    team_b_id,
+                    franchise_match_id,
+                    source_video_url,
+                    source_video_id,
+                    source_video_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    tournament_id = excluded.tournament_id,
+                    team_a_id = excluded.team_a_id,
+                    team_b_id = excluded.team_b_id,
+                    franchise_match_id = excluded.franchise_match_id,
+                    source_video_url = COALESCE(
+                        excluded.source_video_url, matches.source_video_url
+                    ),
+                    source_video_id = COALESCE(
+                        excluded.source_video_id, matches.source_video_id
+                    ),
+                    source_video_path = COALESCE(
+                        excluded.source_video_path, matches.source_video_path
+                    )
+                """,
                 [
                     match.id,
                     match.tournament_id,
@@ -198,7 +216,6 @@ class RallyLog:
 
     def load_match(self, match_id: MatchId) -> Match:
         (
-            _,
             tournament,
             team_a,
             team_b,
@@ -206,7 +223,12 @@ class RallyLog:
             video_url,
             video_id,
             video_path,
-        ) = self._one("SELECT * FROM matches WHERE id = ?", match_id)
+        ) = self._one(
+            "SELECT tournament_id, team_a_id, team_b_id, franchise_match_id, "
+            "source_video_url, source_video_id, source_video_path "
+            "FROM matches WHERE id = ?",
+            match_id,
+        )
         source_video = (
             None if video_url is None else SourceVideo(video_url, video_id, Path(video_path))
         )

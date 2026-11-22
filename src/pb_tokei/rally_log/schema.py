@@ -113,6 +113,9 @@ CREATE TABLE IF NOT EXISTS matches (
         )
     )
 )""",
+    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_url VARCHAR",
+    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_id VARCHAR",
+    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_path VARCHAR",
     f"""
 CREATE TABLE IF NOT EXISTS play_segments (
     match_id UUID NOT NULL,
