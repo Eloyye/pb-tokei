@@ -15,6 +15,6 @@ export default defineConfig({
     proxy: { "/api": "http://127.0.0.1:8000" },
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

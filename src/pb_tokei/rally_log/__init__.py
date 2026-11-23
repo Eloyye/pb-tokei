@@ -42,9 +42,10 @@ from .model import (
     new_id,
     observed,
 )
-from .store import RallyLog
+from .store import DEFAULT_DB_PATH, RallyLog
 
 __all__ = [
+    "DEFAULT_DB_PATH",
     "UNKNOWN",
     "CameraView",
     "Certainty",

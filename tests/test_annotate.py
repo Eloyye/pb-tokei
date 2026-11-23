@@ -12,6 +12,8 @@ from pb_tokei.roster import parse_roster, set_up_match
 
 URL = "https://www.youtube.com/watch?v=abc123"
 VIDEO_BYTES = bytes(range(256)) * 40
+# The app only answers requests addressed to this machine (see test_other_hosts_are_refused).
+LOCAL = "http://127.0.0.1"
 
 
 def add_match(db: Path, *, tournament: str = "PPA Atlanta Open 2026") -> MatchId:
@@ -48,7 +50,7 @@ def static_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def client(db: Path, tmp_path: Path, static_dir: Path) -> TestClient:
-    return TestClient(create_app(db, base_dir=tmp_path, static_dir=static_dir))
+    return TestClient(create_app(db, base_dir=tmp_path, static_dir=static_dir), base_url=LOCAL)
 
 
 def footage(tmp_path: Path, *, converted: bool) -> Path:
@@ -111,7 +113,8 @@ def test_fix_command_leaves_out_the_default_db(tmp_path: Path, static_dir: Path)
     db = tmp_path / "rally_log.duckdb"
     match_id = add_match(db)
     client = TestClient(
-        create_app(Path("rally_log.duckdb"), base_dir=tmp_path, static_dir=static_dir)
+        create_app(Path("rally_log.duckdb"), base_dir=tmp_path, static_dir=static_dir),
+        base_url=LOCAL,
     )
 
     body = client.get(f"/api/matches/{match_id}").json()
@@ -161,6 +164,23 @@ def test_unknown_match_is_404(client: TestClient, db: Path) -> None:
     assert client.get("/api/matches/not-a-uuid").status_code == 422
 
 
+@pytest.mark.parametrize("path", ["/api/matches", "/api/matches/{id}", "/api/matches/{id}/video"])
+def test_a_locked_rally_log_is_a_503_not_a_crash(
+    client: TestClient, db: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    match_id = add_match(db)
+
+    def locked(_path: object) -> RallyLog:
+        raise duckdb.IOException("Could not set lock on file: Conflicting lock is held")
+
+    # As when `pb-tokei match add` is writing to the file at that moment.
+    monkeypatch.setattr(RallyLog, "open", locked)
+    response = client.get(path.format(id=match_id))
+
+    assert response.status_code == 503
+    assert response.json()["detail"].startswith("Rally Log unavailable")
+
+
 def test_rally_log_is_closed_between_requests(client: TestClient, db: Path) -> None:
     add_match(db)
     client.get("/api/matches")
@@ -187,6 +207,31 @@ def test_video_supports_range_requests(client: TestClient, db: Path, tmp_path: P
     assert part.status_code == 206
     assert part.headers["content-range"] == f"bytes 100-199/{len(VIDEO_BYTES)}"
     assert part.content == VIDEO_BYTES[100:200]
+
+
+def test_a_recorded_60fps_copy_is_played_as_is(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    match_id = add_match(db)
+    footage(tmp_path, converted=True)
+    set_video(db, match_id, Path("footage/abc123.60fps.mp4"))
+
+    body = client.get(f"/api/matches/{match_id}").json()
+    video = client.get(f"/api/matches/{match_id}/video")
+
+    assert body["video_status"] == "ready"
+    assert video.status_code == 200
+    assert video.content == VIDEO_BYTES
+
+
+def test_a_missing_recorded_60fps_copy_says_to_download_again(client: TestClient, db: Path) -> None:
+    match_id = add_match(db)
+    set_video(db, match_id, Path("footage/abc123.60fps.mp4"))
+
+    body = client.get(f"/api/matches/{match_id}").json()
+
+    assert body["video_status"] == "not_converted"
+    assert body["fix_command"].startswith(f"pb-tokei download '{URL}' --match {match_id}")
 
 
 @pytest.mark.parametrize("converted", [False, None])
@@ -218,12 +263,33 @@ def test_built_assets_are_served(client: TestClient) -> None:
     assert response.text == "console.log('app')"
 
 
-def test_files_outside_the_build_are_not_served(client: TestClient, tmp_path: Path) -> None:
+def test_files_outside_the_build_are_not_served(
+    client: TestClient, tmp_path: Path, static_dir: Path
+) -> None:
     (tmp_path / "secret.txt").write_text("secret")
+    (static_dir / "link.txt").symlink_to(tmp_path / "secret.txt")
+    index_html = (static_dir / "index.html").read_text()
 
-    response = client.get("/%2e%2e/secret.txt")
+    for path in ["/%2e%2e/secret.txt", "/assets/%2e%2e/%2e%2e/secret.txt", "/link.txt"]:
+        response = client.get(path)
 
-    assert "secret" not in response.text
+        # Treated as a front-end route, like any path that isn't a built file.
+        assert response.status_code == 200, path
+        assert response.text == index_html, path
+
+
+@pytest.mark.parametrize("path", ["/api/matches", "/"])
+def test_other_hosts_are_refused(client: TestClient, path: str) -> None:
+    # A page whose domain re-resolves to 127.0.0.1 (DNS rebinding) sends its own Host.
+    response = client.get(path, headers={"Host": "evil.example:8000"})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:5173"])
+def test_local_hosts_are_served(client: TestClient, host: str) -> None:
+    # localhost:5173 is the Vite dev server forwarding /api.
+    assert client.get("/api/matches", headers={"Host": host}).status_code == 200
 
 
 def test_unknown_api_path_is_404_not_index_html(client: TestClient) -> None:

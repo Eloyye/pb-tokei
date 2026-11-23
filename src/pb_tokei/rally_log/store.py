@@ -55,6 +55,9 @@ from .schema import MATCH_CONTENT_TABLES, STATEMENTS
 
 Row = tuple[Any, ...]
 
+DEFAULT_DB_PATH = Path("rally_log.duckdb")
+"""Where the CLI and the annotation app look for the Rally Log when `--db` isn't given."""
+
 
 class RallyLog:
     """The Rally Log store. Open it with `RallyLog.open(path)`; the schema is created if missing."""

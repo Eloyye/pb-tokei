@@ -18,10 +18,9 @@ from pb_tokei.footage import (
     FootageDownloadError,
     download_footage,
 )
-from pb_tokei.rally_log import MatchId, MatchSummary, RallyLog
+from pb_tokei.rally_log import DEFAULT_DB_PATH, MatchId, MatchSummary, RallyLog
 from pb_tokei.roster import RosterError, read_roster, roster_template, set_up_match
 
-DEFAULT_DB_PATH = Path("rally_log.duckdb")
 DEFAULT_ANNOTATE_PORT = 8000
 
 

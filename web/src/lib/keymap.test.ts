@@ -1,5 +1,6 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { changeSpeed, keyAction, type KeyInput, SPEEDS } from "./keymap";
+import { changeSpeed, isTextEntry, keyAction, type KeyInput, SPEEDS } from "./keymap";
 
 function press(key: string, modifiers: Partial<KeyInput> = {}): KeyInput {
   return { key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...modifiers };
@@ -75,5 +76,39 @@ describe("changeSpeed", () => {
     for (let i = 0; i < 6; i += 1) up.push((speed = changeSpeed(speed, 1)));
     expect(up).toEqual([0.25, 0.5, 1, 2, 4, 4, 4]);
     expect(SPEEDS.map((s) => changeSpeed(s, -1))).toEqual([0.25, 0.25, 0.5, 1, 2]);
+  });
+});
+
+function element(html: string): Element {
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  const child = container.firstElementChild;
+  if (!child) throw new Error(`no element in ${html}`);
+  return child;
+}
+
+describe("isTextEntry", () => {
+  it.each([
+    '<input type="text">',
+    "<input>",
+    '<input type="search">',
+    "<textarea></textarea>",
+    "<select></select>",
+    '<div contenteditable="true"></div>',
+  ])("is true for %s", (html) => {
+    expect(isTextEntry(element(html))).toBe(true);
+  });
+
+  it.each([
+    '<input type="checkbox">',
+    '<input type="range">',
+    '<input type="button">',
+    "<div></div>",
+  ])("is false for %s", (html) => {
+    expect(isTextEntry(element(html))).toBe(false);
+  });
+
+  it("is false without a target", () => {
+    expect(isTextEntry(null)).toBe(false);
   });
 });

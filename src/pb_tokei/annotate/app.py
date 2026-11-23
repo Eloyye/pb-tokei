@@ -16,12 +16,16 @@ import duckdb
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from pb_tokei.cli import DEFAULT_DB_PATH
 from pb_tokei.convert import FootageConversionError, converted_path_for
-from pb_tokei.rally_log import MatchId, MatchSummary, RallyLog, SourceVideo
+from pb_tokei.rally_log import DEFAULT_DB_PATH, MatchId, MatchSummary, RallyLog, SourceVideo
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# The server binds 127.0.0.1 only. Checking the Host header as well stops DNS rebinding: a page
+# whose domain re-resolves to 127.0.0.1 would otherwise be same-origin with the app.
+ALLOWED_HOSTS = ("127.0.0.1", "localhost")
 
 
 class VideoStatus(StrEnum):
@@ -41,11 +45,27 @@ class MatchOut(BaseModel):
     franchise_b: str | None
     video_status: VideoStatus
 
+    @classmethod
+    def from_summary(cls, summary: MatchSummary, video_status: VideoStatus) -> MatchOut:
+        return MatchOut(
+            id=summary.id,
+            tournament=summary.tournament,
+            team_a=summary.team_a,
+            team_b=summary.team_b,
+            franchise_a=summary.franchise_a,
+            franchise_b=summary.franchise_b,
+            video_status=video_status,
+        )
+
 
 class MatchDetailOut(MatchOut):
     """A Match, plus the CLI command that makes its video playable when it isn't yet."""
 
     fix_command: str | None
+
+    @classmethod
+    def from_match(cls, match: MatchOut, fix_command: str | None) -> MatchDetailOut:
+        return MatchDetailOut(**match.model_dump(), fix_command=fix_command)
 
 
 class _VideoState:
@@ -89,6 +109,7 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
     """
     db_file = db_path if db_path.is_absolute() else base_dir / db_path
     app = FastAPI(title="pb-tokei annotate")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
 
     def lookup(match_id: UUID) -> tuple[MatchSummary, _VideoState]:
         with RallyLog.open(db_file) as log:
@@ -105,31 +126,20 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
         # Most often the CLI is writing to the file at that moment; a retry will succeed.
         return JSONResponse(status_code=503, content={"detail": f"Rally Log unavailable: {exc}"})
 
-    def match_out(summary: MatchSummary, video: _VideoState) -> dict[str, object]:
-        return {
-            "id": summary.id,
-            "tournament": summary.tournament,
-            "team_a": summary.team_a,
-            "team_b": summary.team_b,
-            "franchise_a": summary.franchise_a,
-            "franchise_b": summary.franchise_b,
-            "video_status": video.status,
-        }
-
     @app.get("/api/matches", operation_id="listMatches")
     def list_matches() -> list[MatchOut]:
         with RallyLog.open(db_file) as log:
             summaries = log.list_matches()
         return [
-            MatchOut.model_validate(match_out(s, _VideoState(s.source_video, base_dir)))
+            MatchOut.from_summary(s, _VideoState(s.source_video, base_dir).status)
             for s in summaries
         ]
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
     def get_match(match_id: UUID) -> MatchDetailOut:
         summary, video = lookup(match_id)
-        return MatchDetailOut.model_validate(
-            {**match_out(summary, video), "fix_command": video.fix_command(summary.id, db_path)}
+        return MatchDetailOut.from_match(
+            MatchOut.from_summary(summary, video.status), video.fix_command(summary.id, db_path)
         )
 
     @app.get(
