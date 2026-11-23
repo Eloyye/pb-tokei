@@ -47,17 +47,26 @@ def find_existing_footage(footage_dir: Path, video_id: str) -> Path | None:
     return _find_existing_footage(footage_dir, video_id)
 
 
-def probe_video_id(url: str, *, run: CommandRunner | None = None) -> str:
+def probe_video_id(
+    url: str,
+    *,
+    cookies: Path | None = None,
+    cookies_from_browser: str | None = None,
+    run: CommandRunner | None = None,
+) -> str:
     """Queries yt-dlp for the single video ID of `url` without downloading media."""
     _validate_url(url)
+    cookie_args = _cookie_args(cookies, cookies_from_browser)
     runner = _default_run if run is None else run
-    return _probe_video_id(url, runner)
+    return _probe_video_id(url, runner, cookie_args=cookie_args)
 
 
 def download_footage(
     url: str,
     footage_dir: Path = DEFAULT_FOOTAGE_DIR,
     *,
+    cookies: Path | None = None,
+    cookies_from_browser: str | None = None,
     run: CommandRunner | None = None,
 ) -> DownloadResult:
     """Downloads a broadcast at the highest frame rate available into `footage_dir`.
@@ -65,11 +74,12 @@ def download_footage(
     If the video is already present in `footage_dir`, returns its path without downloading again.
     """
     _validate_url(url)
+    cookie_args = _cookie_args(cookies, cookies_from_browser)
     if footage_dir.exists() and not footage_dir.is_dir():
         raise FootageDownloadError(f"Footage path is not a directory: {footage_dir}")
 
     runner = _default_run if run is None else run
-    video_id = _probe_video_id(url, runner)
+    video_id = _probe_video_id(url, runner, cookie_args=cookie_args)
 
     existing = _find_existing_footage(footage_dir, video_id)
     if existing is not None:
@@ -83,6 +93,7 @@ def download_footage(
     # interpreted as a yt-dlp output template.
     args = [
         "yt-dlp",
+        *cookie_args,
         "--no-playlist",
         "-f",
         FORMAT_SELECTOR,
@@ -136,10 +147,16 @@ def _find_existing_footage(footage_dir: Path, video_id: str) -> Path | None:
     return None
 
 
-def _probe_video_id(url: str, runner: CommandRunner) -> str:
+def _probe_video_id(
+    url: str,
+    runner: CommandRunner,
+    *,
+    cookie_args: Sequence[str] = (),
+) -> str:
     # --playlist-end 2 avoids fetching an entire playlist while still detecting multi-video URLs.
     args = [
         "yt-dlp",
+        *cookie_args,
         "--no-playlist",
         "--playlist-end",
         "2",
@@ -159,6 +176,34 @@ def _probe_video_id(url: str, runner: CommandRunner) -> str:
     video_id = lines[0]
     _validate_video_id(video_id)
     return video_id
+
+
+def _cookie_args(
+    cookies: Path | None,
+    cookies_from_browser: str | None,
+) -> list[str]:
+    if cookies is not None and cookies_from_browser is not None:
+        raise FootageDownloadError("Pass either cookies or cookies_from_browser, not both")
+    if cookies is not None:
+        raw_path = str(cookies)
+        if "\x00" in raw_path:
+            raise FootageDownloadError(f"Invalid cookies path (contains NUL byte): {cookies!r}")
+        if not cookies.exists():
+            raise FootageDownloadError(f"Cookies file not found: {cookies}")
+        if not cookies.is_file():
+            raise FootageDownloadError(f"Cookies path is not a file: {cookies}")
+        safe_path = f"./{raw_path}" if raw_path.startswith("-") else raw_path
+        # Clear any --cookies-from-browser set in yt-dlp's own config so the explicit file wins.
+        return ["--no-cookies-from-browser", "--cookies", safe_path]
+    if cookies_from_browser is not None:
+        spec = cookies_from_browser.strip(" ")
+        if not spec or spec.startswith("-") or any(ord(ch) < 32 or ord(ch) == 127 for ch in spec):
+            raise FootageDownloadError(
+                f"Invalid --cookies-from-browser value: {cookies_from_browser!r}"
+            )
+        # Clear any --cookies set in yt-dlp's own config so the explicit browser wins.
+        return ["--no-cookies", "--cookies-from-browser", spec]
+    return []
 
 
 def _default_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:

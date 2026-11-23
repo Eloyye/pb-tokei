@@ -53,6 +53,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Path to the Rally Log DuckDB file (default when --match is set: {DEFAULT_DB_PATH}).",
     )
+    cookies_group = download.add_mutually_exclusive_group()
+    cookies_group.add_argument(
+        "--cookies",
+        type=Path,
+        default=None,
+        help="Path to a Netscape-format cookies file to pass to yt-dlp.",
+    )
+    cookies_group.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER",
+        default=None,
+        help=(
+            "Browser to load cookies from via yt-dlp "
+            "(e.g. chrome, firefox, safari, or 'chrome:Profile 1')."
+        ),
+    )
 
     convert = subparsers.add_parser(
         "convert",
@@ -161,9 +177,26 @@ def _run_download(
                 return 1
 
     try:
-        result = download_footage(args.url, args.footage_dir, run=run)
+        result = download_footage(
+            args.url,
+            args.footage_dir,
+            cookies=args.cookies,
+            cookies_from_browser=args.cookies_from_browser,
+            run=run,
+        )
     except FootageDownloadError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if (
+            args.cookies is None
+            and args.cookies_from_browser is None
+            and _needs_cookies_hint(str(exc))
+        ):
+            print(
+                "Hint: retry with --cookies-from-browser <browser> "
+                "(e.g. chrome, firefox, safari) or --cookies <path>, "
+                "or set them in ~/.config/yt-dlp/config.",
+                file=sys.stderr,
+            )
         return 1
 
     if match_id is not None and db_path is not None:
@@ -188,6 +221,11 @@ def _run_download(
 
     print(converted.output_path)
     return 0
+
+
+def _needs_cookies_hint(message: str) -> bool:
+    lower = message.lower()
+    return "--cookies-from-browser" in lower or "sign in to confirm" in lower
 
 
 def _run_convert(
