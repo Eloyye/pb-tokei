@@ -249,6 +249,39 @@ def test_recording_source_video_for_missing_match_fails(log: RallyLog) -> None:
         log.set_match_source_video(MatchId(new_id()), video)
 
 
+def test_match_summary_is_one_match_of_the_listing(log: RallyLog) -> None:
+    video = SourceVideo(
+        url="https://www.youtube.com/watch?v=abc123XYZ00",
+        video_id="abc123XYZ00",
+        path=Path("footage/abc123XYZ00.mkv"),
+    )
+    with_video = replace(small_match(), id=MatchId(new_id()), source_video=video)
+    without_video = replace(small_match(), id=MatchId(new_id()))
+    log.save_match(with_video)
+    log.save_match(without_video)
+
+    summary = log.get_match_summary(with_video.id)
+    bare = log.get_match_summary(without_video.id)
+
+    assert summary.id == with_video.id
+    assert summary.tournament == TOURNAMENT.name
+    assert summary.team_a == ("Partner Two", "Server One")
+    assert summary.source_video == video
+    assert summary.has_video
+    assert bare.source_video is None
+    assert not bare.has_video
+    assert sorted(log.list_matches(), key=lambda s: str(s.id)) == sorted(
+        [summary, bare], key=lambda s: str(s.id)
+    )
+
+
+def test_match_summary_for_missing_match_fails(log: RallyLog) -> None:
+    log.save_match(small_match())
+
+    with pytest.raises(KeyError):
+        log.get_match_summary(MatchId(new_id()))
+
+
 def test_source_video_rejects_empty_fields() -> None:
     with pytest.raises(ValueError):
         SourceVideo("", "abc123", Path("footage/abc123.mp4"))

@@ -19,3 +19,30 @@ jobs:
       - run: uv run ruff check
       - run: uv run ty check
       - run: uv run pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+        working-directory: .
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/.bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run fmt:check
+      - run: bun run test
+      - run: bun run build
+      - name: API types match the FastAPI schema
+        run: |
+          bun run gen:api
+          git diff --exit-code -- src/api/schema.d.ts || {
+            echo "web/src/api/schema.d.ts is out of date: run 'bun run gen:api' in web/" >&2
+            exit 1
+          }

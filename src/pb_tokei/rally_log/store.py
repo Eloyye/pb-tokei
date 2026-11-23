@@ -55,6 +55,9 @@ from .schema import MATCH_CONTENT_TABLES, STATEMENTS
 
 Row = tuple[Any, ...]
 
+DEFAULT_DB_PATH = Path("rally_log.duckdb")
+"""Where the CLI and the annotation app look for the Rally Log when `--db` isn't given."""
+
 
 class RallyLog:
     """The Rally Log store. Open it with `RallyLog.open(path)`; the schema is created if missing."""
@@ -276,12 +279,22 @@ class RallyLog:
     def list_matches(self, tournament: str | None = None) -> list[MatchSummary]:
         """Every Match's roster by name, without loading its Games; optionally for one Tournament
         name. Each Team's Players are in name order."""
+        return self._match_summaries("? IS NULL OR t.name = ?", tournament, tournament)
+
+    def get_match_summary(self, match_id: MatchId) -> MatchSummary:
+        """One Match's roster by name, without loading its Games. Raises KeyError if missing."""
+        summaries = self._match_summaries("m.id = ?", match_id)
+        if not summaries:
+            raise KeyError(f"no Match for {match_id}")
+        return summaries[0]
+
+    def _match_summaries(self, where: str, *params: Any) -> list[MatchSummary]:
         rows = self._all(
-            """
+            f"""
             SELECT m.id, t.name,
                 pa1.name, pa2.name, pb1.name, pb2.name,
                 fa.name, fb.name,
-                m.source_video_url IS NOT NULL
+                m.source_video_url, m.source_video_id, m.source_video_path
             FROM matches m
             JOIN tournaments t ON t.id = m.tournament_id
             JOIN teams ta ON ta.id = m.team_a_id
@@ -293,11 +306,10 @@ class RallyLog:
             LEFT JOIN franchise_matches fm ON fm.id = m.franchise_match_id
             LEFT JOIN franchises fa ON fa.id = fm.franchise_a_id
             LEFT JOIN franchises fb ON fb.id = fm.franchise_b_id
-            WHERE ? IS NULL OR t.name = ?
+            WHERE {where}
             ORDER BY t.name, m.id
             """,
-            tournament,
-            tournament,
+            *params,
         )
         return [
             MatchSummary(
@@ -307,9 +319,21 @@ class RallyLog:
                 team_b=_pair(b1, b2),
                 franchise_a=fa,
                 franchise_b=fb,
-                has_video=bool(has_video),
+                source_video=_source_video(video_url, video_id, video_path),
             )
-            for id_, tournament_name, a1, a2, b1, b2, fa, fb, has_video in rows
+            for (
+                id_,
+                tournament_name,
+                a1,
+                a2,
+                b1,
+                b2,
+                fa,
+                fb,
+                video_url,
+                video_id,
+                video_path,
+            ) in rows
         ]
 
     def load_match(self, match_id: MatchId) -> Match:
@@ -327,9 +351,7 @@ class RallyLog:
             "FROM matches WHERE id = ?",
             match_id,
         )
-        source_video = (
-            None if video_url is None else SourceVideo(video_url, video_id, Path(video_path))
-        )
+        source_video = _source_video(video_url, video_id, video_path)
         segments = tuple(
             PlaySegment(start, end, CameraView(view))
             for _, start, end, view in self._all(
@@ -442,6 +464,12 @@ class RallyLog:
 def _pair(a: str, b: str) -> tuple[str, str]:
     first, second = sorted((a, b))
     return first, second
+
+
+def _source_video(url: str | None, video_id: str | None, path: str | None) -> SourceVideo | None:
+    if url is None or video_id is None or path is None:
+        return None
+    return SourceVideo(url, video_id, Path(path))
 
 
 def _team(row: Row) -> Team:

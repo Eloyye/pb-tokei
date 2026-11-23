@@ -1,0 +1,35 @@
+{
+  "name": "pb-tokei-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "test": "vitest run",
+    "gen:api": "cd .. && uv run python -m pb_tokei.annotate.openapi > web/openapi.json && cd web && openapi-typescript openapi.json -o src/api/schema.d.ts && oxfmt src/api/schema.d.ts && rm openapi.json"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.108.3",
+    "@tanstack/react-router": "^1.170.46",
+    "openapi-fetch": "^0.17.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "happy-dom": "^21.0.4",
+    "openapi-typescript": "^7.13.0",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}
