@@ -7,11 +7,12 @@ Statistics on professional side-out-scored doubles pickleball (PPA, APP, MLP), d
 
 ## Usage
 
-Download broadcast footage into `footage/` (requires `yt-dlp` and `ffmpeg` on `PATH`):
+Download broadcast footage into `footage/` and convert it to constant 60 fps MP4 (requires `yt-dlp` and `ffmpeg` on `PATH`):
 
 ```bash
 uv run pb-tokei download <url>
 uv run pb-tokei download <url> --match <match-id> [--db rally_log.duckdb]
+uv run pb-tokei convert <path-to-original> [--force]
 ```
 
 Set up a Match from a Roster File (by convention kept in `rosters/`), then list Matches:

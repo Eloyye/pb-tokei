@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pb-tokei — 60 fps Frame-Step Check</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111317;
+        --panel: #1a1e25;
+        --border: #2c3340;
+        --text: #e6ebf2;
+        --muted: #9aa5b5;
+        --accent: #4da3ff;
+        --ok: #38c976;
+        --fail: #ff5c6c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.45;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        display: grid;
+        gap: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+      p,
+      li {
+        color: var(--muted);
+        margin: 0;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--text);
+        background: #232933;
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        display: grid;
+        gap: 12px;
+      }
+      .dropzone {
+        border: 2px dashed var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .dropzone.dragover {
+        border-color: var(--accent);
+      }
+      video {
+        width: 100%;
+        max-height: 520px;
+        background: #000;
+        border-radius: 6px;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      button,
+      input[type="number"] {
+        background: #232933;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 7px 12px;
+        font-size: 0.9rem;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      input[type="number"] {
+        width: 100px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+      }
+      .stat {
+        background: #14181f;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px;
+      }
+      .stat .label {
+        font-size: 0.75rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .stat .value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.95rem;
+        margin-top: 4px;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 0.8rem;
+      }
+      .badge.ok {
+        background: rgba(56, 201, 118, 0.16);
+        color: var(--ok);
+      }
+      .badge.fail {
+        background: rgba(255, 92, 108, 0.16);
+        color: var(--fail);
+      }
+      .log {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.82rem;
+        color: var(--muted);
+        max-height: 160px;
+        overflow: auto;
+        white-space: pre-wrap;
+        background: #14181f;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div>
+        <h1>pb-tokei — Constant 60 fps Frame-Step Check</h1>
+        <p>
+          Verifies frame-exact browser seeking using the midpoint rule: frame <code>n</code> starts
+          at <code>n / 60</code> s and is sought at <code>(n + 0.5) / 60</code> s.
+        </p>
+      </div>
+
+      <section class="card">
+        <div id="dropzone" class="dropzone">
+          <div>
+            <strong>Load a converted <code>.60fps.mp4</code> file</strong>
+            <div style="font-size: 0.85rem; color: var(--muted)">
+              Drop a file here or choose one from disk.
+            </div>
+          </div>
+          <input id="fileInput" type="file" accept="video/mp4,video/*" />
+        </div>
+
+        <video id="video" playsinline preload="auto" controls></video>
+
+        <div class="controls">
+          <button id="stepBack30" disabled title="Shift + Left">-30</button>
+          <button id="stepBack1" disabled title="Left or ,">-1</button>
+          <button id="playPause" disabled title="Space">Play</button>
+          <button id="stepFwd1" disabled title="Right or .">+1</button>
+          <button id="stepFwd30" disabled title="Shift + Right">+30</button>
+          <label style="display: flex; align-items: center; gap: 6px; margin-left: auto">
+            <span style="color: var(--muted); font-size: 0.85rem">Frame</span>
+            <input id="frameInput" type="number" min="0" step="1" value="0" disabled />
+          </label>
+          <button id="goFrame" disabled>Go</button>
+          <button id="runSweep" disabled>Run Seek Sweep</button>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <div class="label">Target Frame</div>
+            <div class="value" id="targetFrame">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">Seek Midpoint (n + 0.5) / 60</div>
+            <div class="value" id="seekMidpoint">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">video.currentTime → Frame</div>
+            <div class="value" id="currentTimeInfo">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">Presented mediaTime → Frame</div>
+            <div class="value" id="mediaTimeInfo">—</div>
+          </div>
+          <div class="stat">
+            <div class="label">Round-Trip Check</div>
+            <div class="value" id="statusBadge">—</div>
+          </div>
+        </div>
+
+        <div id="log" class="log">Load a converted .60fps.mp4 video to begin.</div>
+      </section>
+
+      <section class="card" style="font-size: 0.88rem">
+        <strong>Quick synthetic test clip</strong>
+        <p>
+          Generate a 30 fps clip with frame numbers burned in, then convert it and load the
+          resulting <code>.60fps.mp4</code> above (each burned-in source frame number should appear
+          on two consecutive 60 fps frames):
+        </p>
+        <code style="display: block; padding: 8px; overflow-x: auto"
+          >ffmpeg -y -f lavfi -i testsrc2=size=640x360:rate=30:duration=4 -f lavfi -i
+          sine=frequency=440:duration=4 -c:v libx264 -pix_fmt yuv420p -c:a aac
+          /tmp/check30.mp4 &amp;&amp; uv run pb-tokei convert /tmp/check30.mp4</code
+        >
+      </section>
+    </main>
+
+    <script>
+      const FPS = 60;
+      const frameToStartTime = (n) => n / FPS;
+      const frameToSeekTime = (n) => (n + 0.5) / FPS;
+      const timeToFrame = (t) => Math.floor(t * FPS);
+
+      const video = document.getElementById("video");
+      const fileInput = document.getElementById("fileInput");
+      const dropzone = document.getElementById("dropzone");
+      const frameInput = document.getElementById("frameInput");
+      const logEl = document.getElementById("log");
+
+      const targetFrameEl = document.getElementById("targetFrame");
+      const seekMidpointEl = document.getElementById("seekMidpoint");
+      const currentTimeInfoEl = document.getElementById("currentTimeInfo");
+      const mediaTimeInfoEl = document.getElementById("mediaTimeInfo");
+      const statusBadgeEl = document.getElementById("statusBadge");
+
+      const buttons = [
+        "stepBack30",
+        "stepBack1",
+        "playPause",
+        "stepFwd1",
+        "stepFwd30",
+        "goFrame",
+        "runSweep",
+      ].map((id) => document.getElementById(id));
+
+      let currentObjectUrl = null;
+      let targetFrame = 0;
+      let totalFrames = 0;
+      let lastMediaTime = null;
+
+      function appendLog(line) {
+        logEl.textContent = `${line}\n${logEl.textContent}`.slice(0, 6000);
+      }
+
+      function clampFrame(n) {
+        if (totalFrames <= 0) return 0;
+        return Math.max(0, Math.min(totalFrames - 1, Math.trunc(n)));
+      }
+
+      function renderStats() {
+        const expectedStart = frameToStartTime(targetFrame);
+        const expectedMid = frameToSeekTime(targetFrame);
+        const actualTime = video.currentTime;
+        const reportedFrame = timeToFrame(actualTime);
+
+        targetFrameEl.textContent = `${targetFrame} / ${Math.max(0, totalFrames - 1)}`;
+        seekMidpointEl.textContent = `${expectedMid.toFixed(6)} s`;
+        currentTimeInfoEl.textContent = `${actualTime.toFixed(6)} s → ${reportedFrame}`;
+
+        let mediaOk = true;
+        if (lastMediaTime !== null) {
+          const mediaFrame = Math.round(lastMediaTime * FPS);
+          const errMs = (lastMediaTime - expectedStart) * 1000;
+          mediaTimeInfoEl.textContent = `${lastMediaTime.toFixed(6)} s → ${mediaFrame} (${errMs >= 0 ? "+" : ""}${errMs.toFixed(2)} ms)`;
+          mediaOk = mediaFrame === targetFrame && Math.abs(errMs) < 1.0;
+        } else if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+          mediaTimeInfoEl.textContent = "waiting for frame…";
+        } else {
+          mediaTimeInfoEl.textContent = "unsupported in this browser";
+        }
+
+        const timeOk = reportedFrame === targetFrame;
+        const ok = timeOk && mediaOk;
+        statusBadgeEl.innerHTML = ok
+          ? '<span class="badge ok">MATCH</span>'
+          : '<span class="badge fail">MISMATCH</span>';
+      }
+
+      function registerFrameCallback() {
+        if (!("requestVideoFrameCallback" in HTMLVideoElement.prototype)) return;
+        video.requestVideoFrameCallback((_now, metadata) => {
+          lastMediaTime = metadata.mediaTime;
+          renderStats();
+          registerFrameCallback();
+        });
+      }
+
+      function seekToFrame(n) {
+        video.pause();
+        document.getElementById("playPause").textContent = "Play";
+        targetFrame = clampFrame(n);
+        frameInput.value = String(targetFrame);
+        const desired = frameToSeekTime(targetFrame);
+        if (Math.abs(video.currentTime - desired) < 1e-9) {
+          renderStats();
+          return Promise.resolve();
+        }
+        lastMediaTime = null;
+
+        return new Promise((resolve) => {
+          const onSeeked = () => {
+            video.removeEventListener("seeked", onSeeked);
+            renderStats();
+            resolve();
+          };
+          video.addEventListener("seeked", onSeeked, { once: true });
+          video.currentTime = desired;
+        });
+      }
+
+      function loadFile(file) {
+        if (!file) return;
+        if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+        currentObjectUrl = URL.createObjectURL(file);
+        video.src = currentObjectUrl;
+        video.load();
+        logEl.textContent = `Loading ${file.name}…`;
+      }
+
+      video.addEventListener("loadedmetadata", () => {
+        totalFrames = Math.max(1, Math.floor(video.duration * FPS));
+        frameInput.max = String(totalFrames - 1);
+        frameInput.disabled = false;
+        buttons.forEach((b) => (b.disabled = false));
+        appendLog(
+          `Loaded ${video.videoWidth}x${video.videoHeight}, duration=${video.duration.toFixed(6)} s (~${totalFrames} frames at ${FPS} fps).`,
+        );
+        registerFrameCallback();
+        seekToFrame(0);
+      });
+
+      video.addEventListener("timeupdate", () => {
+        if (!video.paused) {
+          targetFrame = clampFrame(timeToFrame(video.currentTime));
+          frameInput.value = String(targetFrame);
+          renderStats();
+        }
+      });
+
+      document.getElementById("stepBack30").addEventListener("click", () => seekToFrame(targetFrame - 30));
+      document.getElementById("stepBack1").addEventListener("click", () => seekToFrame(targetFrame - 1));
+      document.getElementById("stepFwd1").addEventListener("click", () => seekToFrame(targetFrame + 1));
+      document.getElementById("stepFwd30").addEventListener("click", () => seekToFrame(targetFrame + 30));
+      document.getElementById("goFrame").addEventListener("click", () => seekToFrame(Number(frameInput.value)));
+
+      document.getElementById("playPause").addEventListener("click", () => {
+        if (video.paused) {
+          video.play();
+          document.getElementById("playPause").textContent = "Pause";
+        } else {
+          video.pause();
+          document.getElementById("playPause").textContent = "Play";
+          seekToFrame(timeToFrame(video.currentTime));
+        }
+      });
+
+      document.getElementById("runSweep").addEventListener("click", async () => {
+        const limit = Math.min(totalFrames, 120);
+        const randomTargets = [
+          limit - 1,
+          0,
+          Math.floor(limit / 2),
+          Math.min(limit - 1, 29),
+          Math.min(limit - 1, 30),
+          Math.min(limit - 1, 31),
+        ];
+        const targets = [...Array.from({ length: limit }, (_, i) => i), ...randomTargets];
+        let failures = 0;
+
+        appendLog(`Starting seek sweep across ${targets.length} seeks (0..${limit - 1} + jumps)…`);
+        for (const n of targets) {
+          await seekToFrame(n);
+          const reported = timeToFrame(video.currentTime);
+          if (reported !== n) {
+            failures += 1;
+            appendLog(`MISMATCH: requested=${n}, currentTime=${video.currentTime.toFixed(6)} → ${reported}`);
+          }
+        }
+        appendLog(
+          failures === 0
+            ? `PASS: all ${targets.length} frame seeks landed on the exact expected frame.`
+            : `FAIL: ${failures} / ${targets.length} seeks mismatched.`,
+        );
+      });
+
+      window.addEventListener("keydown", (event) => {
+        if (document.activeElement === frameInput) {
+          if (event.key === "Enter") seekToFrame(Number(frameInput.value));
+          return;
+        }
+        if (totalFrames <= 0) return;
+        if (event.key === "ArrowLeft" || event.key === ",") {
+          event.preventDefault();
+          seekToFrame(targetFrame - (event.shiftKey ? 30 : 1));
+        } else if (event.key === "ArrowRight" || event.key === ".") {
+          event.preventDefault();
+          seekToFrame(targetFrame + (event.shiftKey ? 30 : 1));
+        } else if (event.key === " ") {
+          event.preventDefault();
+          document.getElementById("playPause").click();
+        }
+      });
+
+      fileInput.addEventListener("change", (event) => loadFile(event.target.files[0]));
+      dropzone.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        dropzone.classList.add("dragover");
+      });
+      dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+      dropzone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        dropzone.classList.remove("dragover");
+        loadFile(event.dataTransfer.files[0]);
+      });
+    </script>
+  </body>
+</html>
