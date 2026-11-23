@@ -7,7 +7,9 @@ Court coordinates are in feet, with the origin at the centre of the net. `x` run
 court (sideline to sideline, -10 to 10) and `y` along it, negative at the Main View camera's end.
 Distance from the net is `abs(y)`.
 
-Frame numbers count frames of the converted constant 60 fps video.
+Frame numbers count frames of the converted constant 60 fps video starting at 0, where frame `n`
+starts at `n / 60` s. Players seek to the frame midpoint `(n + 0.5) / 60` s so floating-point
+rounding never lands on the previous frame.
 """
 
 from __future__ import annotations

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
 
+from pb_tokei.convert import FootageConversionError, convert_footage
 from pb_tokei.footage import (
     DEFAULT_FOOTAGE_DIR,
     CommandRunner,
@@ -28,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     download = subparsers.add_parser(
         "download",
-        help="Download a broadcast video into footage/ (preferring 60 fps).",
+        help="Download a broadcast video into footage/ and convert it to constant 60 fps.",
     )
     download.add_argument("url", help="Broadcast URL to download via yt-dlp.")
     download.add_argument(
@@ -48,6 +50,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Path to the Rally Log DuckDB file (default when --match is set: {DEFAULT_DB_PATH}).",
     )
+
+    convert = subparsers.add_parser(
+        "convert",
+        help="Convert a downloaded video on disk to constant 60 fps MP4.",
+    )
+    convert.add_argument(
+        "path",
+        type=Path,
+        help="Path to the original footage file to convert.",
+    )
+    convert.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-convert even if the 60 fps file already exists.",
+    )
     return parser
 
 
@@ -61,6 +78,8 @@ def main(
 
     if args.command == "download":
         return _run_download(args, parser=parser, run=run)
+    if args.command == "convert":
+        return _run_convert(args, run=run)
 
     parser.error(f"Unknown command: {args.command}")
 
@@ -104,5 +123,32 @@ def _run_download(
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-    print(result.source_video.path)
+    try:
+        converted = convert_footage(result.source_video.path, run=run)
+    except FootageConversionError as exc:
+        retry_path = shlex.quote(str(result.source_video.path))
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            f"Original footage kept at {result.source_video.path}. "
+            f"Run: pb-tokei convert {retry_path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(converted.output_path)
+    return 0
+
+
+def _run_convert(
+    args: argparse.Namespace,
+    *,
+    run: CommandRunner | None,
+) -> int:
+    try:
+        converted = convert_footage(args.path, force=args.force, run=run)
+    except FootageConversionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(converted.output_path)
     return 0

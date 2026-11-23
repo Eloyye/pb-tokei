@@ -34,7 +34,7 @@ SAMPLE_ID = "dQw4w9WgXcQ"
 
 
 class FakeYtDlp:
-    """Test double for yt-dlp CLI invocations."""
+    """Test double for yt-dlp (and optional ffprobe/ffmpeg) CLI invocations."""
 
     def __init__(
         self,
@@ -43,20 +43,39 @@ class FakeYtDlp:
         ext: str = "mkv",
         content: bytes = b"fake-60fps-video-bytes",
         print_absolute_path: bool = False,
+        audio_codec: str = "opus",
+        converted_content: bytes = b"fake-converted-60fps-mp4",
+        convert_error: str | None = None,
     ) -> None:
         self.video_id = video_id
         self.ext = ext
         self.content = content
         self.print_absolute_path = print_absolute_path
+        self.audio_codec = audio_codec
+        self.converted_content = converted_content
+        self.convert_error = convert_error
         self.calls: list[list[str]] = []
 
     @property
     def download_calls(self) -> list[list[str]]:
-        return [call for call in self.calls if "--skip-download" not in call]
+        return [
+            call for call in self.calls if call[0] == "yt-dlp" and "--skip-download" not in call
+        ]
+
+    @property
+    def convert_calls(self) -> list[list[str]]:
+        return [call for call in self.calls if call[0] == "ffmpeg"]
 
     def __call__(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         cmd = list(args)
         self.calls.append(cmd)
+        if cmd[0] == "ffprobe":
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{self.audio_codec}\n", stderr="")
+        if cmd[0] == "ffmpeg":
+            if self.convert_error is not None:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=self.convert_error)
+            Path(cmd[-1]).write_bytes(self.converted_content)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if "--skip-download" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{self.video_id}\n", stderr="")
 
@@ -291,7 +310,7 @@ def test_rejects_footage_dir_that_is_a_file(tmp_path: Path) -> None:
 # --- CLI ----------------------------------------------------------------------------------
 
 
-def test_cli_download_prints_path_and_skips_second_download(
+def test_cli_download_prints_converted_path_and_skips_second_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     footage_dir = tmp_path / "footage"
@@ -302,17 +321,41 @@ def test_cli_download_prints_path_and_skips_second_download(
     code2 = main(["download", SAMPLE_URL, "--footage-dir", str(footage_dir)], run=fake)
     out2 = capsys.readouterr()
 
-    expected = f"{footage_dir / f'{SAMPLE_ID}.mkv'}\n"
+    expected = f"{footage_dir / f'{SAMPLE_ID}.60fps.mp4'}\n"
     assert code1 == 0
     assert code2 == 0
     assert out1.out == expected
     assert out1.err == ""
     assert out2.out == expected
     assert out2.err == ""
+    assert (footage_dir / f"{SAMPLE_ID}.mkv").is_file()
+    assert (footage_dir / f"{SAMPLE_ID}.60fps.mp4").is_file()
     assert len(fake.download_calls) == 1
+    assert len(fake.convert_calls) == 1
 
 
-def test_cli_download_records_source_video_against_match(
+def test_cli_download_converts_when_original_already_exists_without_converted_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    footage_dir = tmp_path / "footage"
+    footage_dir.mkdir()
+    original = footage_dir / f"{SAMPLE_ID}.mkv"
+    original.write_bytes(b"previously-downloaded")
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    code = main(["download", SAMPLE_URL, "--footage-dir", str(footage_dir)], run=fake)
+    captured = capsys.readouterr()
+
+    expected_converted = footage_dir / f"{SAMPLE_ID}.60fps.mp4"
+    assert code == 0
+    assert captured.out == f"{expected_converted}\n"
+    assert captured.err == ""
+    assert expected_converted.is_file()
+    assert len(fake.download_calls) == 0
+    assert len(fake.convert_calls) == 1
+
+
+def test_cli_download_records_original_source_video_and_prints_converted_path(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     db_path = tmp_path / "rally_log.duckdb"
@@ -335,13 +378,51 @@ def test_cli_download_records_source_video_against_match(
     )
     captured = capsys.readouterr()
 
-    expected_path = footage_dir / f"{SAMPLE_ID}.mp4"
+    original_path = footage_dir / f"{SAMPLE_ID}.mp4"
+    converted_path = footage_dir / f"{SAMPLE_ID}.60fps.mp4"
     assert code == 0
-    assert captured.out == f"{expected_path}\n"
+    assert captured.out == f"{converted_path}\n"
     with RallyLog.open(db_path) as log:
         loaded = log.load_match(match.id)
     assert loaded.source_video == SourceVideo(
-        url=SAMPLE_URL, video_id=SAMPLE_ID, path=expected_path
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=original_path
+    )
+
+
+def test_cli_download_keeps_original_and_records_match_when_conversion_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db_path = tmp_path / "rally_log.duckdb"
+    footage_dir = tmp_path / "footage"
+    match = _create_match_in_db(db_path)
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv", convert_error="encoder crashed")
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(footage_dir),
+            "--match",
+            str(match.id),
+            "--db",
+            str(db_path),
+        ],
+        run=fake,
+    )
+    captured = capsys.readouterr()
+
+    original_path = footage_dir / f"{SAMPLE_ID}.mkv"
+    assert code == 1
+    assert captured.out == ""
+    assert "encoder crashed" in captured.err
+    assert f"pb-tokei convert {original_path}" in captured.err
+    assert original_path.is_file()
+    assert not (footage_dir / f"{SAMPLE_ID}.60fps.mp4").exists()
+    with RallyLog.open(db_path) as log:
+        loaded = log.load_match(match.id)
+    assert loaded.source_video == SourceVideo(
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=original_path
     )
 
 
