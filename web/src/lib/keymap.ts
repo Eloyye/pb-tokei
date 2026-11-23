@@ -70,3 +70,11 @@ export function isTextEntry(target: EventTarget | null): boolean {
   const nonText = ["button", "checkbox", "radio", "range", "color", "file", "submit", "reset"];
   return !nonText.includes(target.type);
 }
+
+/** `-` zooms the Timeline out and `=` zooms it in (no modifiers); `null` for anything else. */
+export function zoomKeyAction(event: KeyInput): "in" | "out" | null {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return null;
+  if (event.key === "-") return "out";
+  if (event.key === "=") return "in";
+  return null;
+}

@@ -25,7 +25,7 @@ uv run pb-tokei match list [--tournament <name>] [--db rally_log.duckdb]
 
 ### Annotation app
 
-A local web app (Chrome) that lists Matches and plays a Match's 60 fps video from the keyboard. Build the front end once (needs [Bun](https://bun.sh)), then start it:
+A local web app (Chrome) that lists Matches and opens each in a Premiere-style workspace (Calibrate, Annotate, Review) with the Match's 60 fps video, a Timeline and keyboard playback. Layout and keys: [docs/annotation-ui.md](docs/annotation-ui.md). Build the front end once (needs [Bun](https://bun.sh)), then start it:
 
 ```bash
 cd web && bun install && bun run build && cd ..
@@ -43,6 +43,8 @@ It serves on `127.0.0.1` only and opens the browser. Relative video paths are re
 | `[` / `]` | slower / faster (0.25×, 0.5×, 1×, 2×, 4×) |
 | `\` | back to 1× |
 | `/` | go to a frame number, `m:ss` or `h:mm:ss.sss` (`Esc` closes) |
+| `-` / `=` | zoom the Timeline out / in |
+| `?` | keyboard shortcuts |
 
 ## Development
 

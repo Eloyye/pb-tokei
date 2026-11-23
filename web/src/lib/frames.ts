@@ -51,3 +51,26 @@ export function formatFrameTime(n: number): string {
 function pad(value: number, width: number): string {
   return String(value).padStart(width, "0");
 }
+
+/**
+ * Frame `n` as an `HH:MM:SS:FF` timecode, Premiere style: `FF` counts frames within the second
+ * (00 to 59 at 60 fps). Used on the Timeline ruler and under the Monitor's frame number.
+ */
+export function formatTimecode(n: number): string {
+  const frame = Math.max(0, Math.trunc(n));
+  const ff = frame % FPS;
+  const totalSeconds = Math.floor(frame / FPS);
+  const s = totalSeconds % 60;
+  const m = Math.floor(totalSeconds / 60) % 60;
+  const h = Math.floor(totalSeconds / 3600);
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)}:${pad(ff, 2)}`;
+}
+
+/** The length of a video of `totalFrames` frames, to the nearest second: `m:ss`, or `h:mm:ss`. */
+export function formatLength(totalFrames: number): string {
+  const totalSeconds = Math.round(Math.max(0, totalFrames) / FPS);
+  const s = totalSeconds % 60;
+  const m = Math.floor(totalSeconds / 60) % 60;
+  const h = Math.floor(totalSeconds / 3600);
+  return h > 0 ? `${h}:${pad(m, 2)}:${pad(s, 2)}` : `${m}:${pad(s, 2)}`;
+}
