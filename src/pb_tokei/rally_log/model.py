@@ -271,7 +271,12 @@ class PlaySegment:
 
 @dataclass(frozen=True)
 class SourceVideo:
-    """Broadcast footage downloaded on disk for a Match."""
+    """Broadcast footage downloaded on disk for a Match.
+
+    `path` points to the original downloaded file. Callers that play or index frames
+    derive the constant 60 fps copy (`<stem>.60fps.mp4`) via
+    `pb_tokei.convert.converted_path_for`.
+    """
 
     url: str
     video_id: str

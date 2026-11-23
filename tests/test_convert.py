@@ -1,6 +1,8 @@
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from fractions import Fraction
 from pathlib import Path
@@ -138,7 +140,7 @@ def test_convert_footage_builds_expected_ffmpeg_command_for_non_aac_audio(tmp_pa
     assert cmd[cmd.index("-sc_threshold") + 1] == "0"
     assert cmd[cmd.index("-c:a") + 1] == "aac"
     assert cmd[cmd.index("-b:a") + 1] == AUDIO_BITRATE
-    assert cmd[cmd.index("-movflags") + 1] == "+faststart"
+    assert cmd[cmd.index("-movflags") + 1] == "+faststart+negative_cts_offsets"
     assert cmd[cmd.index("-f") + 1] == "mp4"
     assert "-s" not in cmd
 
@@ -207,6 +209,83 @@ def test_convert_footage_does_not_skip_empty_converted_file(tmp_path: Path) -> N
     assert len(fake.encode_calls) == 1
 
 
+def test_convert_footage_rebuilds_when_source_is_newer_than_converted_output(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "match1.mkv"
+    source.write_bytes(b"newer-original")
+    output = tmp_path / "match1.60fps.mp4"
+    output.write_bytes(b"stale-converted")
+    os.utime(output, (1_000_000, 1_000_000))
+    os.utime(source, (1_000_010, 1_000_010))
+    fake = FakeFfmpeg(audio_codec="aac", output_bytes=b"fresh-converted")
+
+    result = convert_footage(source, run=fake)
+
+    assert result.already_converted is False
+    assert output.read_bytes() == b"fresh-converted"
+    assert len(fake.encode_calls) == 1
+
+
+def test_convert_footage_rejects_ambiguous_sibling_sources_sharing_stem(tmp_path: Path) -> None:
+    mkv = tmp_path / "clip.mkv"
+    mp4 = tmp_path / "clip.mp4"
+    mkv.write_bytes(b"video-one")
+    mp4.write_bytes(b"video-two")
+    fake = FakeFfmpeg()
+
+    with pytest.raises(FootageConversionError, match="Multiple source videos share output name"):
+        convert_footage(mkv, run=fake)
+
+    with pytest.raises(FootageConversionError, match="Multiple source videos share output name"):
+        convert_footage(mp4, run=fake)
+
+    assert fake.calls == []
+
+
+def test_convert_footage_ignores_non_video_and_empty_siblings_with_same_stem(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "clip.mkv"
+    source.write_bytes(b"video-one")
+    (tmp_path / "clip.mp4").write_bytes(b"")  # empty file ignored
+    (tmp_path / "clip.mp4.part").write_bytes(b"partial")
+    (tmp_path / "clip.json").write_text("{}")
+    fake = FakeFfmpeg(audio_codec="aac", output_bytes=b"converted")
+
+    result = convert_footage(source, run=fake)
+
+    assert result.already_converted is False
+    assert result.output_path == tmp_path / "clip.60fps.mp4"
+
+
+def test_convert_footage_wraps_filesystem_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "match1.mkv"
+    source.write_bytes(b"original")
+    fake = FakeFfmpeg(audio_codec="aac", output_bytes=b"converted")
+
+    def fail_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise PermissionError("read-only directory")
+
+    monkeypatch.setattr(tempfile, "mkstemp", fail_mkstemp)
+    with pytest.raises(FootageConversionError, match="Cannot create temporary file"):
+        convert_footage(source, run=fake)
+
+    monkeypatch.undo()
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise PermissionError("cannot rename")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(FootageConversionError, match="Cannot write converted output"):
+        convert_footage(source, run=fake)
+
+    # Temporary file was cleaned up even when rename failed.
+    assert [p.name for p in tmp_path.iterdir()] == ["match1.mkv"]
+
+
 def test_convert_footage_cleans_up_temp_file_and_preserves_target_on_failure(
     tmp_path: Path,
 ) -> None:
@@ -239,6 +318,23 @@ def test_convert_footage_falls_back_to_exit_status_when_ffmpeg_stderr_is_none(
 
     with pytest.raises(FootageConversionError, match="exit status 2"):
         convert_footage(source, run=fake)
+
+
+def test_convert_footage_strips_progress_lines_when_reporting_ffmpeg_error(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "match1.mkv"
+    source.write_bytes(b"original")
+    fake = FakeFfmpeg(
+        encode_returncode=1,
+        encode_stderr=(
+            "frame=   10 fps=0.0 time=00:00:00.16\rInvalid data found when processing input\n"
+        ),
+    )
+
+    with pytest.raises(FootageConversionError, match="Invalid data found") as exc_info:
+        convert_footage(source, run=fake)
+    assert "frame=" not in str(exc_info.value)
 
 
 def test_convert_footage_rejects_empty_ffmpeg_output_and_cleans_up_temp_file(
@@ -298,12 +394,14 @@ def test_convert_footage_raises_clear_error_when_ffmpeg_or_ffprobe_missing(
     with pytest.raises(FootageConversionError, match="install ffmpeg"):
         convert_footage(source)
 
-    def missing_ffmpeg(args: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if args[0] == "ffprobe":
-            return subprocess.CompletedProcess(list(args), 0, stdout="aac\n", stderr="")
+    def missing_ffmpeg(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
         raise FileNotFoundError("No such file or directory: 'ffmpeg'")
 
-    monkeypatch.setattr(subprocess, "run", missing_ffmpeg)
+    def ok_ffprobe(args: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 0, stdout="aac\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", ok_ffprobe)
+    monkeypatch.setattr(subprocess, "Popen", missing_ffmpeg)
     with pytest.raises(FootageConversionError, match="ffmpeg is not installed"):
         convert_footage(source)
 
@@ -474,3 +572,122 @@ def test_real_ffmpeg_conversion_produces_exact_60fps_cfr_with_audio(
     skipped = convert_footage(source)
     assert skipped.already_converted is True
     assert skipped.output_path == result.output_path
+
+    forced = convert_footage(source, force=True)
+    assert forced.already_converted is False
+    assert forced.output_path == result.output_path
+    assert forced.output_path.is_file()
+    assert forced.output_path.stat().st_size > 0
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg and ffprobe are required")
+@pytest.mark.parametrize(
+    ("name", "ext", "ffmpeg_source_args"),
+    [
+        (
+            "video_after_audio_offset",
+            "mp4",
+            [
+                "-itsoffset",
+                "0.067",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=30:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ],
+        ),
+        (
+            "mpegts_nonzero_start",
+            "ts",
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x90:rate=30:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=2",
+                "-output_ts_offset",
+                "5.0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ],
+        ),
+    ],
+)
+def test_real_ffmpeg_conversion_resets_nonzero_start_times_to_zero(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    ext: str,
+    ffmpeg_source_args: list[str],
+) -> None:
+    source = tmp_path / f"{name}.{ext}"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *ffmpeg_source_args,
+            str(source),
+        ],
+        check=True,
+    )
+
+    result = convert_footage(source)
+    captured = capsys.readouterr()
+    assert "frame=" in captured.err
+
+    # Check both default ffprobe (honoring edit lists) and -ignore_editlist 1 so frame 0 is
+    # guaranteed to have literal pts=0 in the MP4 without depending on an edit list.
+    for ignore_editlist in ("0", "1"):
+        video_probe = json.loads(
+            subprocess.check_output(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-ignore_editlist",
+                    ignore_editlist,
+                    "-select_streams",
+                    "v:0",
+                    "-show_streams",
+                    "-show_frames",
+                    "-of",
+                    "json",
+                    str(result.output_path),
+                ],
+                text=True,
+            )
+        )
+        video_stream = video_probe["streams"][0]
+        frames = video_probe["frames"]
+        time_base = Fraction(video_stream["time_base"])
+
+        assert float(video_stream["start_time"]) == 0.0
+        assert video_stream["r_frame_rate"] == "60/1"
+        assert video_stream["avg_frame_rate"] == "60/1"
+        assert len(frames) >= 120
+        for n, frame in enumerate(frames):
+            pts_seconds = Fraction(int(frame["pts"])) * time_base
+            assert pts_seconds == Fraction(n, 60), (
+                f"{name} (ignore_editlist={ignore_editlist}) frame {n} had pts {pts_seconds}"
+            )
