@@ -65,3 +65,12 @@ export function formatTimecode(n: number): string {
   const h = Math.floor(totalSeconds / 3600);
   return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)}:${pad(ff, 2)}`;
 }
+
+/** The length of a video of `totalFrames` frames, to the nearest second: `m:ss`, or `h:mm:ss`. */
+export function formatLength(totalFrames: number): string {
+  const totalSeconds = Math.round(Math.max(0, totalFrames) / FPS);
+  const s = totalSeconds % 60;
+  const m = Math.floor(totalSeconds / 60) % 60;
+  const h = Math.floor(totalSeconds / 3600);
+  return h > 0 ? `${h}:${pad(m, 2)}:${pad(s, 2)}` : `${m}:${pad(s, 2)}`;
+}

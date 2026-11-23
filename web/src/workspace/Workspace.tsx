@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { type MatchDetail, matchVideoUrl } from "../api/client";
 import { isTextEntry, keyAction, type PlayerAction, zoomKeyAction } from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
@@ -32,18 +32,26 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [gotoOpen, setGotoOpen] = useState(false);
   const [view, setView] = useState<FrameRange>(() => fullView(totalFrames));
   const [viewFor, setViewFor] = useState(totalFrames);
+  const [followedFrame, setFollowedFrame] = useState(frame);
   const [sizes, setSizes] = useState<PanelSizes>(loadSizes);
   const [focused, setFocused] = useState<PanelId>("monitor");
   const gridRef = useRef<HTMLDivElement>(null);
 
-  // Show the whole video once its length is known, then page the view to keep the playhead on
-  // screen. Both adjust state while rendering, React's pattern for state that follows props.
+  // Show the whole video once its length is first known, then page the view whenever the
+  // playhead moves off screen. Paging only when the frame changes leaves the view where the
+  // overview put it while paused. Both adjust state while rendering, React's pattern for state
+  // that follows props, and settle on one view so neither update overrides the other.
+  let nextView = view;
   if (viewFor !== totalFrames) {
     setViewFor(totalFrames);
-    setView(fullView(totalFrames));
+    // A later correction of the length (at the last frame) keeps the zoom.
+    if (viewFor === 0) nextView = fullView(totalFrames);
   }
-  const followed = followFrame(view, frame);
-  if (followed !== view) setView(followed);
+  if (followedFrame !== frame) {
+    setFollowedFrame(frame);
+    nextView = followFrame(nextView, frame);
+  }
+  if (nextView !== view) setView(nextView);
   useEffect(() => saveSizes(sizes), [sizes]);
 
   const zoom = useCallback(
@@ -54,7 +62,9 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     [frame, totalFrames],
   );
 
-  useEffect(() => {
+  // An Effect Event reads the latest frame, speed and controls, so the window listener is added
+  // once instead of again on every frame during playback.
+  const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
     const run = (action: PlayerAction) => {
       switch (action.type) {
         case "togglePlay":
@@ -67,24 +77,26 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           return setGotoOpen(true);
       }
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isTextEntry(event.target)) return;
-      const zoomDirection = zoomKeyAction(event);
-      if (zoomDirection) {
-        event.preventDefault();
-        zoom(zoomDirection);
-        return;
-      }
-      const action = keyAction(event, speed);
-      if (!action) return;
+    if (isTextEntry(event.target)) return;
+    const zoomDirection = zoomKeyAction(event);
+    if (zoomDirection) {
       event.preventDefault();
-      // Only frame stepping repeats while a key is held.
-      if (event.repeat && action.type !== "step") return;
-      run(action);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [speed, step, togglePlay, setSpeed, zoom]);
+      zoom(zoomDirection);
+      return;
+    }
+    const action = keyAction(event, speed);
+    if (!action) return;
+    event.preventDefault();
+    // Only frame stepping repeats while a key is held.
+    if (event.repeat && action.type !== "step") return;
+    run(action);
+  });
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => onKeyDown(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
 
   // The panel last pressed gets the focus outline.
   useEffect(() => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   clampFrame,
   formatFrameTime,
+  formatLength,
   formatTimecode,
   frameCount,
   frameToSeekTime,
@@ -81,5 +82,23 @@ describe("formatTimecode", () => {
   it("shows negative or fractional frames as the whole frame they start", () => {
     expect(formatTimecode(-5)).toBe("00:00:00:00");
     expect(formatTimecode(61.9)).toBe("00:00:01:01");
+  });
+});
+
+describe("formatLength", () => {
+  it("shows minutes and seconds under an hour", () => {
+    expect(formatLength(0)).toBe("0:00");
+    expect(formatLength(61 * 60)).toBe("1:01");
+    expect(formatLength(59 * 60 * 60 + 59 * 60)).toBe("59:59");
+  });
+
+  it("adds hours from an hour", () => {
+    expect(formatLength(60 * 60 * 60)).toBe("1:00:00");
+    expect(formatLength((85 * 60 + 7) * 60)).toBe("1:25:07");
+  });
+
+  it("rounds to the nearest second", () => {
+    expect(formatLength(29)).toBe("0:00");
+    expect(formatLength(30)).toBe("0:01");
   });
 });
