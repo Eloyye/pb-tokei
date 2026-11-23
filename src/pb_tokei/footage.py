@@ -186,7 +186,9 @@ def _cookie_args(
         raise FootageDownloadError("Pass either cookies or cookies_from_browser, not both")
     if cookies is not None:
         raw_path = str(cookies)
-        if "\x00" in raw_path or not cookies.exists():
+        if "\x00" in raw_path:
+            raise FootageDownloadError(f"Invalid cookies path (contains NUL byte): {cookies!r}")
+        if not cookies.exists():
             raise FootageDownloadError(f"Cookies file not found: {cookies}")
         if not cookies.is_file():
             raise FootageDownloadError(f"Cookies path is not a file: {cookies}")

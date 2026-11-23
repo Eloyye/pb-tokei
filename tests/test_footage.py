@@ -139,6 +139,8 @@ def test_download_footage_prefers_highest_fps_and_returns_path(tmp_path: Path) -
     assert dl_cmd[dl_cmd.index("-P") + 1] == str(footage_dir)
     assert dl_cmd[dl_cmd.index("-o") + 1] == "%(id)s.%(ext)s"
     assert dl_cmd[-2:] == ["--", SAMPLE_URL]
+    for cmd in (fake.probe_calls[0], dl_cmd):
+        assert not any(arg.startswith(("--cookies", "--no-cookies")) for arg in cmd)
 
 
 def test_running_download_again_for_same_video_does_not_download_twice(tmp_path: Path) -> None:
@@ -424,10 +426,27 @@ def test_rejects_cookies_path_that_is_a_directory(tmp_path: Path) -> None:
     assert fake.calls == []
 
 
+def test_probe_video_id_rejects_invalid_cookie_options(tmp_path: Path) -> None:
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp(video_id=SAMPLE_ID)
+
+    with pytest.raises(FootageDownloadError, match="not both"):
+        probe_video_id(SAMPLE_URL, cookies=cookies_file, cookies_from_browser="chrome", run=fake)
+
+    with pytest.raises(FootageDownloadError, match="Cookies file not found"):
+        probe_video_id(SAMPLE_URL, cookies=tmp_path / "missing.txt", run=fake)
+
+    with pytest.raises(FootageDownloadError, match="Invalid --cookies-from-browser"):
+        probe_video_id(SAMPLE_URL, cookies_from_browser="--exec=bad", run=fake)
+
+    assert fake.calls == []
+
+
 def test_rejects_cookies_path_with_nul_byte(tmp_path: Path) -> None:
     fake = FakeYtDlp()
 
-    with pytest.raises(FootageDownloadError, match="Cookies file not found"):
+    with pytest.raises(FootageDownloadError, match="contains NUL byte"):
         download_footage(
             SAMPLE_URL,
             tmp_path / "footage",
@@ -764,14 +783,17 @@ def test_cli_download_rejects_both_cookie_flags(
     assert fake.calls == []
 
 
+@pytest.mark.parametrize(
+    "bot_error",
+    [
+        "ERROR: [youtube] 15GFTWAYeNE: Sign in to confirm you\u2019re not a bot.",
+        "ERROR: Authentication required. Use --cookies-from-browser to authenticate.",
+        "ERROR: SIGN IN TO CONFIRM YOU'RE NOT A BOT.",
+    ],
+)
 def test_cli_download_prints_cookies_hint_on_youtube_bot_check(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bot_error: str
 ) -> None:
-    bot_error = (
-        "ERROR: [youtube] 15GFTWAYeNE: Sign in to confirm you\u2019re not a bot. "
-        "Use --cookies-from-browser or --cookies for the authentication."
-    )
-
     def bot_check_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 1, stdout="", stderr=bot_error)
 
@@ -783,14 +805,15 @@ def test_cli_download_prints_cookies_hint_on_youtube_bot_check(
 
     assert code == 1
     assert captured.out == ""
-    assert "Sign in to confirm" in captured.err
+    assert bot_error in captured.err
     assert "Hint:" in captured.err
     assert "--cookies-from-browser" in captured.err
     assert "~/.config/yt-dlp/config" in captured.err
 
 
+@pytest.mark.parametrize("use_file", [False, True])
 def test_cli_download_omits_cookies_hint_when_cookies_already_supplied(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], use_file: bool
 ) -> None:
     bot_error = (
         "ERROR: [youtube] 15GFTWAYeNE: Sign in to confirm you\u2019re not a bot. "
@@ -800,15 +823,15 @@ def test_cli_download_omits_cookies_hint_when_cookies_already_supplied(
     def bot_check_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(list(args), 1, stdout="", stderr=bot_error)
 
+    if use_file:
+        cookies_file = tmp_path / "cookies.txt"
+        cookies_file.write_text("# Netscape HTTP Cookie File\n")
+        cookie_flag = ["--cookies", str(cookies_file)]
+    else:
+        cookie_flag = ["--cookies-from-browser", "chrome"]
+
     code = main(
-        [
-            "download",
-            SAMPLE_URL,
-            "--footage-dir",
-            str(tmp_path / "footage"),
-            "--cookies-from-browser",
-            "chrome",
-        ],
+        ["download", SAMPLE_URL, "--footage-dir", str(tmp_path / "footage"), *cookie_flag],
         run=bot_check_runner,
     )
     captured = capsys.readouterr()
