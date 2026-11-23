@@ -12,8 +12,11 @@ Download broadcast footage into `footage/` and convert it to constant 60 fps MP4
 ```bash
 uv run pb-tokei download <url>
 uv run pb-tokei download <url> --match <match-id> [--db rally_log.duckdb]
+uv run pb-tokei download <url> --cookies-from-browser chrome   # or --cookies path/to/cookies.txt
 uv run pb-tokei convert <path-to-original> [--force]
 ```
+
+If YouTube asks you to sign in to confirm you're not a bot, pass `--cookies-from-browser <browser>` (e.g. `chrome`, `firefox`, `safari`) or `--cookies <path>`, or configure a default in `~/.config/yt-dlp/config` (e.g. `--cookies-from-browser chrome`).
 
 Set up a Match from a Roster File (by convention kept in `rosters/`), then list Matches:
 

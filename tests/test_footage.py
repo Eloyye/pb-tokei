@@ -11,6 +11,7 @@ from pb_tokei.footage import (
     FootageDownloadError,
     download_footage,
     find_existing_footage,
+    probe_video_id,
 )
 from pb_tokei.rally_log import (
     Handedness,
@@ -55,6 +56,10 @@ class FakeYtDlp:
         self.converted_content = converted_content
         self.convert_error = convert_error
         self.calls: list[list[str]] = []
+
+    @property
+    def probe_calls(self) -> list[list[str]]:
+        return [call for call in self.calls if call[0] == "yt-dlp" and "--skip-download" in call]
 
     @property
     def download_calls(self) -> list[list[str]]:
@@ -307,6 +312,158 @@ def test_rejects_footage_dir_that_is_a_file(tmp_path: Path) -> None:
     assert fake.calls == []
 
 
+def test_download_footage_forwards_cookies_file_to_probe_and_download(tmp_path: Path) -> None:
+    footage_dir = tmp_path / "footage"
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    result = download_footage(SAMPLE_URL, footage_dir, cookies=cookies_file, run=fake)
+
+    assert result.already_downloaded is False
+    assert len(fake.probe_calls) == 1
+    assert len(fake.download_calls) == 1
+    for cmd in (fake.probe_calls[0], fake.download_calls[0]):
+        assert "--no-cookies-from-browser" in cmd
+        assert cmd[cmd.index("--cookies") + 1] == str(cookies_file)
+        assert cmd[-2:] == ["--", SAMPLE_URL]
+
+
+def test_download_footage_forwards_cookies_from_browser_to_probe_and_download(
+    tmp_path: Path,
+) -> None:
+    footage_dir = tmp_path / "footage"
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    result = download_footage(
+        SAMPLE_URL,
+        footage_dir,
+        cookies_from_browser=" chrome:Profile 1 ",
+        run=fake,
+    )
+
+    assert result.already_downloaded is False
+    assert len(fake.probe_calls) == 1
+    assert len(fake.download_calls) == 1
+    for cmd in (fake.probe_calls[0], fake.download_calls[0]):
+        assert "--no-cookies" in cmd
+        assert cmd[cmd.index("--cookies-from-browser") + 1] == "chrome:Profile 1"
+        assert cmd[-2:] == ["--", SAMPLE_URL]
+
+
+def test_probe_video_id_forwards_cookie_options(tmp_path: Path) -> None:
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp(video_id=SAMPLE_ID)
+
+    assert probe_video_id(SAMPLE_URL, cookies=cookies_file, run=fake) == SAMPLE_ID
+    assert probe_video_id(SAMPLE_URL, cookies_from_browser="firefox", run=fake) == SAMPLE_ID
+
+    assert fake.probe_calls[0][fake.probe_calls[0].index("--cookies") + 1] == str(cookies_file)
+    assert fake.probe_calls[1][fake.probe_calls[1].index("--cookies-from-browser") + 1] == "firefox"
+
+
+def test_download_footage_prefixes_relative_cookies_file_starting_with_dash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    dash_file = Path("-cookies.txt")
+    dash_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4")
+
+    download_footage(SAMPLE_URL, Path("footage"), cookies=dash_file, run=fake)
+
+    for cmd in (fake.probe_calls[0], fake.download_calls[0]):
+        assert cmd[cmd.index("--cookies") + 1] == "./-cookies.txt"
+
+
+def test_rejects_both_cookies_and_cookies_from_browser(tmp_path: Path) -> None:
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="not both"):
+        download_footage(
+            SAMPLE_URL,
+            tmp_path / "footage",
+            cookies=cookies_file,
+            cookies_from_browser="chrome",
+            run=fake,
+        )
+
+    assert fake.calls == []
+
+
+def test_rejects_missing_cookies_file(tmp_path: Path) -> None:
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="Cookies file not found"):
+        download_footage(
+            SAMPLE_URL,
+            tmp_path / "footage",
+            cookies=tmp_path / "missing.txt",
+            run=fake,
+        )
+
+    assert fake.calls == []
+
+
+def test_rejects_cookies_path_that_is_a_directory(tmp_path: Path) -> None:
+    cookies_dir = tmp_path / "cookies_dir"
+    cookies_dir.mkdir()
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="not a file"):
+        download_footage(
+            SAMPLE_URL,
+            tmp_path / "footage",
+            cookies=cookies_dir,
+            run=fake,
+        )
+
+    assert fake.calls == []
+
+
+def test_rejects_cookies_path_with_nul_byte(tmp_path: Path) -> None:
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="Cookies file not found"):
+        download_footage(
+            SAMPLE_URL,
+            tmp_path / "footage",
+            cookies=Path("cookies\x00.txt"),
+            run=fake,
+        )
+
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_browser",
+    [
+        "",
+        "   ",
+        "-chrome",
+        "--exec=rm -rf /",
+        "chrome\n--exec=bad",
+        "chrome\r",
+        "chrome\x00",
+    ],
+)
+def test_rejects_invalid_cookies_from_browser(tmp_path: Path, bad_browser: str) -> None:
+    fake = FakeYtDlp()
+
+    with pytest.raises(FootageDownloadError, match="Invalid --cookies-from-browser"):
+        download_footage(
+            SAMPLE_URL,
+            tmp_path / "footage",
+            cookies_from_browser=bad_browser,
+            run=fake,
+        )
+
+    assert fake.calls == []
+
+
 # --- CLI ----------------------------------------------------------------------------------
 
 
@@ -524,3 +681,138 @@ def test_cli_download_returns_nonzero_on_download_error(
     assert code == 1
     assert captured.out == ""
     assert "network down" in captured.err
+    assert "Hint:" not in captured.err
+
+
+def test_cli_download_passes_cookies_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    footage_dir = tmp_path / "footage"
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(footage_dir),
+            "--cookies",
+            str(cookies_file),
+        ],
+        run=fake,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert captured.out == f"{footage_dir / f'{SAMPLE_ID}.60fps.mp4'}\n"
+    for cmd in (fake.probe_calls[0], fake.download_calls[0]):
+        assert "--no-cookies-from-browser" in cmd
+        assert cmd[cmd.index("--cookies") + 1] == str(cookies_file)
+
+
+def test_cli_download_passes_cookies_from_browser(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    footage_dir = tmp_path / "footage"
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(footage_dir),
+            "--cookies-from-browser",
+            "chrome",
+        ],
+        run=fake,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert captured.out == f"{footage_dir / f'{SAMPLE_ID}.60fps.mp4'}\n"
+    for cmd in (fake.probe_calls[0], fake.download_calls[0]):
+        assert "--no-cookies" in cmd
+        assert cmd[cmd.index("--cookies-from-browser") + 1] == "chrome"
+
+
+def test_cli_download_rejects_both_cookie_flags(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    fake = FakeYtDlp()
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "download",
+                SAMPLE_URL,
+                "--cookies",
+                str(cookies_file),
+                "--cookies-from-browser",
+                "chrome",
+            ],
+            run=fake,
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "not allowed with argument" in captured.err
+    assert fake.calls == []
+
+
+def test_cli_download_prints_cookies_hint_on_youtube_bot_check(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bot_error = (
+        "ERROR: [youtube] 15GFTWAYeNE: Sign in to confirm you\u2019re not a bot. "
+        "Use --cookies-from-browser or --cookies for the authentication."
+    )
+
+    def bot_check_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 1, stdout="", stderr=bot_error)
+
+    code = main(
+        ["download", SAMPLE_URL, "--footage-dir", str(tmp_path / "footage")],
+        run=bot_check_runner,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert captured.out == ""
+    assert "Sign in to confirm" in captured.err
+    assert "Hint:" in captured.err
+    assert "--cookies-from-browser" in captured.err
+    assert "~/.config/yt-dlp/config" in captured.err
+
+
+def test_cli_download_omits_cookies_hint_when_cookies_already_supplied(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bot_error = (
+        "ERROR: [youtube] 15GFTWAYeNE: Sign in to confirm you\u2019re not a bot. "
+        "Use --cookies-from-browser or --cookies for the authentication."
+    )
+
+    def bot_check_runner(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(args), 1, stdout="", stderr=bot_error)
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(tmp_path / "footage"),
+            "--cookies-from-browser",
+            "chrome",
+        ],
+        run=bot_check_runner,
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "Sign in to confirm" in captured.err
+    assert "Hint:" not in captured.err
