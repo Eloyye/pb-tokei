@@ -1,6 +1,13 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { changeSpeed, isTextEntry, keyAction, type KeyInput, SPEEDS } from "./keymap";
+import {
+  changeSpeed,
+  isTextEntry,
+  keyAction,
+  type KeyInput,
+  SPEEDS,
+  zoomKeyAction,
+} from "./keymap";
 
 function press(key: string, modifiers: Partial<KeyInput> = {}): KeyInput {
   return { key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...modifiers };
@@ -110,5 +117,19 @@ describe("isTextEntry", () => {
 
   it("is false without a target", () => {
     expect(isTextEntry(null)).toBe(false);
+  });
+});
+
+describe("zoomKeyAction", () => {
+  it("zooms out with - and in with =", () => {
+    expect(zoomKeyAction(press("-"))).toBe("out");
+    expect(zoomKeyAction(press("="))).toBe("in");
+  });
+
+  it("leaves modified keys and other keys alone", () => {
+    expect(zoomKeyAction(press("=", { metaKey: true }))).toBeNull();
+    expect(zoomKeyAction(press("-", { ctrlKey: true }))).toBeNull();
+    expect(zoomKeyAction(press("+", { shiftKey: true }))).toBeNull();
+    expect(zoomKeyAction(press("m"))).toBeNull();
   });
 });
