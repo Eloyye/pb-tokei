@@ -22,6 +22,7 @@ from pb_tokei.rally_log import MatchId, MatchSummary, RallyLog
 from pb_tokei.roster import RosterError, read_roster, roster_template, set_up_match
 
 DEFAULT_DB_PATH = Path("rally_log.duckdb")
+DEFAULT_ANNOTATE_PORT = 8000
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,6 +90,20 @@ def build_parser() -> argparse.ArgumentParser:
     list_.add_argument("--tournament", help="Only Matches at this Tournament (exact name).")
     _db_argument(list_)
     list_.set_defaults(handler=_match_list)
+
+    annotate = subparsers.add_parser(
+        "annotate", help="Open the annotation web app on this machine (127.0.0.1 only)."
+    )
+    _db_argument(annotate)
+    annotate.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_ANNOTATE_PORT,
+        help=f"Port to serve on (default: {DEFAULT_ANNOTATE_PORT}).",
+    )
+    annotate.add_argument(
+        "--no-browser", action="store_true", help="Don't open the app in a browser."
+    )
     return parser
 
 
@@ -115,6 +130,8 @@ def main(
         return _run_convert(args, run=run)
     if args.command == "match":
         return args.handler(args)
+    if args.command == "annotate":
+        return _run_annotate(args)
 
     parser.error(f"Unknown command: {args.command}")
 
@@ -241,3 +258,18 @@ def _match_line(summary: MatchSummary) -> str:
         parts.append(f"({summary.franchise_a} vs {summary.franchise_b})")
     parts.append("video" if summary.has_video else "no video")
     return "  ".join(parts)
+
+
+def _run_annotate(args: argparse.Namespace) -> int:
+    # Imported here so the other commands don't pay for loading FastAPI and uvicorn.
+    from pb_tokei.annotate.server import FrontEndNotBuiltError, serve
+
+    if not args.db.is_file():
+        print(f"error: Rally Log database not found: {args.db}", file=sys.stderr)
+        return 1
+    try:
+        serve(args.db, port=args.port, open_browser=not args.no_browser)
+    except FrontEndNotBuiltError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0

@@ -24,3 +24,35 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      # Front end: run only when files under web/ change.
+      - id: web-typecheck
+        name: web tsc
+        entry: bash -c 'cd web && bun run typecheck'
+        language: system
+        files: ^web/
+        pass_filenames: false
+      - id: web-lint
+        name: web oxlint
+        entry: bash -c 'cd web && bun run lint'
+        language: system
+        files: ^web/
+        pass_filenames: false
+      - id: web-fmt
+        name: web oxfmt
+        entry: bash -c 'cd web && bun run fmt:check'
+        language: system
+        files: ^web/
+        pass_filenames: false
+      - id: web-test
+        name: web vitest
+        entry: bash -c 'cd web && bun run test'
+        language: system
+        files: ^web/
+        pass_filenames: false
+      # The generated API types follow the FastAPI app, so check them when either changes.
+      - id: web-api-types
+        name: web API types up to date
+        entry: bash -c 'cd web && bun run gen:api >/dev/null && git diff --exit-code -- src/api/schema.d.ts'
+        language: system
+        files: ^(web/|src/pb_tokei/annotate/)
+        pass_filenames: false

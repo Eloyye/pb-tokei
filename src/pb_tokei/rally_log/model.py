@@ -327,4 +327,8 @@ class MatchSummary:
     team_b: tuple[str, str]
     franchise_a: str | None
     franchise_b: str | None
-    has_video: bool
+    source_video: SourceVideo | None
+
+    @property
+    def has_video(self) -> bool:
+        return self.source_video is not None

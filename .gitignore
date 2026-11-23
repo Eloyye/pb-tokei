@@ -6,3 +6,9 @@ __pycache__/
 
 # Downloaded broadcasts live on disk only, never in git.
 footage/
+
+# Built front end for `pb-tokei annotate` (from `bun run build` in web/).
+src/pb_tokei/annotate/static/
+
+# Front-end dependencies.
+web/node_modules/
