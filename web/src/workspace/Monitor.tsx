@@ -3,16 +3,15 @@ import type { CameraView, MatchDetail } from "../api/client";
 import { formatTimecode } from "../lib/frames";
 import { parseGoto } from "../lib/goto";
 import { SPEEDS } from "../lib/keymap";
+import { VIEW_LABELS } from "../lib/segments";
 import type { PlayerControls, PlayerState } from "../player/usePlayer";
 import { Icon } from "./icons";
 import { Panel, PanelTitle } from "./Panel";
 import { VIDEO_STATUS_LABELS } from "../routes/teams";
 
-const CAMERA_TAGS: Record<CameraView | "none", string> = {
-  main: "MAIN VIEW",
-  sideline: "SIDELINE VIEW",
-  none: "NOT A PLAY SEGMENT",
-};
+function cameraTag(view: CameraView | "none"): string {
+  return view === "none" ? "NOT A PLAY SEGMENT" : VIEW_LABELS[view].toUpperCase();
+}
 
 /**
  * The Program Monitor: the Match's 60 fps video with the frame number and timecode over it, and
@@ -69,7 +68,7 @@ export function Monitor({
             />
             {cameraView && (
               <div className={`overlay overlay-camera ${cameraView === "none" ? "off" : ""}`}>
-                {CAMERA_TAGS[cameraView]}
+                {cameraTag(cameraView)}
               </div>
             )}
             <div className="overlay overlay-frame">

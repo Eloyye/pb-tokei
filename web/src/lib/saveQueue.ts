@@ -15,7 +15,10 @@ export type SaveStatus =
 export interface SaveQueue<T> {
   push(value: T): void;
   status(): SaveStatus;
-  /** Stops retrying; a save in flight still finishes. */
+  /**
+   * Stops retrying and reporting status, but still sends the latest waiting value once, so an
+   * edit made just before the editor closed isn't lost. Values pushed afterwards are ignored.
+   */
   close(): void;
 }
 
@@ -29,9 +32,13 @@ export interface SaveQueueOptions {
 
 const BACKOFF_MS = [1000, 2000, 5000, 10000];
 
+/** How long to wait before retry `attempt` (1, 2, ...), in milliseconds. */
+export function backoffMs(attempt: number): number {
+  return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length) - 1] ?? 10000;
+}
+
 function defaultWait(attempt: number): Promise<void> {
-  const ms = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length) - 1] ?? 10000;
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, backoffMs(attempt)));
 }
 
 export function createSaveQueue<T>(
@@ -42,24 +49,34 @@ export function createSaveQueue<T>(
   let running = false;
   let closed = false;
   let current: SaveStatus = { state: "saved" };
+  // Cuts a retry wait short when the queue closes.
+  let wakeUp: (() => void) | null = null;
 
   const setStatus = (status: SaveStatus) => {
     current = status;
-    onStatus(status);
+    if (!closed) onStatus(status);
   };
 
   const run = async () => {
     running = true;
     let attempt = 0;
     while (next) {
-      if (closed) break;
       const { value } = next;
       next = null;
+      if (closed) {
+        // The flush: one last try, with nobody left to tell if it fails.
+        await save(value).catch(() => {});
+        continue;
+      }
       setStatus({ state: "saving" });
       try {
         await save(value);
         attempt = 0;
       } catch (error) {
+        if (closed) {
+          next ??= { value };
+          continue;
+        }
         const message = error instanceof Error ? error.message : String(error);
         if (!retryable(error)) {
           // Keep any newer value: it may well be valid, and it supersedes this one.
@@ -73,21 +90,29 @@ export function createSaveQueue<T>(
         next ??= { value };
         attempt += 1;
         setStatus({ state: "retrying", error: message });
-        await wait(attempt);
+        await Promise.race([
+          wait(attempt),
+          new Promise<void>((resolve) => {
+            wakeUp = resolve;
+          }),
+        ]);
+        wakeUp = null;
       }
     }
     running = false;
-    if (!closed) setStatus({ state: "saved" });
+    setStatus({ state: "saved" });
   };
 
   return {
     push(value) {
+      if (closed) return;
       next = { value };
-      if (!running && !closed) void run();
+      if (!running) void run();
     },
     status: () => current,
     close() {
       closed = true;
+      wakeUp?.();
     },
   };
 }

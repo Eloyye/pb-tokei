@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ApiError,
   type Calibration,
   type CameraView,
   getCalibrations,
   getPlaySegments,
+  isRetryable,
   type PlaySegment,
   replaceCalibrations,
   replacePlaySegments,
+  toCalibration,
 } from "../api/client";
 import { commit, type History, redo, startHistory, undo } from "../lib/history";
+import { withRetries } from "../lib/retry";
 import { combineStatus, createSaveQueue, type SaveQueue, type SaveStatus } from "../lib/saveQueue";
 import { followStart, type PendingSegment, type SegmentEdit } from "../lib/segments";
 
@@ -63,7 +65,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     let cancelled = false;
     const statuses = new Map<string, SaveStatus>();
     const options = (key: string) => ({
-      retryable,
+      retryable: isRetryable,
       onStatus: (status: SaveStatus) => {
         statuses.set(key, status);
         if (!cancelled) setSaveStatus(combineStatus([...statuses.values()]));
@@ -85,19 +87,14 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     queuesRef.current = queues;
 
     // The Rally Log answers 503 while another request holds the file; that passes, so retry.
-    withRetries(() => Promise.all([getPlaySegments(matchId), getCalibrations(matchId)])).then(
+    withRetries(() => Promise.all([getPlaySegments(matchId), getCalibrations(matchId)]), {
+      retryable: isRetryable,
+    }).then(
       ([segments, calibrations]) => {
         if (cancelled) return;
         const start = startHistory<Recording>({
           segments,
-          calibrations: calibrations.map(
-            ({ camera_view, effective_from_frame, reference_frame, landmarks }) => ({
-              camera_view,
-              effective_from_frame,
-              reference_frame,
-              landmarks,
-            }),
-          ),
+          calibrations: calibrations.map(toCalibration),
         });
         historyRef.current = start;
         setHistory(start);
@@ -196,24 +193,8 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
   return [{ recording: history?.present ?? null, pending, message, saveStatus }, controls];
 }
 
-async function withRetries<T>(load: () => Promise<T>, attempts = 5): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await load();
-    } catch (error) {
-      if (attempt >= attempts || !retryable(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
-    }
-  }
-}
-
 function ofView(calibrations: Calibration[], view: CameraView): Calibration[] {
   return calibrations.filter((c) => c.camera_view === view);
-}
-
-/** Client errors (a 422 for invalid data, a 404 for a deleted Match) won't succeed on retry. */
-function retryable(error: unknown): boolean {
-  return !(error instanceof ApiError && error.status >= 400 && error.status < 500);
 }
 
 function errorMessage(error: unknown): string {

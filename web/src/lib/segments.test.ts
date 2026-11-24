@@ -185,6 +185,15 @@ describe("followStart", () => {
     ]);
   });
 
+  it("moves it even when another view's Calibration starts at the new frame", () => {
+    const calibrations = [cal("main", 100), cal("sideline", 80)];
+
+    expect(followStart(calibrations, { from: 100, to: 80, camera_view: "main" })).toEqual([
+      { ...cal("main", 100), effective_from_frame: 80 },
+      cal("sideline", 80),
+    ]);
+  });
+
   it("leaves it if another of its view already starts at the new frame", () => {
     const calibrations = [cal("main", 100), cal("main", 80)];
 

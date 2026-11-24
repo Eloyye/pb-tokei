@@ -31,6 +31,16 @@ export type Calibration = Pick<
   "camera_view" | "effective_from_frame" | "reference_frame" | "landmarks"
 >;
 
+/** A Calibration's own fields, dropping the fit the server computed. */
+export function toCalibration({
+  camera_view,
+  effective_from_frame,
+  reference_frame,
+  landmarks,
+}: CalibrationOut): Calibration {
+  return { camera_view, effective_from_frame, reference_frame, landmarks };
+}
+
 export async function getPlaySegments(matchId: string): Promise<PlaySegment[]> {
   const { data, error, response } = await api.GET("/api/matches/{match_id}/play-segments", {
     params: { path: { match_id: matchId } },
@@ -69,11 +79,8 @@ export async function replaceCalibrations(
     "/api/matches/{match_id}/calibrations/{camera_view}",
     {
       params: { path: { match_id: matchId, camera_view: cameraView } },
-      body: calibrations.map(({ effective_from_frame, reference_frame, landmarks }) => ({
-        effective_from_frame,
-        reference_frame,
-        landmarks,
-      })),
+      // The Camera View is in the path, not the body.
+      body: calibrations.map(({ camera_view: _view, ...fields }) => fields),
     },
   );
   if (data === undefined) throw apiError(response, error);
@@ -91,6 +98,11 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+/** Whether a failed request may succeed if tried again: not a 4xx (a 422, a deleted Match). */
+export function isRetryable(error: unknown): boolean {
+  return !(error instanceof ApiError && error.status >= 400 && error.status < 500);
 }
 
 function apiError(response: Response, body: unknown): ApiError {

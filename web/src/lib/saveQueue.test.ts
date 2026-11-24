@@ -84,17 +84,55 @@ describe("createSaveQueue", () => {
     expect(calls.map((c) => c.value)).toEqual([1, 2, 3]);
   });
 
-  it("stops after it is closed", async () => {
+  it("still sends the value waiting behind a save in flight when closed", async () => {
     const { calls, save } = controlledSave();
-    const { queue } = queueFor(save);
+    const { queue, statuses } = queueFor(save);
 
     queue.push(1);
     queue.push(2);
+    const reported = statuses.length;
     queue.close();
     calls[0]!.resolve();
     await settle();
 
+    expect(calls.map((c) => c.value)).toEqual([1, 2]);
+    calls[1]!.reject(new Error("offline"));
+    await settle();
+    expect(calls).toHaveLength(2); // the flush is not retried
+    expect(statuses).toHaveLength(reported); // nor reported
+  });
+
+  it("cuts a retry wait short when closed and sends the waiting value once", async () => {
+    const { calls, save } = controlledSave();
+    const statuses: SaveStatus["state"][] = [];
+    const queue = createSaveQueue(save, {
+      retryable: () => true,
+      onStatus: (s) => statuses.push(s.state),
+      wait: () => new Promise(() => {}), // a backoff that never ends on its own
+    });
+
+    queue.push(1);
+    calls[0]!.reject(new Error("503"));
+    await settle();
+    queue.push(2);
     expect(calls).toHaveLength(1);
+
+    queue.close();
+    await settle();
+
+    expect(calls.map((c) => c.value)).toEqual([1, 2]);
+    expect(statuses.at(-1)).toBe("retrying");
+  });
+
+  it("ignores values pushed after closing", async () => {
+    const { calls, save } = controlledSave();
+    const { queue } = queueFor(save);
+
+    queue.close();
+    queue.push(1);
+    await settle();
+
+    expect(calls).toHaveLength(0);
   });
 });
 

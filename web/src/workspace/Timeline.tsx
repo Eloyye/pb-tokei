@@ -1,7 +1,7 @@
 import { type PointerEvent, useState } from "react";
 import type { PlaySegment } from "../api/client";
 import { formatTimecode } from "../lib/frames";
-import { moveEdge, type PendingSegment } from "../lib/segments";
+import { describe, moveEdge, type PendingSegment, VIEW_LABELS } from "../lib/segments";
 import {
   centreOn,
   type FrameRange,
@@ -173,9 +173,9 @@ export function Timeline({
                         left: `${toPercent(view, segment.start_frame)}%`,
                         width: `${toPercent(view, segment.end_frame + 1) - toPercent(view, segment.start_frame)}%`,
                       }}
-                      title={`${segment.camera_view === "main" ? "Main" : "Sideline"} View, frames ${segment.start_frame}–${segment.end_frame}`}
+                      title={describe(segment)}
                     >
-                      {segment.camera_view === "main" ? "MAIN" : "SIDELINE"}
+                      {VIEW_LABELS[segment.camera_view].toUpperCase()}
                       {editableSegments &&
                         (["start", "end"] as const).map((edge) => (
                           <span
