@@ -171,14 +171,18 @@ describe("historyKeyAction", () => {
 });
 
 describe("calibrationKeyAction", () => {
-  it("maps N, Tab and X", () => {
+  it("maps N, Tab, X, V and C", () => {
     expect(calibrationKeyAction(press("n"))).toBe("new");
     expect(calibrationKeyAction(press("Tab"))).toBe("skip");
     expect(calibrationKeyAction(press("x"))).toBe("clear");
+    expect(calibrationKeyAction(press("v"))).toBe("notVisible");
+    expect(calibrationKeyAction(press("c"))).toBe("confirm");
   });
 
   it("leaves Shift+Tab and modified keys alone", () => {
     expect(calibrationKeyAction(press("Tab", { shiftKey: true }))).toBeNull();
     expect(calibrationKeyAction(press("n", { metaKey: true }))).toBeNull();
+    expect(calibrationKeyAction(press("v", { ctrlKey: true }))).toBeNull();
+    expect(calibrationKeyAction(press("c", { metaKey: true }))).toBeNull();
   });
 });

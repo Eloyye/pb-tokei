@@ -111,20 +111,82 @@ export function CalibrationOverlay({
 
   if (!rect) return null;
 
-  const points: Partial<Record<Landmark, Point>> = { ...calibration?.landmarks };
-  if (drag) points[drag.landmark] = drag.at;
+  const onRef = !calibration || frame === calibration.reference_frame;
+  const offRef = Boolean(calibration && frame !== calibration.reference_frame);
+  const unmappedSet = new Set(fit?.unmapped_landmarks ?? []);
+
+  // Build visible markers for the current frame:
+  // - On `reference_frame`: every placed Landmark is shown; ones clicked on another frame are
+  //   drawn at their mapped reference-frame position (or raw position if carried over and
+  //   unmapped, so the operator can drag them into place) with a distinct dashed style.
+  // - Off `reference_frame`: only Landmarks clicked on this exact frame are drawn, so markers
+  //   from other frames never silently float over a different camera picture.
+  const markers: {
+    landmark: Landmark;
+    index: number;
+    at: Point;
+    otherFrame: boolean;
+    clickedFrame: number;
+    flagged: boolean;
+  }[] = [];
+  if (calibration) {
+    LANDMARKS.forEach((landmark, index) => {
+      if (drag?.landmark === landmark) {
+        markers.push({
+          landmark,
+          index,
+          at: drag.at,
+          otherFrame: false,
+          clickedFrame: frame,
+          flagged: false,
+        });
+        return;
+      }
+      const placed = calibration.landmarks[landmark];
+      if (!placed) return;
+      if (placed.frame === frame) {
+        markers.push({
+          landmark,
+          index,
+          at: { x: placed.x, y: placed.y },
+          otherFrame: false,
+          clickedFrame: placed.frame,
+          flagged: Boolean(fit?.errors[landmark]?.needs_attention),
+        });
+        return;
+      }
+      if (!onRef) return;
+      const resolved = fit?.resolved_landmarks[landmark];
+      if (resolved) {
+        if (resolved.x < 0 || resolved.x > 1 || resolved.y < 0 || resolved.y > 1) return;
+        markers.push({
+          landmark,
+          index,
+          at: resolved,
+          otherFrame: true,
+          clickedFrame: placed.frame,
+          flagged: Boolean(fit?.errors[landmark]?.needs_attention),
+        });
+        return;
+      }
+      markers.push({
+        landmark,
+        index,
+        at: { x: placed.x, y: placed.y },
+        otherFrame: true,
+        clickedFrame: placed.frame,
+        flagged: unmappedSet.has(landmark),
+      });
+    });
+  }
+
   const matrix = unmapped
     ? null
     : frameMatrix !== undefined
       ? frameMatrix
       : (fit ?? lastFit)?.court_to_image;
-  // Clicked Landmarks belong to `reference_frame`; hide them on other tracked frames so
-  // reference-frame dots never float away from a panning or zooming camera.
-  const showLandmarks =
-    !calibration ||
-    frame === calibration.reference_frame ||
-    !fit?.complete ||
-    (frameMatrix === undefined && !unmapped);
+  const staticOffRef = offRef && frameMatrix === undefined && !unmapped;
+  const templateStale = !fit || staticOffRef;
 
   return (
     <div
@@ -141,8 +203,7 @@ export function CalibrationOverlay({
       onPointerDown={(event) => {
         if (!editable)
           return onBlocked("Mark a Play Segment first: Calibration is per Camera View");
-        if (!selected)
-          return onBlocked("Every Landmark is placed: pick one in the list to move it");
+        if (!selected) return onBlocked("No remaining Landmarks: pick one in the list to move it");
         onPlace(selected, fraction(event), "click");
       }}
       onPointerUp={(event) => {
@@ -157,7 +218,7 @@ export function CalibrationOverlay({
     >
       {matrix && (
         <svg
-          className={`court-template ${fit ? "" : "stale"}`}
+          className={`court-template ${templateStale ? "stale" : ""}`}
           viewBox="0 0 1 1"
           preserveAspectRatio="none"
           aria-hidden
@@ -174,37 +235,43 @@ export function CalibrationOverlay({
           )}
         </svg>
       )}
-      {unmapped && (
+      {unmapped ? (
         <output className="unmapped-banner">
           UNMAPPED · Camera Motion lost (positions Unknown)
         </output>
+      ) : (
+        offRef &&
+        calibration && (
+          <output className="off-ref-banner">
+            REF FRAME {calibration.reference_frame} ·{" "}
+            {staticOffRef ? "static preview (not tracked yet)" : "clicks here map to ref"}
+          </output>
+        )
       )}
-      {showLandmarks &&
-        LANDMARKS.map((landmark, index) => {
-          const at = points[landmark];
-          if (!at) return null;
-          const flagged = fit?.errors[landmark]?.needs_attention;
-          return (
-            <button
-              key={landmark}
-              type="button"
-              className={`landmark-marker ${landmark === selected ? "selected" : ""} ${flagged ? "flagged" : ""}`}
-              style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }}
-              title={`${index + 1}. ${landmarkLabel(landmark)}: drag to move`}
-              aria-label={landmarkLabel(landmark)}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-                if (!editable) return;
-                onSelect(landmark);
-                // Capture on the layer, which tracks the drag across the picture.
-                event.currentTarget.parentElement?.setPointerCapture(event.pointerId);
-                setDrag({ landmark, from: at, at });
-              }}
-            >
-              <span>{index + 1}</span>
-            </button>
-          );
-        })}
+      {markers.map(({ landmark, index, at, otherFrame, clickedFrame, flagged }) => (
+        <button
+          key={landmark}
+          type="button"
+          className={`landmark-marker ${landmark === selected ? "selected" : ""} ${flagged ? "flagged" : ""} ${otherFrame ? "other-frame" : ""}`}
+          style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }}
+          title={
+            otherFrame
+              ? `${index + 1}. ${landmarkLabel(landmark)} (clicked on frame ${clickedFrame}): drag to place on frame ${frame}`
+              : `${index + 1}. ${landmarkLabel(landmark)}: drag to move`
+          }
+          aria-label={landmarkLabel(landmark)}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            if (!editable) return;
+            onSelect(landmark);
+            // Capture on the layer, which tracks the drag across the picture.
+            event.currentTarget.parentElement?.setPointerCapture(event.pointerId);
+            setDrag({ landmark, from: at, at });
+          }}
+        >
+          <span>{index + 1}</span>
+        </button>
+      ))}
       {showLoupe && pointer && (
         <div
           className="loupe"

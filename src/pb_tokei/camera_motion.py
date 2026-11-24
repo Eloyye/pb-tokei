@@ -23,9 +23,10 @@ import os
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 
 import cv2
 import numpy as np
@@ -50,6 +51,9 @@ _MIN_STEP_INLIERS = 35
 _MIN_RELOC_INLIERS = 45
 _MIN_RELOC_SPREAD_X = 0.25
 _MIN_RELOC_SPREAD_Y = 0.20
+_MAX_IMPLICIT_CHAIN_FRAMES = 1500
+_MAX_CHAIN_SPAN_FRAMES = 3000
+_MAX_HOMOGRAPHY_COND = 1e10
 
 # Court-line ridge detection & verification parameters.
 _SAMPLES_PER_LINE = 32
@@ -287,6 +291,94 @@ def calibration_spans(
     return spans
 
 
+_FRAME_COUNT_CACHE_LOCK = threading.Lock()
+_FRAME_COUNT_CACHE: dict[tuple[str, int, int], int | None] = {}
+
+
+def video_frame_count(video_path: Path | None) -> int | None:
+    """Returns the positive frame count of `video_path`, or None if unreadable/not a video."""
+    if video_path is None or not video_path.is_file():
+        return None
+    try:
+        stat = video_path.stat()
+    except OSError:
+        return None
+    key = (str(video_path), stat.st_size, stat.st_mtime_ns)
+    with _FRAME_COUNT_CACHE_LOCK:
+        if key in _FRAME_COUNT_CACHE:
+            return _FRAME_COUNT_CACHE[key]
+    cap = cv2.VideoCapture(str(video_path))
+    count: int | None = None
+    try:
+        if cap.isOpened():
+            raw = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if raw > 0:
+                count = raw
+    finally:
+        cap.release()
+    if count is not None:
+        with _FRAME_COUNT_CACHE_LOCK:
+            if len(_FRAME_COUNT_CACHE) > 128:
+                _FRAME_COUNT_CACHE.clear()
+            _FRAME_COUNT_CACHE[key] = count
+    return count
+
+
+class _WorkGrid(NamedTuple):
+    """Work-resolution dimensions and normalised <-> work-pixel scaling matrices."""
+
+    sw: int
+    sh: int
+    s_norm_to_w: Matrix
+    s_w_to_norm: Matrix
+
+
+def _work_scale(cap: cv2.VideoCapture) -> _WorkGrid | None:
+    """Computes work-resolution dimensions and scaling transforms for an open capture."""
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if orig_w <= 0 or orig_h <= 0:
+        return None
+    scale = min(1.0, _WORK_MAX_WIDTH / orig_w)
+    sw = max(1, int(round(orig_w * scale)))
+    sh = max(1, int(round(orig_h * scale)))
+    s_norm_to_w = np.array([[sw, 0.0, 0.0], [0.0, sh, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    s_w_to_norm = np.array(
+        [[1.0 / sw, 0.0, 0.0], [0.0, 1.0 / sh, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
+    )
+    return _WorkGrid(sw=sw, sh=sh, s_norm_to_w=s_norm_to_w, s_w_to_norm=s_w_to_norm)
+
+
+def _accepts_reloc(
+    h: Matrix | None, inliers: int, spread_ok: bool, sw: int, sh: int
+) -> TypeGuard[Matrix]:
+    """Whether a direct / relocalisation feature homography passes quality and sanity gates."""
+    return (
+        h is not None
+        and inliers >= _MIN_RELOC_INLIERS
+        and spread_ok
+        and _is_sane_homography(h, sw, sh, strict_step=False)
+    )
+
+
+def _accepts_step(
+    h: Matrix | None,
+    inliers: int,
+    spread_ok: bool,
+    sw: int,
+    sh: int,
+    *,
+    require_spread: bool = False,
+) -> TypeGuard[Matrix]:
+    """Whether a keyframe-to-keyframe feature homography passes step gates."""
+    return (
+        h is not None
+        and inliers >= _MIN_STEP_INLIERS
+        and (not require_spread or spread_ok)
+        and _is_sane_homography(h, sw, sh, strict_step=True)
+    )
+
+
 def default_cache_dir(db_path: Path) -> Path:
     """Where rebuildable Camera Motion caches live beside a Rally Log database."""
     return db_path.parent / DEFAULT_CACHE_DIR_NAME / "camera_motion"
@@ -321,10 +413,36 @@ def span_cache_key(
             "effective_from_frame": cal.effective_from_frame,
             "reference_frame": cal.reference_frame,
             "landmarks": {
-                lm.value: [cal.landmarks[lm].x, cal.landmarks[lm].y]
+                lm.value: [cal.landmarks[lm].x, cal.landmarks[lm].y, cal.landmarks[lm].frame]
                 for lm in sorted(cal.landmarks, key=lambda item: item.value)
             },
         },
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def landmark_reg_cache_key(
+    video_path: Path,
+    reference_frame: int,
+    source_frame: int,
+    *,
+    allow_chain: bool,
+    method_version: int = METHOD_VERSION,
+) -> str:
+    """Stable hash keying a single `source_frame -> reference_frame` Landmark registration."""
+    stat = video_path.stat()
+    payload = {
+        "kind": "landmark_reg",
+        "method_version": method_version,
+        "video": {
+            "name": video_path.name,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        },
+        "reference_frame": reference_frame,
+        "source_frame": source_frame,
+        "allow_chain": allow_chain,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
@@ -344,6 +462,162 @@ class CameraMotionCache:
     def _path_for(self, video_path: Path, span: CalibrationSpan) -> Path:
         key = span_cache_key(video_path, span, method_version=self._method_version)
         return self._dir / f"{key}.npz"
+
+    def _reg_path_for(
+        self, video_path: Path, reference_frame: int, source_frame: int, *, allow_chain: bool
+    ) -> Path:
+        key = landmark_reg_cache_key(
+            video_path,
+            reference_frame,
+            source_frame,
+            allow_chain=allow_chain,
+            method_version=self._method_version,
+        )
+        return self._dir / f"reg_{key}.npz"
+
+    def _get_reg(
+        self, video_path: Path, reference_frame: int, source_frame: int, *, allow_chain: bool
+    ) -> tuple[bool, Matrix | None]:
+        """Returns `(cache_hit, matrix_or_none)` for a cached frame-to-reference registration."""
+        if not video_path.is_file():
+            return False, None
+        path = self._reg_path_for(
+            video_path, reference_frame, source_frame, allow_chain=allow_chain
+        )
+        if not path.is_file():
+            return False, None
+        try:
+            with np.load(path) as data:
+                if int(data["method_version"]) != self._method_version:
+                    return False, None
+                mapped = bool(data["mapped"])
+                matrix = np.array(data["matrix"], dtype=np.float64)
+        except OSError, ValueError, KeyError:
+            return False, None
+        if matrix.shape != (3, 3):
+            return False, None
+        return True, (matrix if mapped else None)
+
+    def _put_reg(
+        self,
+        video_path: Path,
+        reference_frame: int,
+        source_frame: int,
+        matrix: Matrix | None,
+        *,
+        allow_chain: bool,
+    ) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        target = self._reg_path_for(
+            video_path, reference_frame, source_frame, allow_chain=allow_chain
+        )
+        fd, raw_tmp = tempfile.mkstemp(dir=self._dir, prefix=".reg-", suffix=".tmp.npz")
+        os.close(fd)
+        tmp = Path(raw_tmp)
+        try:
+            np.savez_compressed(
+                tmp,
+                method_version=np.int32(self._method_version),
+                mapped=np.bool_(matrix is not None),
+                matrix=(
+                    np.eye(3, dtype=np.float64) if matrix is None else matrix.astype(np.float64)
+                ),
+            )
+            tmp.replace(target)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
+
+    def register_calibration_frames(
+        self,
+        video_path: Path | None,
+        calibration: Calibration,
+        segments: Sequence[PlaySegment] = (),
+        *,
+        cancel: threading.Event | None = None,
+    ) -> dict[int, Matrix]:
+        """Returns normalised `frame -> reference_frame` matrices for off-reference Landmarks.
+
+        Results are cached on disk beside span motion caches. Out-of-bounds frames and transient
+        video open/decode failures are never cached as permanent unmapped entries.
+        """
+        ref_f = calibration.reference_frame
+        other_frames = sorted({p.frame for p in calibration.landmarks.values() if p.frame != ref_f})
+        if not other_frames or video_path is None or not video_path.is_file():
+            return {}
+
+        frame_count = video_frame_count(video_path)
+        if frame_count is not None:
+            if ref_f >= frame_count:
+                return {}
+            other_frames = [f for f in other_frames if f < frame_count]
+            if not other_frames:
+                return {}
+
+        ref_seg = next(
+            (s for s in segments if s.camera_view is calibration.camera_view and s.contains(ref_f)),
+            None,
+        )
+        chain_frames: set[int] = set()
+        for src_f in other_frames:
+            if abs(src_f - ref_f) > _MAX_CHAIN_SPAN_FRAMES:
+                continue
+            if ref_seg is not None:
+                if ref_seg.contains(src_f):
+                    chain_frames.add(src_f)
+            elif not segments and abs(src_f - ref_f) <= _MAX_IMPLICIT_CHAIN_FRAMES:
+                chain_frames.add(src_f)
+
+        result: dict[int, Matrix] = {}
+        uncached: list[int] = []
+        for src_f in other_frames:
+            hit, matrix = self._get_reg(
+                video_path, ref_f, src_f, allow_chain=(src_f in chain_frames)
+            )
+            if hit:
+                if matrix is not None:
+                    result[src_f] = matrix
+            else:
+                uncached.append(src_f)
+
+        if uncached:
+            computed = register_frames_to_reference(
+                video_path,
+                ref_f,
+                uncached,
+                chain_frames=chain_frames & set(uncached),
+                cancel=cancel,
+            )
+            for src_f in uncached:
+                if src_f not in computed:
+                    # Capture/decode failure: leave uncached so a later call can retry.
+                    continue
+                mat = computed[src_f]
+                self._put_reg(video_path, ref_f, src_f, mat, allow_chain=(src_f in chain_frames))
+                if mat is not None:
+                    result[src_f] = mat
+        return result
+
+    def landmark_frame_to_ref(
+        self,
+        video_path: Path | None,
+        segments: Sequence[PlaySegment],
+        calibrations: Sequence[Calibration],
+        *,
+        cancel: threading.Event | None = None,
+    ) -> dict[tuple[CameraView, int], dict[int, Matrix]]:
+        """Maps `(camera_view, effective_from_frame)` to off-reference Landmark transforms."""
+        if video_path is None or not video_path.is_file():
+            return {}
+        out: dict[tuple[CameraView, int], dict[int, Matrix]] = {}
+        for cal in calibrations:
+            if not cal.has_off_reference_landmarks:
+                continue
+            f2r = self.register_calibration_frames(video_path, cal, segments, cancel=cancel)
+            if f2r:
+                out[(cal.camera_view, cal.effective_from_frame)] = f2r
+        return out
 
     def get(self, video_path: Path, span: CalibrationSpan) -> SpanMotion | None:
         """Loads a cached SpanMotion if present and valid, else returns None."""
@@ -425,12 +699,17 @@ class CameraMotionCache:
         calibrations: Sequence[Calibration],
     ) -> tuple[CameraMotion, list[tuple[CalibrationSpan, Homography]]]:
         """Loads all cached spans for a Match and returns any complete spans not yet cached."""
-        from pb_tokei.calibration import fit_landmarks
+        from pb_tokei.calibration import assess
 
         cached_spans: list[SpanMotion] = []
         missing: list[tuple[CalibrationSpan, Homography]] = []
+        reg_cache: dict[tuple[CameraView, int], dict[int, Matrix]] = {}
         for span in calibration_spans(segments, calibrations):
-            base = fit_landmarks(span.calibration.landmarks)
+            cal = span.calibration
+            cal_key = (cal.camera_view, cal.effective_from_frame)
+            if cal.has_off_reference_landmarks and cal_key not in reg_cache:
+                reg_cache[cal_key] = self.register_calibration_frames(video_path, cal, segments)
+            base = assess(cal, frame_to_ref=reg_cache.get(cal_key)).homography
             if base is None:
                 continue
             hit = self.get(video_path, span)
@@ -459,6 +738,243 @@ class CameraMotionCache:
             if on_span_done is not None:
                 on_span_done(tracked)
         return CameraMotion(spans)
+
+
+# --- Landmark frame registration ----------------------------------------------------------
+
+
+def register_frames_to_reference(
+    video_path: Path,
+    reference_frame: int,
+    source_frames: Sequence[int],
+    *,
+    chain_frames: AbstractSet[int] = frozenset(),
+    keyframe_stride: int = _KEYFRAME_STRIDE,
+    cancel: threading.Event | None = None,
+) -> dict[int, Matrix | None]:
+    """Estimates normalised `source_frame -> reference_frame` homographies via image features.
+
+    For each `src_f` in `source_frames`:
+    - If `src_f == reference_frame`, maps to the identity matrix.
+    - First tries direct ORB + USAC_MAGSAC matching from `src_f` to `reference_frame`.
+    - If `src_f in chain_frames` and direct matching fails (e.g. a wide pan within one Play
+      Segment), chains ORB + USAC_MAGSAC across intermediate keyframes at `keyframe_stride`.
+    - Maps an attempted frame to None when registration fails. Frames where video open or frame
+      decoding failed are omitted from the returned dict so callers do not cache transient errors.
+    """
+    _check_cancelled(cancel)
+    result: dict[int, Matrix | None] = {}
+    unique_others: list[int] = []
+    for src_f in sorted(set(source_frames)):
+        if src_f == reference_frame:
+            result[src_f] = np.eye(3, dtype=np.float64)
+        else:
+            unique_others.append(src_f)
+    if not unique_others or not video_path.is_file():
+        return result
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return result
+    try:
+        return _register_frames_open(
+            cap,
+            reference_frame,
+            unique_others,
+            result,
+            chain_frames=chain_frames,
+            keyframe_stride=keyframe_stride,
+            cancel=cancel,
+        )
+    finally:
+        cap.release()
+
+
+def _register_frames_open(
+    cap: cv2.VideoCapture,
+    reference_frame: int,
+    unique_others: list[int],
+    result: dict[int, Matrix | None],
+    *,
+    chain_frames: AbstractSet[int],
+    keyframe_stride: int,
+    cancel: threading.Event | None,
+) -> dict[int, Matrix | None]:
+    grid = _work_scale(cap)
+    if grid is None:
+        return result
+
+    ref_gray = _read_gray_frame(cap, reference_frame, grid)
+    if ref_gray is None:
+        return result
+
+    detector: Any = cv2.ORB.create(_ORB_FEATURES)
+    matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+    ref_feats = detector.detectAndCompute(ref_gray, None)
+
+    direct, need_chain = _match_direct_frames(
+        cap,
+        grid,
+        ref_feats,
+        unique_others,
+        chain_frames,
+        detector,
+        matcher,
+        cancel,
+    )
+    result.update(direct)
+
+    if not need_chain:
+        return result
+
+    lo = min(reference_frame, *need_chain)
+    hi = max(reference_frame, *need_chain)
+    step = max(1, min(keyframe_stride, max(1, (hi - lo) // 4)))
+    kf_set = set(range(lo, hi + 1, step)) | {lo, hi, reference_frame, *need_chain}
+    kf_gray = _decode_gray_keyframes(cap, lo, hi, kf_set, grid, cancel)
+    if reference_frame not in kf_gray:
+        return result
+
+    available_kfs = sorted(kf_gray)
+    feat_mask = _estimate_static_mask([kf_gray[f] for f in available_kfs])
+    kf_feats: dict[int, tuple[Any, np.ndarray | None]] = {
+        f: detector.detectAndCompute(kf_gray[f], feat_mask) for f in available_kfs
+    }
+    kf_to_ref = _chain_to_reference(available_kfs, reference_frame, kf_feats, matcher, grid, cancel)
+
+    for src_f in need_chain:
+        h_w = kf_to_ref.get(src_f)
+        if h_w is not None:
+            result[src_f] = _work_homography_to_norm(h_w, grid.s_norm_to_w, grid.s_w_to_norm)
+    return result
+
+
+def _read_gray_frame(cap: cv2.VideoCapture, frame_idx: int, grid: _WorkGrid) -> np.ndarray | None:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ok, bgr = cap.read()
+    if not ok or bgr is None:
+        return None
+    return cv2.cvtColor(_resize_work(bgr, grid.sw, grid.sh), cv2.COLOR_BGR2GRAY)
+
+
+def _match_direct_frames(
+    cap: cv2.VideoCapture,
+    grid: _WorkGrid,
+    ref_feats: tuple[Any, np.ndarray | None],
+    source_frames: Sequence[int],
+    chain_frames: AbstractSet[int],
+    detector: Any,
+    matcher: cv2.BFMatcher,
+    cancel: threading.Event | None,
+) -> tuple[dict[int, Matrix | None], list[int]]:
+    """Attempts direct feature registration from each source frame to `reference_frame`."""
+    direct: dict[int, Matrix | None] = {}
+    need_chain: list[int] = []
+    for src_f in source_frames:
+        _check_cancelled(cancel)
+        src_gray = _read_gray_frame(cap, src_f, grid)
+        if src_gray is None:
+            continue
+        direct[src_f] = None
+        src_feats = detector.detectAndCompute(src_gray, None)
+        h_step, inliers, spread_ok = _match_features(
+            src_feats, ref_feats, matcher, grid.sw, grid.sh
+        )
+        if _accepts_reloc(h_step, inliers, spread_ok, grid.sw, grid.sh):
+            f2r = _work_homography_to_norm(h_step, grid.s_norm_to_w, grid.s_w_to_norm)
+            if f2r is not None:
+                direct[src_f] = f2r
+                continue
+        if src_f in chain_frames:
+            need_chain.append(src_f)
+    return direct, need_chain
+
+
+def _decode_gray_keyframes(
+    cap: cv2.VideoCapture,
+    lo: int,
+    hi: int,
+    kf_set: AbstractSet[int],
+    grid: _WorkGrid,
+    cancel: threading.Event | None,
+) -> dict[int, np.ndarray]:
+    """Grabs sequentially from `lo` to `hi`, decoding only frames in `kf_set` as grayscale."""
+    cap.set(cv2.CAP_PROP_POS_FRAMES, lo)
+    kf_gray: dict[int, np.ndarray] = {}
+    for f in range(lo, hi + 1):
+        if (f - lo) % 30 == 0:
+            _check_cancelled(cancel)
+        if not cap.grab():
+            break
+        if f in kf_set:
+            ok, bgr = cap.retrieve()
+            if not ok or bgr is None:
+                continue
+            kf_gray[f] = cv2.cvtColor(_resize_work(bgr, grid.sw, grid.sh), cv2.COLOR_BGR2GRAY)
+    return kf_gray
+
+
+def _chain_to_reference(
+    available_kfs: Sequence[int],
+    reference_frame: int,
+    kf_feats: dict[int, tuple[Any, np.ndarray | None]],
+    matcher: cv2.BFMatcher,
+    grid: _WorkGrid,
+    cancel: threading.Event | None,
+) -> dict[int, Matrix]:
+    """Walks outward from `reference_frame` across keyframes, preferring direct matches."""
+    kf_to_ref: dict[int, Matrix] = {reference_frame: np.eye(3, dtype=np.float64)}
+    ref_pos = available_kfs.index(reference_frame)
+
+    def walk(indices: Sequence[int]) -> None:
+        last_good: int | None = reference_frame
+        prev_mapped = True
+        for idx_k in indices:
+            _check_cancelled(cancel)
+            cur_f = available_kfs[idx_k]
+            h_dir, inliers_d, spread_d = _match_features(
+                kf_feats[cur_f], kf_feats[reference_frame], matcher, grid.sw, grid.sh
+            )
+            if _accepts_reloc(h_dir, inliers_d, spread_d, grid.sw, grid.sh):
+                kf_to_ref[cur_f] = h_dir
+                last_good = cur_f
+                prev_mapped = True
+                continue
+            if prev_mapped and last_good is not None:
+                h_step, inliers_s, spread_s = _match_features(
+                    kf_feats[cur_f], kf_feats[last_good], matcher, grid.sw, grid.sh
+                )
+                if _accepts_step(
+                    h_step, inliers_s, spread_s, grid.sw, grid.sh, require_spread=True
+                ):
+                    chained = kf_to_ref[last_good] @ h_step
+                    if (
+                        np.all(np.isfinite(chained))
+                        and np.linalg.cond(chained) < _MAX_HOMOGRAPHY_COND
+                    ):
+                        kf_to_ref[cur_f] = _normalise_h(chained)
+                        last_good = cur_f
+                        prev_mapped = True
+                        continue
+            prev_mapped = False
+
+    walk(list(range(ref_pos + 1, len(available_kfs))))
+    walk(list(range(ref_pos - 1, -1, -1)))
+    return kf_to_ref
+
+
+def _work_homography_to_norm(
+    h_w: Matrix, s_norm_to_w: Matrix, s_w_to_norm: Matrix
+) -> Matrix | None:
+    """Converts a work-pixel `src -> ref` matrix into a normalised `[0, 1]^2` `src -> ref` one."""
+    f2r = s_w_to_norm @ h_w @ s_norm_to_w
+    if not np.all(np.isfinite(f2r)) or np.linalg.cond(f2r) > _MAX_HOMOGRAPHY_COND:
+        return None
+    w_center = float(f2r[2, 0] * 0.5 + f2r[2, 1] * 0.5 + f2r[2, 2])
+    if w_center < 0:
+        f2r = -f2r
+    norm = float(np.linalg.norm(f2r))
+    return None if norm < 1e-12 else f2r / norm
 
 
 # --- Tracking algorithm -------------------------------------------------------------------
@@ -524,22 +1040,14 @@ def _track_span_open(
     keyframe_stride: int,
     cancel: threading.Event | None = None,
 ) -> SpanMotion:
-    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if orig_w <= 0 or orig_h <= 0:
+    grid = _work_scale(cap)
+    if grid is None:
         raise CameraMotionError("Video has invalid frame dimensions")
 
-    work_scale = min(1.0, _WORK_MAX_WIDTH / orig_w)
-    sw = max(1, int(round(orig_w * work_scale)))
-    sh = max(1, int(round(orig_h * work_scale)))
+    sw, sh, s_norm_to_w, s_w_to_norm = grid
     flank = max(3, int(round(5 * sw / 960)))
     r_wide = max(10, int(round(16 * sw / 960)))
     r_narrow = max(4, int(round(6 * sw / 960)))
-
-    s_norm_to_w = np.array([[sw, 0.0, 0.0], [0.0, sh, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
-    s_w_to_norm = np.array(
-        [[1.0 / sw, 0.0, 0.0], [0.0, 1.0 / sh, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
-    )
     h_court_to_ref_w = s_norm_to_w @ base_homography.court_to_image
 
     start_f = span.start_frame
@@ -608,12 +1116,7 @@ def _track_span_open(
         h_step, inliers, spread_ok = _match_features(
             kf_feats[target_f], anchor_feats, matcher, sw, sh
         )
-        if (
-            h_step is None
-            or inliers < _MIN_RELOC_INLIERS
-            or not spread_ok
-            or not _is_sane_homography(h_step, sw, sh, strict_step=False)
-        ):
+        if not _accepts_reloc(h_step, inliers, spread_ok, sw, sh):
             return False
         h_init = _safe_inv(h_step)
         if h_init is None:
@@ -629,14 +1132,10 @@ def _track_span_open(
         return True
 
     def try_step(cur_f: int, prev_f: int) -> bool:
-        h_step, inliers, _spread = _match_features(
+        h_step, inliers, spread_ok = _match_features(
             kf_feats[cur_f], kf_feats[prev_f], matcher, sw, sh
         )
-        if (
-            h_step is None
-            or inliers < _MIN_STEP_INLIERS
-            or not _is_sane_homography(h_step, sw, sh, strict_step=True)
-        ):
+        if not _accepts_step(h_step, inliers, spread_ok, sw, sh):
             return False
         h_inv = _safe_inv(h_step)
         if h_inv is None:
@@ -1112,7 +1611,7 @@ def _refine_to_lines(
                 break
 
         candidate = h_p2c_init @ n_p_inv @ _param_matrix(p) @ n_p
-        if np.all(np.isfinite(candidate)) and np.linalg.cond(candidate) < 1e10:
+        if np.all(np.isfinite(candidate)) and np.linalg.cond(candidate) < _MAX_HOMOGRAPHY_COND:
             h_p2c = candidate
         stats = _compute_line_stats(h_p2c, pts, eqs, lids, n_vis)
 
@@ -1187,7 +1686,7 @@ def _court_to_frame_as_frame_to_ref(
     if h_f_to_court_norm is None:
         return None
     f2r = base_court_to_image @ h_f_to_court_norm
-    if not np.all(np.isfinite(f2r)) or np.linalg.cond(f2r) > 1e10:
+    if not np.all(np.isfinite(f2r)) or np.linalg.cond(f2r) > _MAX_HOMOGRAPHY_COND:
         return None
     # Scale so homogeneous `w` is positive at the centre of the frame.
     w_center = float(f2r[2, 0] * 0.5 + f2r[2, 1] * 0.5 + f2r[2, 2])

@@ -70,6 +70,26 @@ CREATE TABLE IF NOT EXISTS {name} (
 )"""
 
 
+def calibration_landmarks_table(name: str) -> str:
+    """The Calibration Landmarks table: placed (image coords + click frame) or not visible."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    match_id UUID NOT NULL,
+    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
+    effective_from_frame INTEGER NOT NULL,
+    landmark VARCHAR NOT NULL {_one_of("landmark", Landmark)},
+    status VARCHAR NOT NULL CHECK (status IN ('placed', 'not_visible')),
+    image_x DOUBLE CHECK (image_x BETWEEN 0 AND 1),
+    image_y DOUBLE CHECK (image_y BETWEEN 0 AND 1),
+    frame INTEGER CHECK (frame >= 0),
+    CHECK (
+        (status = 'placed' AND image_x IS NOT NULL AND image_y IS NOT NULL AND frame IS NOT NULL)
+        OR (status = 'not_visible' AND image_x IS NULL AND image_y IS NULL AND frame IS NULL)
+    ),
+    PRIMARY KEY (match_id, camera_view, effective_from_frame, landmark)
+)"""
+
+
 def migrate(db: duckdb.DuckDBPyConnection) -> None:
     """Brings a Rally Log made by an older version up to the current schema.
 
@@ -80,18 +100,60 @@ def migrate(db: duckdb.DuckDBPyConnection) -> None:
         "SELECT 1 FROM duckdb_constraints() WHERE table_name = 'play_segments' "
         "AND constraint_type = 'CHECK' AND expression = '(start_frame < end_frame)'"
     ).fetchone()
-    if old_check is None:
-        return
-    db.execute("BEGIN TRANSACTION")
-    try:
-        db.execute(play_segments_table("play_segments_migrated"))
-        db.execute("INSERT INTO play_segments_migrated SELECT * FROM play_segments")
-        db.execute("DROP TABLE play_segments")
-        db.execute("ALTER TABLE play_segments_migrated RENAME TO play_segments")
-    except BaseException:
-        db.execute("ROLLBACK")
-        raise
-    db.execute("COMMIT")
+    if old_check is not None:
+        db.execute("BEGIN TRANSACTION")
+        try:
+            db.execute(play_segments_table("play_segments_migrated"))
+            db.execute("INSERT INTO play_segments_migrated SELECT * FROM play_segments")
+            db.execute("DROP TABLE play_segments")
+            db.execute("ALTER TABLE play_segments_migrated RENAME TO play_segments")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
+
+    has_landmark_frame = db.execute(
+        "SELECT 1 FROM duckdb_columns() WHERE table_name = 'calibration_landmarks' "
+        "AND column_name = 'frame'"
+    ).fetchone()
+    if has_landmark_frame is None:
+        db.execute("BEGIN TRANSACTION")
+        try:
+            db.execute(calibration_landmarks_table("calibration_landmarks_migrated"))
+            db.execute(
+                """
+                INSERT INTO calibration_landmarks_migrated (
+                    match_id,
+                    camera_view,
+                    effective_from_frame,
+                    landmark,
+                    status,
+                    image_x,
+                    image_y,
+                    frame
+                )
+                SELECT
+                    cl.match_id,
+                    cl.camera_view,
+                    cl.effective_from_frame,
+                    cl.landmark,
+                    'placed',
+                    cl.image_x,
+                    cl.image_y,
+                    c.reference_frame
+                FROM calibration_landmarks cl
+                JOIN calibrations c
+                  ON c.match_id = cl.match_id
+                 AND c.camera_view = cl.camera_view
+                 AND c.effective_from_frame = cl.effective_from_frame
+                """
+            )
+            db.execute("DROP TABLE calibration_landmarks")
+            db.execute("ALTER TABLE calibration_landmarks_migrated RENAME TO calibration_landmarks")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
 
 
 _RALLY_KEY = "match_id UUID NOT NULL, game_number INTEGER NOT NULL"
@@ -165,16 +227,7 @@ CREATE TABLE IF NOT EXISTS calibrations (
     reference_frame INTEGER NOT NULL CHECK (reference_frame >= 0),
     PRIMARY KEY (match_id, camera_view, effective_from_frame)
 )""",
-    f"""
-CREATE TABLE IF NOT EXISTS calibration_landmarks (
-    match_id UUID NOT NULL,
-    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
-    effective_from_frame INTEGER NOT NULL,
-    landmark VARCHAR NOT NULL {_one_of("landmark", Landmark)},
-    image_x DOUBLE NOT NULL CHECK (image_x BETWEEN 0 AND 1),
-    image_y DOUBLE NOT NULL CHECK (image_y BETWEEN 0 AND 1),
-    PRIMARY KEY (match_id, camera_view, effective_from_frame, landmark)
-)""",
+    calibration_landmarks_table("calibration_landmarks"),
     """
 CREATE TABLE IF NOT EXISTS games (
     match_id UUID NOT NULL,

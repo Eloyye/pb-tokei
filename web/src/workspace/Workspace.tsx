@@ -4,10 +4,13 @@ import {
   calibrationAt,
   calibrationKeyFor,
   clearLandmark,
+  confirmAllLandmarks,
+  confirmLandmark,
   currentFit,
-  fitKey,
   deleteCalibration,
+  fitKey,
   landmarkLabel,
+  markNotVisible,
   newCalibration,
   nextLandmark,
   placeLandmark,
@@ -30,7 +33,7 @@ import {
 } from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import { followFrame, type FrameRange, fullView, zoomView } from "../lib/timeline";
+import { type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
@@ -64,8 +67,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const { step, togglePlay, setSpeed } = controls;
   const [gotoOpen, setGotoOpen] = useState(false);
   const [view, setView] = useState<FrameRange>(() => fullView(totalFrames));
-  const [viewFor, setViewFor] = useState(totalFrames);
-  const [followedFrame, setFollowedFrame] = useState(frame);
+  const [previousPosition, setPreviousPosition] = useState({ frame, totalFrames });
   const [sizes, setSizes] = useState<PanelSizes>(loadSizes);
   const [focused, setFocused] = useState<PanelId>("monitor");
   const gridRef = useRef<HTMLDivElement>(null);
@@ -89,6 +91,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const unmappedHere = unmappedRangeAt(unmappedRanges, frame);
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
   const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
+  const activeFit = calibration ? currentFit(recordingState.fits, calibration) : undefined;
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,
     landmark: null,
@@ -96,7 +99,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const selected =
     selection.key === calibrationKey
       ? selection.landmark
-      : nextLandmark(calibration?.landmarks ?? {}, null);
+      : nextLandmark(calibration?.landmarks ?? {}, null, calibration?.not_visible ?? []);
   const select = (landmark: Landmark | null) => setSelection({ key: calibrationKey, landmark });
 
   const place = (landmark: Landmark, point: Point, how: "click" | "drag") => {
@@ -105,11 +108,48 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       const edit = placeLandmark(list, segment, frame, landmark, point);
       // The first click creates the Calibration; the selection follows it either way.
       if (edit.edited) {
-        const next = how === "drag" ? landmark : nextLandmark(edit.edited.landmarks, landmark);
+        const next =
+          how === "drag"
+            ? landmark
+            : nextLandmark(edit.edited.landmarks, landmark, edit.edited.not_visible);
         setSelection({ key: fitKey(edit.edited), landmark: next });
       }
       return edit;
     });
+  };
+
+  const setNotVisible = (landmark: Landmark) => {
+    if (!segment) return;
+    recording.editCalibrations((list) => {
+      const edit = markNotVisible(list, segment, frame, landmark);
+      if (edit.edited) {
+        const next = nextLandmark(edit.edited.landmarks, landmark, edit.edited.not_visible);
+        setSelection({ key: fitKey(edit.edited), landmark: next });
+      }
+      return edit;
+    });
+  };
+
+  const confirmOne = (landmark: Landmark) => {
+    if (!segment) return;
+    const resolved =
+      calibration && frame === calibration.reference_frame
+        ? activeFit?.resolved_landmarks[landmark]
+        : undefined;
+    recording.editCalibrations((list) =>
+      confirmLandmark(list, segment.camera_view, frame, landmark, resolved),
+    );
+  };
+
+  const confirmAllHere = () => {
+    if (!segment) return;
+    const resolved =
+      calibration && frame === calibration.reference_frame
+        ? activeFit?.resolved_landmarks
+        : undefined;
+    recording.editCalibrations((list) =>
+      confirmAllLandmarks(list, segment.camera_view, frame, resolved),
+    );
   };
 
   const calibrate = (action: CalibrationAction) => {
@@ -127,24 +167,23 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return recording.editCalibrations((list) =>
           clearLandmark(list, segment.camera_view, frame, selected),
         );
+      case "notVisible":
+        if (!selected) return recording.notify("Pick a Landmark in the list first");
+        return setNotVisible(selected);
+      case "confirm":
+        if (!selected) return recording.notify("Pick a Landmark in the list first");
+        return confirmOne(selected);
     }
   };
 
-  // Show the whole video once its length is first known, then page the view whenever the
-  // playhead moves off screen. Paging only when the frame changes leaves the view where the
-  // overview put it while paused. Both adjust state while rendering, React's pattern for state
-  // that follows props, and settle on one view so neither update overrides the other.
-  let nextView = view;
-  if (viewFor !== totalFrames) {
-    setViewFor(totalFrames);
-    // A later correction of the length (at the last frame) keeps the zoom.
-    if (viewFor === 0) nextView = fullView(totalFrames);
+  // Reconcile the Timeline while rendering so duration and playhead updates use one view.
+  // Paging only on frame changes lets the overview pan while paused.
+  if (previousPosition.totalFrames !== totalFrames || previousPosition.frame !== frame) {
+    const position = { frame, totalFrames };
+    const nextView = reconcileView(view, previousPosition, position);
+    setPreviousPosition(position);
+    if (nextView !== view) setView(nextView);
   }
-  if (followedFrame !== frame) {
-    setFollowedFrame(frame);
-    nextView = followFrame(nextView, frame);
-  }
-  if (nextView !== view) setView(nextView);
   useEffect(() => saveSizes(sizes), [sizes]);
 
   const zoom = useCallback(
@@ -276,7 +315,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 videoRef={videoRef}
                 frame={frame}
                 calibration={calibration}
-                fit={calibration && currentFit(recordingState.fits, calibration)}
+                fit={activeFit}
                 lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
                 frameMatrix={cameraMotion.frameMatrix}
                 unmapped={cameraMotion.frameUnmapped}
@@ -327,6 +366,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 if (!segment) return;
                 recording.editCalibrations((list) => reanchorCalibration(list, segment, frame));
               }}
+              onMarkNotVisible={setNotVisible}
+              onClearLandmark={(landmark) => {
+                if (!segment) return;
+                recording.editCalibrations((list) =>
+                  clearLandmark(list, segment.camera_view, frame, landmark),
+                );
+              }}
+              onConfirmLandmark={confirmOne}
+              onConfirmAll={confirmAllHere}
               onRetrack={cameraMotion.retrack}
             />
           ) : (

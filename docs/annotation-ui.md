@@ -213,33 +213,35 @@ Every change autosaves at once through the API. There is no Save button. The sta
 
 Playback keys are unchanged from the current app (`web/src/lib/keymap.ts`). Plain letters and digits never move the playhead.
 
-| Action | Key |
-|---|---|
-| Play / pause (stops at the Rally's end) | `Space` |
-| One frame back / forward | `←` / `→` |
-| ±1 s / ±10 s | `Shift+←/→` / `Alt+←/→` |
-| Slower / faster / back to 1× | `[` / `]` / `\` |
-| Go to frame or time | `/` |
-| Previous / next Shot (seek to contact) | `↑` / `↓` |
-| Previous / next Rally | `PgUp` / `PgDn` |
-| Zoom timeline | `-` / `=` |
-| Move field cursor | `Tab` / `Shift+Tab` |
-| Rally start / end at playhead | `Shift+I` / `Shift+O` |
-| Add Shot at playhead | `M` |
-| Shot Class: Soft / Hard / Lob / Overhead | `S` `H` `L` `O` |
-| Contact Kind: Volley / Bounce | `V` `B` |
-| Swap hitter to partner | `X` |
-| Toggle Erne / ATP | `E` / `T` |
-| Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear | `1`–`5` / `0` |
-| Observation Gap after current Shot: odd / even | `G` / `Shift+G` |
-| Delete Shot | `Backspace` |
-| Cycle certainty of focused field | `C` |
-| Referee Call: point / second server / side out | `Shift+P` / `Shift+2` / `Shift+X` |
-| Record a Challenge | `Shift+C` |
-| Mark Rally Done (Review: accept), go to next | `Enter` |
-| Next / previous low-confidence field (Review) | `N` / `Shift+N` |
-| Undo / redo | `⌘Z` / `⇧⌘Z` |
-| Shortcut sheet | `?` |
+This is the Annotate and Review keymap. **Today** marks the keys that work in the current app (✓); the rest are planned with Rally and Shot entry (#12) and the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet always lists exactly the keys that work.
+
+| Action | Key | Today |
+|---|---|---|
+| Play / pause (stops at the Rally's end) | `Space` | ✓ (stopping at the Rally's end is planned) |
+| One frame back / forward | `←` / `→` | ✓ |
+| ±1 s / ±10 s | `Shift+←/→` / `Alt+←/→` | ✓ |
+| Slower / faster / back to 1× | `[` / `]` / `\` | ✓ |
+| Go to frame or time | `/` | ✓ |
+| Previous / next Shot (seek to contact) | `↑` / `↓` | planned |
+| Previous / next Rally | `PgUp` / `PgDn` | planned |
+| Zoom timeline | `-` / `=` | ✓ |
+| Move field cursor | `Tab` / `Shift+Tab` | planned (in Calibrate, `Tab` skips to the next Landmark) |
+| Rally start / end at playhead | `Shift+I` / `Shift+O` | planned (in Calibrate: Play Segment start / end) |
+| Add Shot at playhead | `M` | planned |
+| Shot Class: Soft / Hard / Lob / Overhead | `S` `H` `L` `O` | planned |
+| Contact Kind: Volley / Bounce | `V` `B` | planned |
+| Swap hitter to partner | `X` | planned (in Calibrate: clear the selected Landmark) |
+| Toggle Erne / ATP | `E` / `T` | planned |
+| Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear | `1`–`5` / `0` | planned (in Calibrate, `1` / `2` set Main / Sideline View) |
+| Observation Gap after current Shot: odd / even | `G` / `Shift+G` | planned |
+| Delete Shot | `Backspace` | planned (in Calibrate: remove the Play Segment) |
+| Cycle certainty of focused field | `C` | planned |
+| Referee Call: point / second server / side out | `Shift+P` / `Shift+2` / `Shift+X` | planned |
+| Record a Challenge | `Shift+C` | planned |
+| Mark Rally Done (Review: accept), go to next | `Enter` | planned |
+| Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
+| Undo / redo | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate |
+| Shortcut sheet | `?` | ✓ |
 
 Premiere's `J/K/L` shuttle is deliberately left out: `L` is Lob, and `Space` plus `[ ]` cover shuttling. Premiere's `I`/`O` move to `Shift+I`/`Shift+O` because `O` is Overhead.
 

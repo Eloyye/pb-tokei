@@ -15,7 +15,7 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -137,6 +137,8 @@ class CalibrationFit:
 
     homography: Homography | None
     errors: dict[Landmark, LandmarkError]
+    resolved_landmarks: dict[Landmark, ImagePoint] = field(default_factory=dict)
+    unmapped_landmarks: frozenset[Landmark] = field(default_factory=frozenset)
 
     @property
     def complete(self) -> bool:
@@ -149,7 +151,36 @@ class CalibrationFit:
 
     @property
     def needs_attention(self) -> bool:
-        return any(e.needs_attention for e in self.errors.values())
+        return bool(self.unmapped_landmarks) or any(e.needs_attention for e in self.errors.values())
+
+
+def resolve_landmarks(
+    calibration: Calibration,
+    frame_to_ref: Mapping[int, Matrix] | None = None,
+) -> tuple[dict[Landmark, ImagePoint], frozenset[Landmark]]:
+    """Maps a Calibration's placed Landmarks into `reference_frame` image coordinates.
+
+    Landmarks clicked on `reference_frame` stay as-is. Landmarks clicked on another frame `f`
+    are warped through `frame_to_ref[f]`; if no valid transform is available for `f` (or the
+    warped point lies behind the camera), the Landmark is returned in `unmapped_landmarks` rather
+    than silently mixed with `reference_frame` clicks.
+    """
+    resolved: dict[Landmark, ImagePoint] = {}
+    unmapped: set[Landmark] = set()
+    for landmark, placed in calibration.landmarks.items():
+        if placed.frame == calibration.reference_frame:
+            resolved[landmark] = placed.point
+            continue
+        matrix = None if frame_to_ref is None else frame_to_ref.get(placed.frame)
+        if matrix is None:
+            unmapped.add(landmark)
+            continue
+        mapped = _apply(matrix, placed.x, placed.y)
+        if mapped is None or not (math.isfinite(mapped[0]) and math.isfinite(mapped[1])):
+            unmapped.add(landmark)
+            continue
+        resolved[landmark] = ImagePoint(*mapped)
+    return resolved, frozenset(unmapped)
 
 
 def fit_landmarks(landmarks: Mapping[Landmark, ImagePoint]) -> Homography | None:
@@ -172,21 +203,30 @@ def fit_landmarks(landmarks: Mapping[Landmark, ImagePoint]) -> Homography | None
     )
 
 
-def assess(calibration: Calibration) -> CalibrationFit:
-    """Fits a Calibration and measures each Landmark's error, in feet."""
-    landmarks = calibration.landmarks
-    homography = fit_landmarks(landmarks)
+def assess(
+    calibration: Calibration,
+    *,
+    frame_to_ref: Mapping[int, Matrix] | None = None,
+) -> CalibrationFit:
+    """Fits a Calibration on its `reference_frame` and measures each Landmark's error, in feet.
+
+    Landmarks clicked on other frames are mapped back to `reference_frame` via `frame_to_ref`
+    before fitting; any that cannot be mapped are excluded from the fit and returned in
+    `unmapped_landmarks`.
+    """
+    resolved, unmapped = resolve_landmarks(calibration, frame_to_ref)
+    homography = fit_landmarks(resolved)
     if homography is None:
-        return CalibrationFit(None, {})
+        return CalibrationFit(None, {}, resolved, unmapped)
     errors = {}
-    for landmark, point in landmarks.items():
-        others = {lm: p for lm, p in landmarks.items() if lm is not landmark}
+    for landmark, point in resolved.items():
+        others = {lm: p for lm, p in resolved.items() if lm is not landmark}
         refit = fit_landmarks(others)
         errors[landmark] = LandmarkError(
             residual_ft=_error_ft(homography, landmark, point),
             leave_one_out_ft=None if refit is None else _error_ft(refit, landmark, point),
         )
-    return CalibrationFit(homography, errors)
+    return CalibrationFit(homography, errors, resolved, unmapped)
 
 
 def calibration_at(
@@ -215,12 +255,38 @@ class CourtMapping:
         segments: Sequence[PlaySegment],
         calibrations: Sequence[Calibration],
         camera_motion: CameraMotion | None = None,
+        landmark_frame_to_ref: Mapping[tuple[CameraView, int], Mapping[int, Matrix]] | None = None,
     ):
         self._segments = sorted(segments, key=lambda s: s.start_frame)
         self._calibrations = tuple(calibrations)
         self._camera_motion = camera_motion
+        self._landmark_frame_to_ref = landmark_frame_to_ref
         self._fits: dict[tuple[CameraView, int], Homography | None] = {}
         self._landmark_courts: dict[tuple[CameraView, int], np.ndarray] = {}
+
+    def _frame_to_ref_for(self, calibration: Calibration) -> dict[int, Matrix]:
+        # Explicit `landmark_frame_to_ref` takes precedence over `camera_motion`: it is estimated
+        # independently of the Calibration's own fit and also covers clicks from outside the active
+        # span (e.g. carried over from an earlier Play Segment). `camera_motion` is a fallback for
+        # off-reference clicks inside a span tracked for the same view and reference frame.
+        key = (calibration.camera_view, calibration.effective_from_frame)
+        f2r: dict[int, Matrix] = {}
+        if self._landmark_frame_to_ref is not None:
+            f2r.update(self._landmark_frame_to_ref.get(key, {}))
+        if self._camera_motion is not None:
+            for placed in calibration.landmarks.values():
+                if placed.frame == calibration.reference_frame or placed.frame in f2r:
+                    continue
+                span = self._camera_motion.span_at(placed.frame)
+                if (
+                    span is not None
+                    and span.camera_view is calibration.camera_view
+                    and span.calibration_reference_frame == calibration.reference_frame
+                ):
+                    mat = span.at(placed.frame)
+                    if mat is not None:
+                        f2r[placed.frame] = mat
+        return f2r
 
     def at(self, frame: int) -> Homography | None:
         """The homography for a frame, or None outside Play Segments, unmapped, or incomplete."""
@@ -232,10 +298,12 @@ class CourtMapping:
             return None
         key = (calibration.camera_view, calibration.effective_from_frame)
         if key not in self._fits:
-            self._fits[key] = fit_landmarks(calibration.landmarks)
-            if calibration.landmarks:
+            f2r = self._frame_to_ref_for(calibration)
+            resolved, _ = resolve_landmarks(calibration, f2r)
+            self._fits[key] = fit_landmarks(resolved)
+            if resolved:
                 self._landmark_courts[key] = np.array(
-                    [[lm.court_point.x, lm.court_point.y] for lm in calibration.landmarks],
+                    [[lm.court_point.x, lm.court_point.y] for lm in resolved],
                     dtype=np.float64,
                 )
         base = self._fits[key]

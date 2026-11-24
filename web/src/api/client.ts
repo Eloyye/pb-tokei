@@ -30,6 +30,7 @@ export async function getMatch(matchId: string) {
 type Schemas = components["schemas"];
 export type CameraView = Schemas["CameraView"];
 export type Landmark = Schemas["Landmark"];
+export type PlacedLandmark = Schemas["PlacedLandmarkIO"];
 /** Live play from one Camera View, `start_frame` to `end_frame` inclusive. */
 export type PlaySegment = Schemas["PlaySegmentIO"];
 export type CalibrationOut = Schemas["CalibrationOut"];
@@ -42,7 +43,7 @@ export type UnmappedRangeOut = Schemas["UnmappedRangeOut"];
 /** A Calibration's own fields, without its fit: what is edited and saved. */
 export type Calibration = Pick<
   CalibrationOut,
-  "camera_view" | "effective_from_frame" | "reference_frame" | "landmarks"
+  "camera_view" | "effective_from_frame" | "reference_frame" | "landmarks" | "not_visible"
 >;
 
 /** A Calibration's own fields, dropping the fit the server computed. */
@@ -51,8 +52,9 @@ export function toCalibration({
   effective_from_frame,
   reference_frame,
   landmarks,
+  not_visible,
 }: CalibrationOut): Calibration {
-  return { camera_view, effective_from_frame, reference_frame, landmarks };
+  return { camera_view, effective_from_frame, reference_frame, landmarks, not_visible };
 }
 
 export async function getPlaySegments(matchId: string): Promise<PlaySegment[]> {

@@ -29,13 +29,13 @@ from .model import (
     FranchiseMatchId,
     Game,
     Handedness,
-    ImagePoint,
     Landmark,
     Match,
     MatchId,
     MatchSummary,
     ObservationGap,
     Parity,
+    PlacedLandmark,
     Player,
     PlayerId,
     PlaySegment,
@@ -460,13 +460,27 @@ class RallyLog:
         )
 
     def _load_calibrations(self, match_id: MatchId) -> tuple[Calibration, ...]:
-        points: dict[tuple[str, int], dict[Landmark, ImagePoint]] = defaultdict(dict)
-        for _, view, effective, landmark, x, y in self._all(
-            "SELECT * FROM calibration_landmarks WHERE match_id = ?", match_id
+        points: dict[tuple[str, int], dict[Landmark, PlacedLandmark]] = defaultdict(dict)
+        not_visible: dict[tuple[str, int], set[Landmark]] = defaultdict(set)
+        for _, view, effective, landmark, status, x, y, frame in self._all(
+            "SELECT match_id, camera_view, effective_from_frame, landmark, "
+            "status, image_x, image_y, frame "
+            "FROM calibration_landmarks WHERE match_id = ?",
+            match_id,
         ):
-            points[view, effective][Landmark(landmark)] = ImagePoint(x, y)
+            lm = Landmark(landmark)
+            if status == "not_visible":
+                not_visible[view, effective].add(lm)
+            else:
+                points[view, effective][lm] = PlacedLandmark(x, y, frame)
         return tuple(
-            Calibration(CameraView(view), effective, reference, points[view, effective])
+            Calibration(
+                CameraView(view),
+                effective,
+                reference,
+                points[view, effective],
+                frozenset(not_visible[view, effective]),
+            )
             for _, view, effective, reference in self._all(
                 "SELECT * FROM calibrations WHERE match_id = ? "
                 "ORDER BY camera_view, effective_from_frame",
@@ -475,13 +489,19 @@ class RallyLog:
         )
 
     def _insert_calibrations(self, match_id: MatchId, calibrations: Sequence[Calibration]) -> None:
-        rows, points = [], []
+        rows, landmark_rows = [], []
         for c in calibrations:
             key = [match_id, c.camera_view.value, c.effective_from_frame]
             rows.append([*key, c.reference_frame])
-            points.extend([*key, lm.value, p.x, p.y] for lm, p in c.landmarks.items())
+            landmark_rows.extend(
+                [*key, lm.value, "placed", p.x, p.y, p.frame] for lm, p in c.landmarks.items()
+            )
+            landmark_rows.extend(
+                [*key, lm.value, "not_visible", None, None, None]
+                for lm in sorted(c.not_visible, key=lambda item: item.value)
+            )
         self._many("calibrations", rows)
-        self._many("calibration_landmarks", points)
+        self._many("calibration_landmarks", landmark_rows)
 
     # --- Writing match content ------------------------------------------------------------
 

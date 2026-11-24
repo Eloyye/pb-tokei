@@ -12,9 +12,9 @@ from pb_tokei.annotate.app import CalibrationOut, create_app
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
-    ImagePoint,
     Landmark,
     MatchId,
+    PlacedLandmark,
     RallyLog,
     SourceVideo,
 )
@@ -354,13 +354,18 @@ def test_unknown_api_path_is_404_not_index_html(client: TestClient) -> None:
 
 # --- Play Segments and Calibrations -------------------------------------------------------
 
+
 # Where a camera high behind the near baseline sees the four baseline corners.
-CORNERS = {
-    "near_baseline_left": {"x": 0.1, "y": 0.9},
-    "near_baseline_right": {"x": 0.9, "y": 0.9},
-    "far_baseline_left": {"x": 0.35, "y": 0.2},
-    "far_baseline_right": {"x": 0.65, "y": 0.2},
-}
+def corners(frame: int = 130) -> dict[str, dict[str, float | int]]:
+    return {
+        "near_baseline_left": {"x": 0.1, "y": 0.9, "frame": frame},
+        "near_baseline_right": {"x": 0.9, "y": 0.9, "frame": frame},
+        "far_baseline_left": {"x": 0.35, "y": 0.2, "frame": frame},
+        "far_baseline_right": {"x": 0.65, "y": 0.2, "frame": frame},
+    }
+
+
+CORNERS = corners(130)
 
 
 def test_play_segments_are_replaced_and_read_back(client: TestClient, db: Path) -> None:
@@ -406,7 +411,12 @@ def test_calibrations_are_saved_per_view_and_returned_with_their_fit(
     client: TestClient, db: Path
 ) -> None:
     match_id = add_match(db)
-    main = {"effective_from_frame": 100, "reference_frame": 130, "landmarks": CORNERS}
+    main = {
+        "effective_from_frame": 100,
+        "reference_frame": 130,
+        "landmarks": CORNERS,
+        "not_visible": ["near_kitchen_centre"],
+    }
     sideline = {"effective_from_frame": 900, "reference_frame": 950, "landmarks": {}}
 
     response = client.put(f"/api/matches/{match_id}/calibrations/main", json=[main])
@@ -416,6 +426,9 @@ def test_calibrations_are_saved_per_view_and_returned_with_their_fit(
     (saved,) = response.json()
     assert saved["camera_view"] == "main"
     assert saved["landmarks"] == CORNERS
+    assert saved["not_visible"] == ["near_kitchen_centre"]
+    assert saved["unmapped_landmarks"] == []
+    assert set(saved["resolved_landmarks"]) == set(CORNERS)
     assert saved["complete"] is True
     assert len(saved["image_to_court"]) == 3 and len(saved["court_to_image"]) == 3
     assert set(saved["errors"]) == set(CORNERS)
@@ -434,7 +447,7 @@ def test_calibrations_are_saved_per_view_and_returned_with_their_fit(
 
 def test_replacing_one_views_calibrations_keeps_the_others(client: TestClient, db: Path) -> None:
     match_id = add_match(db)
-    calibration = {"effective_from_frame": 0, "reference_frame": 0, "landmarks": CORNERS}
+    calibration = {"effective_from_frame": 0, "reference_frame": 0, "landmarks": corners(0)}
     client.put(f"/api/matches/{match_id}/calibrations/sideline", json=[calibration])
 
     client.put(f"/api/matches/{match_id}/calibrations/main", json=[])
@@ -444,19 +457,52 @@ def test_replacing_one_views_calibrations_keeps_the_others(client: TestClient, d
 
 
 @pytest.mark.parametrize(
-    "landmarks",
-    [{"halfway_line": {"x": 0.5, "y": 0.5}}, {"near_baseline_left": {"x": 1.5, "y": 0.5}}],
-    ids=["unknown-landmark", "outside-frame"],
+    ("landmarks", "not_visible"),
+    [
+        ({"halfway_line": {"x": 0.5, "y": 0.5, "frame": 0}}, []),
+        ({"near_baseline_left": {"x": 1.5, "y": 0.5, "frame": 0}}, []),
+        ({"near_baseline_left": {"x": 0.5, "y": 0.5, "frame": -1}}, []),
+        ({"near_baseline_left": {"x": 0.5, "y": 0.5, "frame": 0}}, ["near_baseline_left"]),
+    ],
+    ids=["unknown-landmark", "outside-frame", "negative-frame", "placed-and-not-visible"],
 )
 def test_invalid_calibrations_are_refused(
-    client: TestClient, db: Path, landmarks: dict[str, object]
+    client: TestClient, db: Path, landmarks: dict[str, object], not_visible: list[str]
 ) -> None:
     match_id = add_match(db)
-    body = [{"effective_from_frame": 0, "reference_frame": 0, "landmarks": landmarks}]
+    body = [
+        {
+            "effective_from_frame": 0,
+            "reference_frame": 0,
+            "landmarks": landmarks,
+            "not_visible": not_visible,
+        }
+    ]
 
     response = client.put(f"/api/matches/{match_id}/calibrations/main", json=body)
 
     assert response.status_code == 422
+
+
+def test_off_reference_landmark_without_video_is_flagged_unmapped(
+    client: TestClient, db: Path
+) -> None:
+    match_id = add_match(db)
+    mixed = {
+        **corners(130),
+        "near_kitchen_left": {"x": 0.2, "y": 0.7, "frame": 145},
+    }
+    response = client.put(
+        f"/api/matches/{match_id}/calibrations/main",
+        json=[{"effective_from_frame": 100, "reference_frame": 130, "landmarks": mixed}],
+    )
+
+    assert response.status_code == 200
+    (saved,) = response.json()
+    assert saved["complete"] is True
+    assert saved["unmapped_landmarks"] == ["near_kitchen_left"]
+    assert "near_kitchen_left" not in saved["errors"]
+    assert saved["needs_attention"] is True
 
 
 def test_two_calibrations_starting_at_one_frame_are_refused(client: TestClient, db: Path) -> None:
@@ -472,9 +518,9 @@ def test_two_calibrations_starting_at_one_frame_are_refused(client: TestClient, 
 
 
 def test_an_off_court_click_is_reported_without_infinity() -> None:
-    clicks = SIDELINE.clicks()
+    clicks = SIDELINE.placed(0)
     corner = Landmark.FAR_BASELINE_RIGHT
-    clicks[corner] = ImagePoint(clicks[corner].x, 0.0)  # above the horizon
+    clicks[corner] = PlacedLandmark(clicks[corner].x, 0.0, 0)  # above the horizon
 
     out = CalibrationOut.from_domain(Calibration(CameraView.SIDELINE, 0, 0, clicks))
 
@@ -489,9 +535,9 @@ def test_an_off_court_click_is_reported_without_infinity() -> None:
 
 
 def test_a_misclicked_landmark_is_flagged_and_has_the_largest_error() -> None:
-    clicks = MAIN.clicks()
+    clicks = MAIN.placed(0)
     corner = Landmark.FAR_BASELINE_RIGHT
-    clicks[corner] = ImagePoint(clicks[corner].x + 0.02, clicks[corner].y)
+    clicks[corner] = PlacedLandmark(clicks[corner].x + 0.02, clicks[corner].y, 0)
 
     body = json.loads(
         CalibrationOut.from_domain(Calibration(CameraView.MAIN, 0, 0, clicks)).model_dump_json()
@@ -561,7 +607,7 @@ def test_camera_motion_tracks_caches_and_serves_frames_with_unmapped_cuts(
 
     ref_cam = cameras[5]
     assert ref_cam is not None
-    landmarks = {lm.value: {"x": p.x, "y": p.y} for lm, p in ref_cam.clicks().items()}
+    landmarks = {lm.value: {"x": p.x, "y": p.y, "frame": 5} for lm, p in ref_cam.clicks().items()}
     client.put(
         f"/api/matches/{match_id}/play-segments",
         json=[{"start_frame": 0, "end_frame": 19, "camera_view": "sideline"}],
@@ -595,6 +641,80 @@ def test_camera_motion_tracks_caches_and_serves_frames_with_unmapped_cuts(
     for cut_f in range(12, 16):
         assert frames["court_to_image"][cut_f] is None
         assert frames["unmapped"][cut_f] is True
+
+
+def test_calibrations_api_registers_off_reference_landmarks_on_panning_video(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    from test_camera_motion import _panning_camera, write_synthetic_video
+
+    match_id = add_match(db)
+    (tmp_path / "footage").mkdir(exist_ok=True)
+    (tmp_path / "footage" / "abc123.webm").write_bytes(b"original")
+    converted = tmp_path / "footage" / "abc123.60fps.mp4"
+
+    cameras = [_panning_camera((f - 5) / 16.0) for f in range(15)]
+    write_synthetic_video(converted, cameras)
+    set_video(db, match_id, Path("footage/abc123.webm"))
+
+    client.put(
+        f"/api/matches/{match_id}/play-segments",
+        json=[{"start_frame": 0, "end_frame": 14, "camera_view": "sideline"}],
+    )
+
+    # Click 3 Landmarks on reference frame 5 and 3 on panned frame 12.
+    ref_clicks = cameras[5].clicks(
+        [Landmark.NEAR_KITCHEN_CENTRE, Landmark.NEAR_KITCHEN_RIGHT, Landmark.FAR_KITCHEN_CENTRE]
+    )
+    off_clicks = cameras[12].clicks(
+        [Landmark.FAR_KITCHEN_RIGHT, Landmark.NEAR_BASELINE_RIGHT, Landmark.FAR_BASELINE_RIGHT]
+    )
+    landmarks = {
+        **{lm.value: {"x": p.x, "y": p.y, "frame": 5} for lm, p in ref_clicks.items()},
+        **{lm.value: {"x": p.x, "y": p.y, "frame": 12} for lm, p in off_clicks.items()},
+    }
+
+    response = client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[
+            {
+                "effective_from_frame": 0,
+                "reference_frame": 5,
+                "landmarks": landmarks,
+                "not_visible": ["near_baseline_left"],
+            }
+        ],
+    )
+    assert response.status_code == 200
+    (saved,) = response.json()
+    assert saved["complete"] is True
+    assert saved["unmapped_landmarks"] == []
+    assert saved["not_visible"] == ["near_baseline_left"]
+    assert saved["worst_error_ft"] is not None and saved["worst_error_ft"] < 0.5
+    assert set(saved["resolved_landmarks"]) == set(landmarks)
+
+    tracked = client.post(f"/api/matches/{match_id}/camera-motion/track?wait=true").json()
+    assert tracked["status"] == "ready"
+    assert tracked["tracked_spans"] == 1
+    assert tracked["unmapped_ranges"] == []
+
+    # Frames at or beyond the video's frame count (15) are rejected with 422.
+    bad_ref = client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[{"effective_from_frame": 0, "reference_frame": 15, "landmarks": {}}],
+    )
+    assert bad_ref.status_code == 422
+    bad_lm = client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[
+            {
+                "effective_from_frame": 0,
+                "reference_frame": 5,
+                "landmarks": {"near_kitchen_left": {"x": 0.2, "y": 0.5, "frame": 15}},
+            }
+        ],
+    )
+    assert bad_lm.status_code == 422
 
 
 def test_camera_motion_rejects_invalid_frame_windows_and_missing_matches(
@@ -632,11 +752,12 @@ def test_camera_motion_service_background_jobs_dedupe_supersede_and_report_error
     service = CameraMotionService(tmp_path / "cache")
     match_id = MatchId(uuid4())
     segments = [PlaySegment(0, 10, CameraView.MAIN)]
-    cal_a = [Calibration(CameraView.MAIN, 0, 0, MAIN.clicks())]
-    moved = dict(MAIN.clicks())
-    moved[Landmark.NEAR_BASELINE_LEFT] = ImagePoint(
+    cal_a = [Calibration(CameraView.MAIN, 0, 0, MAIN.placed(0))]
+    moved = dict(MAIN.placed(0))
+    moved[Landmark.NEAR_BASELINE_LEFT] = PlacedLandmark(
         min(1.0, moved[Landmark.NEAR_BASELINE_LEFT].x + 0.01),
         moved[Landmark.NEAR_BASELINE_LEFT].y,
+        0,
     )
     cal_b = [Calibration(CameraView.MAIN, 0, 0, moved)]
 

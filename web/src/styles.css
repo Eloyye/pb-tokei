@@ -854,6 +854,63 @@ fieldset.transport-group {
   font-weight: 400;
 }
 
+.cal-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 6px;
+  color: var(--dim);
+  font: 11px var(--mono);
+}
+
+.cal-frame-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  margin: 0 0 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.cal-frame-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-frame-actions .icon-button {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line-2);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.cal-selected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cal-selected-actions .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+.cal-selected-actions .button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .cal-body {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
@@ -888,6 +945,19 @@ fieldset.transport-group {
 
 .landmark-court .dot.placed {
   fill: var(--court-line);
+}
+
+.landmark-court .dot.other-frame {
+  fill: var(--accent-soft);
+  stroke: var(--court-line);
+  stroke-dasharray: 2 1.5;
+}
+
+.landmark-court .dot.not-visible {
+  fill: none;
+  stroke: var(--faint);
+  stroke-dasharray: 1.5 1.5;
+  opacity: 0.55;
 }
 
 .landmark-court .dot.flagged {
@@ -933,12 +1003,38 @@ fieldset.transport-group {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+.landmarks button.not-visible {
+  color: var(--faint);
+}
+
+.landmark-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.frame-tag {
+  padding: 0 4px;
+  border-radius: 2px;
+  background: var(--raised);
+  color: var(--dim);
+  font: 10px/14px var(--mono);
+  white-space: nowrap;
+}
+
+.frame-tag.carried {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
 .error-cell {
   font-family: var(--mono);
   white-space: nowrap;
 }
 
-.error-cell.unplaced {
+.error-cell.unplaced,
+.error-cell.not-visible {
   color: var(--faint);
 }
 
@@ -972,18 +1068,27 @@ fieldset.transport-group {
   font-size: 11px;
 }
 
-.unmapped-banner {
+.unmapped-banner,
+.off-ref-banner {
   position: absolute;
   top: 8px;
   right: 10px;
   padding: 3px 8px;
-  border: 1px solid var(--warn);
   border-radius: 2px;
   background: rgb(0 0 0 / 70%);
-  color: var(--warn);
   font: 600 10px var(--ui);
   letter-spacing: 0.06em;
   pointer-events: none;
+}
+
+.unmapped-banner {
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+
+.off-ref-banner {
+  border: 1px solid var(--accent);
+  color: var(--text);
 }
 
 .cal-keys {
@@ -1058,6 +1163,10 @@ fieldset.transport-group {
 .landmark-marker.selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.landmark-marker.other-frame {
+  border-style: dashed;
 }
 
 .landmark-marker.flagged {

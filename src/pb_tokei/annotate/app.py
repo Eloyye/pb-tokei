@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import shlex
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
@@ -26,16 +26,16 @@ from pb_tokei.annotate.motion import (
     CameraMotionService,
 )
 from pb_tokei.calibration import Matrix, assess
-from pb_tokei.camera_motion import default_cache_dir
+from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
-    ImagePoint,
     Landmark,
     MatchId,
     MatchNotFound,
     MatchSummary,
+    PlacedLandmark,
     PlaySegment,
     RallyLog,
     SourceVideo,
@@ -114,11 +114,19 @@ class PlaySegmentIO(BaseModel):
         )
 
 
-class ImagePointIO(BaseModel):
-    """A point in the video frame, from 0 to 1 across (left to right) and down (top to bottom)."""
+class PlacedLandmarkIO(BaseModel):
+    """A Landmark clicked on a video frame, in normalised coordinates (0 to 1)."""
 
     x: float = Field(ge=0, le=1)
     y: float = Field(ge=0, le=1)
+    frame: int = Field(ge=0)
+
+
+class ImagePointIO(BaseModel):
+    """A point in normalised image coordinates; mapped clicks may fall outside 0..1."""
+
+    x: float
+    y: float
 
 
 class CalibrationIn(BaseModel):
@@ -126,14 +134,16 @@ class CalibrationIn(BaseModel):
 
     effective_from_frame: int = Field(ge=0)
     reference_frame: int = Field(ge=0)
-    landmarks: dict[Landmark, ImagePointIO]
+    landmarks: dict[Landmark, PlacedLandmarkIO]
+    not_visible: list[Landmark] = Field(default_factory=list)
 
     def to_domain(self, camera_view: CameraView) -> Calibration:
         return Calibration(
             camera_view,
             self.effective_from_frame,
             self.reference_frame,
-            {lm: ImagePoint(p.x, p.y) for lm, p in self.landmarks.items()},
+            {lm: PlacedLandmark(p.x, p.y, p.frame) for lm, p in self.landmarks.items()},
+            frozenset(self.not_visible),
         )
 
 
@@ -156,23 +166,37 @@ class CalibrationOut(CalibrationIn):
     """A Calibration with its fit. The matrices are None while it is incomplete."""
 
     camera_view: CameraView
+    not_visible: list[Landmark]
     complete: bool
     image_to_court: list[list[float]] | None
     court_to_image: list[list[float]] | None
     errors: dict[Landmark, LandmarkErrorOut]
+    # Placed Landmarks mapped into `reference_frame` coordinates (used by the fit).
+    resolved_landmarks: dict[Landmark, ImagePointIO]
+    # Placed Landmarks from other frames that could not be mapped to `reference_frame`.
+    unmapped_landmarks: list[Landmark]
     # Null with no fit, or when some click is off the court (that Landmark's `off_court` says so).
     worst_error_ft: float | None
     needs_attention: bool
 
     @classmethod
-    def from_domain(cls, calibration: Calibration) -> CalibrationOut:
-        fit = assess(calibration)
+    def from_domain(
+        cls,
+        calibration: Calibration,
+        *,
+        frame_to_ref: Mapping[int, Matrix] | None = None,
+    ) -> CalibrationOut:
+        fit = assess(calibration, frame_to_ref=frame_to_ref)
         homography = fit.homography
         return CalibrationOut(
             camera_view=calibration.camera_view,
             effective_from_frame=calibration.effective_from_frame,
             reference_frame=calibration.reference_frame,
-            landmarks={lm: ImagePointIO(x=p.x, y=p.y) for lm, p in calibration.landmarks.items()},
+            landmarks={
+                lm: PlacedLandmarkIO(x=p.x, y=p.y, frame=p.frame)
+                for lm, p in calibration.landmarks.items()
+            },
+            not_visible=sorted(calibration.not_visible, key=lambda lm: lm.value),
             complete=fit.complete,
             image_to_court=None if homography is None else _rows(homography.image_to_court),
             court_to_image=None if homography is None else _rows(homography.court_to_image),
@@ -185,6 +209,10 @@ class CalibrationOut(CalibrationIn):
                 )
                 for lm, e in fit.errors.items()
             },
+            resolved_landmarks={
+                lm: ImagePointIO(x=p.x, y=p.y) for lm, p in fit.resolved_landmarks.items()
+            },
+            unmapped_landmarks=sorted(fit.unmapped_landmarks, key=lambda lm: lm.value),
             worst_error_ft=_finite(fit.worst_error_ft),
             needs_attention=fit.needs_attention,
         )
@@ -335,10 +363,37 @@ def create_app(
 
         return [PlaySegmentIO.from_domain(s) for s in with_log(change)]
 
+    def fit_calibrations(
+        calibrations: list[Calibration] | tuple[Calibration, ...],
+        segments: tuple[PlaySegment, ...],
+        source_video: SourceVideo | None,
+    ) -> list[CalibrationOut]:
+        video = _VideoState(source_video, db_file)
+        video_path = video.converted_path if video.status is VideoStatus.READY else None
+        out: list[CalibrationOut] = []
+        for cal in calibrations:
+            f2r = (
+                motion_service.cache.register_calibration_frames(video_path, cal, segments)
+                if cal.has_off_reference_landmarks and video_path is not None
+                else None
+            )
+            out.append(CalibrationOut.from_domain(cal, frame_to_ref=f2r))
+        return out
+
     @app.get("/api/matches/{match_id}/calibrations", operation_id="getCalibrations")
     def get_calibrations(match_id: UUID) -> list[CalibrationOut]:
-        calibrations = with_log(lambda log: log.get_calibrations(MatchId(match_id)))
-        return [CalibrationOut.from_domain(c) for c in calibrations]
+        mid = MatchId(match_id)
+
+        def load(
+            log: RallyLog,
+        ) -> tuple[tuple[Calibration, ...], tuple[PlaySegment, ...], SourceVideo | None]:
+            calibrations = log.get_calibrations(mid)
+            segments = log.get_play_segments(mid)
+            summary = log.get_match_summary(mid)
+            return calibrations, segments, summary.source_video
+
+        calibrations, segments, source_video = with_log(load)
+        return fit_calibrations(calibrations, segments, source_video)
 
     @app.put(
         "/api/matches/{match_id}/calibrations/{camera_view}", operation_id="replaceCalibrations"
@@ -347,14 +402,41 @@ def create_app(
         match_id: UUID, camera_view: CameraView, body: list[CalibrationIn]
     ) -> list[CalibrationOut]:
         """Replaces a Match's Calibrations of one Camera View, returning them with their fits."""
+        mid = MatchId(match_id)
+        summary, video = lookup(match_id)
+        if video.status is VideoStatus.READY and video.converted_path is not None:
+            frame_count = video_frame_count(video.converted_path)
+            if frame_count is not None:
+                for item in body:
+                    if item.reference_frame >= frame_count:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"reference_frame {item.reference_frame} is outside the video "
+                                f"(length {frame_count} frames)"
+                            ),
+                        )
+                    for lm, placed in item.landmarks.items():
+                        if placed.frame >= frame_count:
+                            raise HTTPException(
+                                status_code=422,
+                                detail=(
+                                    f"Landmark {lm.value} frame {placed.frame} is outside the "
+                                    f"video (length {frame_count} frames)"
+                                ),
+                            )
 
-        def change(log: RallyLog) -> list[Calibration]:
+        def change(
+            log: RallyLog,
+        ) -> tuple[list[Calibration], tuple[PlaySegment, ...]]:
             calibrations = [c.to_domain(camera_view) for c in body]
-            log.replace_calibrations(MatchId(match_id), camera_view, calibrations)
-            saved = log.get_calibrations(MatchId(match_id))
-            return [c for c in saved if c.camera_view is camera_view]
+            log.replace_calibrations(mid, camera_view, calibrations)
+            saved = log.get_calibrations(mid)
+            segments = log.get_play_segments(mid)
+            return [c for c in saved if c.camera_view is camera_view], segments
 
-        return [CalibrationOut.from_domain(c) for c in with_log(change)]
+        saved_of_view, segments = with_log(change)
+        return fit_calibrations(saved_of_view, segments, summary.source_video)
 
     # --- Camera Motion -------------------------------------------------------------------
 
