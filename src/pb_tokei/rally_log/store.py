@@ -14,6 +14,7 @@ import duckdb
 
 from .model import (
     UNKNOWN,
+    Calibration,
     CameraView,
     Certainty,
     Challenge,
@@ -28,6 +29,8 @@ from .model import (
     FranchiseMatchId,
     Game,
     Handedness,
+    ImagePoint,
+    Landmark,
     Match,
     MatchId,
     MatchSummary,
@@ -50,13 +53,26 @@ from .model import (
     TournamentId,
     WinnerSource,
     Zone,
+    check_calibrations,
+    check_play_segments,
 )
-from .schema import MATCH_CONTENT_TABLES, STATEMENTS
+from .schema import MATCH_CONTENT_TABLES, STATEMENTS, migrate
 
 Row = tuple[Any, ...]
 
 DEFAULT_DB_PATH = Path("rally_log.duckdb")
 """Where the CLI and the annotation app look for the Rally Log when `--db` isn't given."""
+
+
+class MatchNotFound(KeyError):
+    """No Match with this id is in the Rally Log."""
+
+    def __init__(self, match_id: MatchId) -> None:
+        super().__init__(match_id)
+        self.match_id = match_id
+
+    def __str__(self) -> str:
+        return f"Match not found: {self.match_id}"
 
 
 class RallyLog:
@@ -67,6 +83,7 @@ class RallyLog:
         self._transaction_depth = 0
         for statement in STATEMENTS:
             self._db.execute(statement)
+        migrate(self._db)
 
     @classmethod
     def open(cls, path: Path | str) -> Self:
@@ -268,8 +285,7 @@ class RallyLog:
 
     def set_match_source_video(self, match_id: MatchId, source_video: SourceVideo) -> None:
         """Records the downloaded broadcast video against an existing Match."""
-        if not self.has_match(match_id):
-            raise KeyError(f"no Match for {match_id}")
+        self._require_match(match_id)
         self._db.execute(
             "UPDATE matches SET source_video_url = ?, source_video_id = ?, source_video_path = ? "
             "WHERE id = ?",
@@ -352,12 +368,6 @@ class RallyLog:
             match_id,
         )
         source_video = _source_video(video_url, video_id, video_path)
-        segments = tuple(
-            PlaySegment(start, end, CameraView(view))
-            for _, start, end, view in self._all(
-                "SELECT * FROM play_segments WHERE match_id = ? ORDER BY start_frame", match_id
-            )
-        )
         return Match(
             id=match_id,
             tournament_id=TournamentId(tournament),
@@ -368,17 +378,97 @@ class RallyLog:
             else FranchiseMatchId(franchise_match),
             source_video=source_video,
             games=self._load_games(match_id),
-            play_segments=segments,
+            play_segments=self._load_play_segments(match_id),
+            calibrations=self._load_calibrations(match_id),
         )
+
+    # --- Play Segments and Calibrations ---------------------------------------------------
+
+    def get_play_segments(self, match_id: MatchId) -> tuple[PlaySegment, ...]:
+        """A Match's Play Segments in frame order, without loading its Games."""
+        self._require_match(match_id)
+        return self._load_play_segments(match_id)
+
+    def replace_play_segments(self, match_id: MatchId, segments: Sequence[PlaySegment]) -> None:
+        """Replaces all of a Match's Play Segments. Raises ValueError if any two overlap."""
+        check_play_segments(segments)
+        with self.transaction():
+            self._require_match(match_id)
+            self._db.execute("DELETE FROM play_segments WHERE match_id = ?", [match_id])
+            self._insert_play_segments(match_id, segments)
+
+    def get_calibrations(self, match_id: MatchId) -> tuple[Calibration, ...]:
+        """A Match's Calibrations, by Camera View then effective-from frame."""
+        self._require_match(match_id)
+        return self._load_calibrations(match_id)
+
+    def replace_calibrations(
+        self, match_id: MatchId, camera_view: CameraView, calibrations: Sequence[Calibration]
+    ) -> None:
+        """Replaces all of a Match's Calibrations of one Camera View, leaving the other view's."""
+        for calibration in calibrations:
+            if calibration.camera_view is not camera_view:
+                raise ValueError(
+                    f"a {calibration.camera_view} Calibration can't be saved as {camera_view}"
+                )
+        check_calibrations(calibrations)
+        with self.transaction():
+            self._require_match(match_id)
+            for table in ("calibration_landmarks", "calibrations"):
+                self._db.execute(
+                    f"DELETE FROM {table} WHERE match_id = ? AND camera_view = ?",
+                    [match_id, camera_view.value],
+                )
+            self._insert_calibrations(match_id, calibrations)
+
+    def _require_match(self, match_id: MatchId) -> None:
+        if not self.has_match(match_id):
+            raise MatchNotFound(match_id)
+
+    def _load_play_segments(self, match_id: MatchId) -> tuple[PlaySegment, ...]:
+        return tuple(
+            PlaySegment(start, end, CameraView(view))
+            for _, start, end, view in self._all(
+                "SELECT * FROM play_segments WHERE match_id = ? ORDER BY start_frame", match_id
+            )
+        )
+
+    def _insert_play_segments(self, match_id: MatchId, segments: Sequence[PlaySegment]) -> None:
+        self._many(
+            "play_segments",
+            [[match_id, s.start_frame, s.end_frame, s.camera_view.value] for s in segments],
+        )
+
+    def _load_calibrations(self, match_id: MatchId) -> tuple[Calibration, ...]:
+        points: dict[tuple[str, int], dict[Landmark, ImagePoint]] = defaultdict(dict)
+        for _, view, effective, landmark, x, y in self._all(
+            "SELECT * FROM calibration_landmarks WHERE match_id = ?", match_id
+        ):
+            points[view, effective][Landmark(landmark)] = ImagePoint(x, y)
+        return tuple(
+            Calibration(CameraView(view), effective, reference, points[view, effective])
+            for _, view, effective, reference in self._all(
+                "SELECT * FROM calibrations WHERE match_id = ? "
+                "ORDER BY camera_view, effective_from_frame",
+                match_id,
+            )
+        )
+
+    def _insert_calibrations(self, match_id: MatchId, calibrations: Sequence[Calibration]) -> None:
+        rows, points = [], []
+        for c in calibrations:
+            key = [match_id, c.camera_view.value, c.effective_from_frame]
+            rows.append([*key, c.reference_frame])
+            points.extend([*key, lm.value, p.x, p.y] for lm, p in c.landmarks.items())
+        self._many("calibrations", rows)
+        self._many("calibration_landmarks", points)
 
     # --- Writing match content ------------------------------------------------------------
 
     def _insert_content(self, match: Match) -> None:
         m = match.id
-        self._many(
-            "play_segments",
-            [[m, s.start_frame, s.end_frame, s.camera_view.value] for s in match.play_segments],
-        )
+        self._insert_play_segments(m, match.play_segments)
+        self._insert_calibrations(m, match.calibrations)
         self._many("games", [[m, g.number] for g in match.games])
         rallies, shots, positions, gaps = [], [], [], []
         for game in match.games:

@@ -2,6 +2,7 @@
 
 from .model import (
     UNKNOWN,
+    Calibration,
     CameraView,
     Certainty,
     Challenge,
@@ -16,6 +17,8 @@ from .model import (
     FranchiseMatchId,
     Game,
     Handedness,
+    ImagePoint,
+    Landmark,
     Match,
     MatchId,
     MatchSummary,
@@ -38,15 +41,18 @@ from .model import (
     TournamentId,
     WinnerSource,
     Zone,
+    check_calibrations,
+    check_play_segments,
     inferred,
     new_id,
     observed,
 )
-from .store import DEFAULT_DB_PATH, RallyLog
+from .store import DEFAULT_DB_PATH, MatchNotFound, RallyLog
 
 __all__ = [
     "DEFAULT_DB_PATH",
     "UNKNOWN",
+    "Calibration",
     "CameraView",
     "Certainty",
     "Challenge",
@@ -61,8 +67,11 @@ __all__ = [
     "FranchiseMatchId",
     "Game",
     "Handedness",
+    "ImagePoint",
+    "Landmark",
     "Match",
     "MatchId",
+    "MatchNotFound",
     "MatchSummary",
     "ObservationGap",
     "Parity",
@@ -84,6 +93,8 @@ __all__ = [
     "TournamentId",
     "WinnerSource",
     "Zone",
+    "check_calibrations",
+    "check_play_segments",
     "inferred",
     "new_id",
     "observed",

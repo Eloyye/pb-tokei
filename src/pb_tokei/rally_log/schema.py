@@ -12,12 +12,15 @@ can't delete a parent and its children, or update a referenced row, in one trans
 
 from enum import StrEnum
 
+import duckdb
+
 from .model import (
     CameraView,
     Certainty,
     ContactKind,
     ErrorKind,
     Handedness,
+    Landmark,
     Parity,
     RefereeCall,
     Ruling,
@@ -52,6 +55,43 @@ def _fact(name: str, sql_type: str, *, optional: bool = False, values: str = "")
         f" OR ({certainty} <> 'unknown' AND {none_null}))"
     )
     return ",\n    ".join(columns)
+
+
+def play_segments_table(name: str) -> str:
+    """The Play Segments table. Frame ranges are inclusive, so a one-frame segment is allowed."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    match_id UUID NOT NULL,
+    start_frame INTEGER NOT NULL CHECK (start_frame >= 0),
+    end_frame INTEGER NOT NULL,
+    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
+    CHECK (start_frame <= end_frame),
+    PRIMARY KEY (match_id, start_frame)
+)"""
+
+
+def migrate(db: duckdb.DuckDBPyConnection) -> None:
+    """Brings a Rally Log made by an older version up to the current schema.
+
+    Run after `STATEMENTS`. DuckDB can't alter a CHECK, so a table whose check changed is copied
+    into a fresh one.
+    """
+    old_check = db.execute(
+        "SELECT 1 FROM duckdb_constraints() WHERE table_name = 'play_segments' "
+        "AND constraint_type = 'CHECK' AND expression = '(start_frame < end_frame)'"
+    ).fetchone()
+    if old_check is None:
+        return
+    db.execute("BEGIN TRANSACTION")
+    try:
+        db.execute(play_segments_table("play_segments_migrated"))
+        db.execute("INSERT INTO play_segments_migrated SELECT * FROM play_segments")
+        db.execute("DROP TABLE play_segments")
+        db.execute("ALTER TABLE play_segments_migrated RENAME TO play_segments")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+    db.execute("COMMIT")
 
 
 _RALLY_KEY = "match_id UUID NOT NULL, game_number INTEGER NOT NULL"
@@ -116,14 +156,24 @@ CREATE TABLE IF NOT EXISTS matches (
     "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_url VARCHAR",
     "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_id VARCHAR",
     "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_path VARCHAR",
+    play_segments_table("play_segments"),
     f"""
-CREATE TABLE IF NOT EXISTS play_segments (
+CREATE TABLE IF NOT EXISTS calibrations (
     match_id UUID NOT NULL,
-    start_frame INTEGER NOT NULL,
-    end_frame INTEGER NOT NULL,
     camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
-    CHECK (start_frame < end_frame),
-    PRIMARY KEY (match_id, start_frame)
+    effective_from_frame INTEGER NOT NULL CHECK (effective_from_frame >= 0),
+    reference_frame INTEGER NOT NULL CHECK (reference_frame >= 0),
+    PRIMARY KEY (match_id, camera_view, effective_from_frame)
+)""",
+    f"""
+CREATE TABLE IF NOT EXISTS calibration_landmarks (
+    match_id UUID NOT NULL,
+    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
+    effective_from_frame INTEGER NOT NULL,
+    landmark VARCHAR NOT NULL {_one_of("landmark", Landmark)},
+    image_x DOUBLE NOT NULL CHECK (image_x BETWEEN 0 AND 1),
+    image_y DOUBLE NOT NULL CHECK (image_y BETWEEN 0 AND 1),
+    PRIMARY KEY (match_id, camera_view, effective_from_frame, landmark)
 )""",
     """
 CREATE TABLE IF NOT EXISTS games (
@@ -201,4 +251,6 @@ MATCH_CONTENT_TABLES = [
     "rallies",
     "games",
     "play_segments",
+    "calibration_landmarks",
+    "calibrations",
 ]

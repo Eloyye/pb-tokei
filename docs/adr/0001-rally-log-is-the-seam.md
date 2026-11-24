@@ -1,5 +1,7 @@
 # The Rally Log is the only hand-edited record; stats are derived from it
 
+_Partly superseded by [ADR 0005](0005-operators-edit-calibration-and-play-segments.md): operators also edit Calibration and Play Segments, which Event Processing never reads._
+
 The system is four layers, each with one output: Broadcast Segmentation produces Play Segments, Tracking produces per-frame player and ball positions plus court calibration, Annotation (human, model, or both) produces the Rally Log, and Event Processing produces stats. The Rally Log is the contract in the middle: operators and models both write it, operators edit nothing else, and Event Processing reads only the Rally Log, never Tracking. That lets stats be recomputed across all history whenever a rule changes, and lets annotation shift from human to model without touching stats.
 
 ## Consequences

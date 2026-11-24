@@ -218,6 +218,13 @@ The broadcast camera a stretch of footage comes from; the Main View (high, behin
 A stretch of broadcast showing live play from the Main View or Sideline View, with replays, crowd shots, close-ups and graphics removed.
 _Avoid_: clip
 
+**Landmark**:
+One of 12 court-line intersections clicked on the video to calibrate a Camera View: where the centreline and each sideline meet each baseline and each kitchen line, named near or far and left or right as seen from the Main View camera.
+_Avoid_: keypoint, corner (only some Landmarks are corners)
+
+**Calibration**:
+The Landmarks clicked in one Camera View, fitted to map points on the court surface between the video and the court; it is in effect from a given frame until the next Calibration of that view.
+
 **Roster File**:
 The hand-written TOML file that sets up one Match: its Tournament, Teams, Players and optional Franchise Match and source video.
 

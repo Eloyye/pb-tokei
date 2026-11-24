@@ -6,6 +6,7 @@ import pytest
 
 from pb_tokei.rally_log import (
     UNKNOWN,
+    Calibration,
     CameraView,
     Certainty,
     Challenge,
@@ -16,8 +17,11 @@ from pb_tokei.rally_log import (
     Fact,
     Game,
     Handedness,
+    ImagePoint,
+    Landmark,
     Match,
     MatchId,
+    MatchNotFound,
     ObservationGap,
     Parity,
     Player,
@@ -132,7 +136,21 @@ def small_match() -> Match:
             PlaySegment(90, 450, CameraView.MAIN),
             PlaySegment(880, 1000, CameraView.SIDELINE),
         ),
+        calibrations=(MAIN_CALIBRATION, Calibration(CameraView.SIDELINE, 880, 900)),
     )
+
+
+MAIN_CALIBRATION = Calibration(
+    CameraView.MAIN,
+    effective_from_frame=90,
+    reference_frame=120,
+    landmarks={
+        Landmark.NEAR_BASELINE_LEFT: ImagePoint(0.12, 0.93),
+        Landmark.NEAR_BASELINE_RIGHT: ImagePoint(0.88, 0.93),
+        Landmark.FAR_BASELINE_LEFT: ImagePoint(0.32, 0.18),
+        Landmark.FAR_BASELINE_RIGHT: ImagePoint(0.68, 0.18),
+    },
+)
 
 
 def save_roster(log: RallyLog) -> None:
@@ -395,3 +413,106 @@ def test_opening_an_older_database_adds_source_video_columns(tmp_path: Path) -> 
         assert log.load_match(match_id).source_video is None
         log.set_match_source_video(match_id, video)
         assert log.load_match(match_id).source_video == video
+
+
+# --- Play Segments and Calibrations -------------------------------------------------------
+
+
+def test_play_segments_can_be_replaced_without_touching_rallies(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    segments = [PlaySegment(500, 500, CameraView.SIDELINE), PlaySegment(10, 499, CameraView.MAIN)]
+
+    log.replace_play_segments(match.id, segments)
+
+    assert log.get_play_segments(match.id) == (segments[1], segments[0])
+    assert log.load_match(match.id).games == match.games
+
+
+def test_overlapping_play_segments_are_refused(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    overlapping = [PlaySegment(10, 100, CameraView.MAIN), PlaySegment(100, 200, CameraView.MAIN)]
+
+    with pytest.raises(ValueError, match="overlap"):
+        log.replace_play_segments(match.id, overlapping)
+    with pytest.raises(ValueError, match="overlap"):
+        replace(match, play_segments=tuple(overlapping))
+
+    assert log.get_play_segments(match.id) == match.play_segments
+
+
+@pytest.mark.parametrize(("start", "end"), [(-1, 10), (10, 9)])
+def test_a_play_segment_needs_frames_in_order(start: int, end: int) -> None:
+    with pytest.raises(ValueError):
+        PlaySegment(start, end, CameraView.MAIN)
+
+
+def test_calibrations_of_one_view_can_be_replaced(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    later = Calibration(
+        CameraView.MAIN, 5000, 5010, {Landmark.FAR_KITCHEN_CENTRE: ImagePoint(0.5, 0.4)}
+    )
+
+    log.replace_calibrations(match.id, CameraView.MAIN, [MAIN_CALIBRATION, later])
+
+    saved = log.get_calibrations(match.id)
+    assert [c for c in saved if c.camera_view is CameraView.MAIN] == [MAIN_CALIBRATION, later]
+    sideline = [c for c in saved if c.camera_view is CameraView.SIDELINE]
+    assert sideline == [Calibration(CameraView.SIDELINE, 880, 900)]
+
+
+def test_calibrations_are_saved_under_their_own_view(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+
+    with pytest.raises(ValueError, match="can't be saved as"):
+        log.replace_calibrations(match.id, CameraView.SIDELINE, [MAIN_CALIBRATION])
+
+
+def test_two_calibrations_of_a_view_cannot_start_at_one_frame(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    twin = replace(MAIN_CALIBRATION, reference_frame=400)
+
+    with pytest.raises(ValueError, match="start at frame 90"):
+        log.replace_calibrations(match.id, CameraView.MAIN, [MAIN_CALIBRATION, twin])
+
+
+def test_calibration_landmarks_must_be_inside_the_frame() -> None:
+    with pytest.raises(ValueError, match="outside the video frame"):
+        Calibration(CameraView.MAIN, 0, 0, {Landmark.NEAR_KITCHEN_LEFT: ImagePoint(1.2, 0.5)})
+
+
+def test_editing_a_missing_match_fails(log: RallyLog) -> None:
+    missing = MatchId(new_id())
+
+    with pytest.raises(MatchNotFound):
+        log.replace_play_segments(missing, [])
+    with pytest.raises(MatchNotFound):
+        log.replace_calibrations(missing, CameraView.MAIN, [])
+    with pytest.raises(MatchNotFound):
+        log.get_calibrations(missing)
+
+
+def test_opening_an_older_database_allows_one_frame_play_segments(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.duckdb"
+    match = small_match()
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+    with duckdb.connect(str(path)) as conn:
+        # The table as first released: end strictly after start.
+        conn.execute("DROP TABLE play_segments")
+        conn.execute(
+            "CREATE TABLE play_segments (match_id UUID NOT NULL, start_frame INTEGER NOT NULL, "
+            "end_frame INTEGER NOT NULL, camera_view VARCHAR NOT NULL, "
+            "CHECK (start_frame < end_frame), PRIMARY KEY (match_id, start_frame))"
+        )
+        conn.execute("INSERT INTO play_segments VALUES (?, 90, 450, 'main')", [match.id])
+
+    with RallyLog.open(path) as log:
+        assert log.get_play_segments(match.id) == (PlaySegment(90, 450, CameraView.MAIN),)
+        log.replace_play_segments(match.id, [PlaySegment(7, 7, CameraView.MAIN)])
+        assert log.get_play_segments(match.id) == (PlaySegment(7, 7, CameraView.MAIN),)

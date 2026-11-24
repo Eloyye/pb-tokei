@@ -38,6 +38,64 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/calibrations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Calibrations */
+    get: operations["getCalibrations"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/calibrations/{camera_view}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Replace Calibrations
+     * @description Replaces a Match's Calibrations of one Camera View, returning them with their fits.
+     */
+    put: operations["replaceCalibrations"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/play-segments": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Play Segments */
+    get: operations["getPlaySegments"];
+    /**
+     * Replace Play Segments
+     * @description Replaces all of a Match's Play Segments. 422 if any two share a frame.
+     */
+    put: operations["replacePlaySegments"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/video": {
     parameters: {
       query?: never;
@@ -59,10 +117,104 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /**
+     * CalibrationIn
+     * @description One Calibration's clicked Landmarks; its Camera View is given by the URL.
+     */
+    CalibrationIn: {
+      /** Effective From Frame */
+      effective_from_frame: number;
+      /** Landmarks */
+      landmarks: {
+        [key: string]: components["schemas"]["ImagePointIO"];
+      };
+      /** Reference Frame */
+      reference_frame: number;
+    };
+    /**
+     * CalibrationOut
+     * @description A Calibration with its fit. The matrices are None while it is incomplete.
+     */
+    CalibrationOut: {
+      camera_view: components["schemas"]["CameraView"];
+      /** Complete */
+      complete: boolean;
+      /** Court To Image */
+      court_to_image: number[][] | null;
+      /** Effective From Frame */
+      effective_from_frame: number;
+      /** Errors */
+      errors: {
+        [key: string]: components["schemas"]["LandmarkErrorOut"];
+      };
+      /** Image To Court */
+      image_to_court: number[][] | null;
+      /** Landmarks */
+      landmarks: {
+        [key: string]: components["schemas"]["ImagePointIO"];
+      };
+      /** Needs Attention */
+      needs_attention: boolean;
+      /** Reference Frame */
+      reference_frame: number;
+      /** Worst Error Ft */
+      worst_error_ft: number | null;
+    };
+    /**
+     * CameraView
+     * @enum {string}
+     */
+    CameraView: "main" | "sideline";
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][];
+    };
+    /**
+     * ImagePointIO
+     * @description A point in the video frame, from 0 to 1 across (left to right) and down (top to bottom).
+     */
+    ImagePointIO: {
+      /** X */
+      x: number;
+      /** Y */
+      y: number;
+    };
+    /**
+     * Landmark
+     * @description A court-line intersection clicked to calibrate a Camera View.
+     *
+     *     Near is the Main View camera's end; left and right are as seen from the Main View camera.
+     * @enum {string}
+     */
+    Landmark:
+      | "near_baseline_left"
+      | "near_baseline_centre"
+      | "near_baseline_right"
+      | "near_kitchen_left"
+      | "near_kitchen_centre"
+      | "near_kitchen_right"
+      | "far_kitchen_left"
+      | "far_kitchen_centre"
+      | "far_kitchen_right"
+      | "far_baseline_left"
+      | "far_baseline_centre"
+      | "far_baseline_right";
+    /**
+     * LandmarkErrorOut
+     * @description How far off the fit puts a Landmark, in feet: with it, and refitted without it.
+     *
+     *     JSON has no infinity, so an error that puts the click off the court (above the horizon) is
+     *     null with `off_court` true. `leave_one_out_ft` is also null, with `off_court` false, when the
+     *     other Landmarks can't be fitted without this one.
+     */
+    LandmarkErrorOut: {
+      /** Leave One Out Ft */
+      leave_one_out_ft: number | null;
+      /** Off Court */
+      off_court: boolean;
+      /** Residual Ft */
+      residual_ft: number | null;
     };
     /**
      * MatchDetailOut
@@ -109,6 +261,17 @@ export interface components {
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
+    };
+    /**
+     * PlaySegmentIO
+     * @description Live play from one Camera View, from `start_frame` to `end_frame` inclusive.
+     */
+    PlaySegmentIO: {
+      camera_view: components["schemas"]["CameraView"];
+      /** End Frame */
+      end_frame: number;
+      /** Start Frame */
+      start_frame: number;
     };
     /** ValidationError */
     ValidationError: {
@@ -175,6 +338,139 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MatchDetailOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getCalibrations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CalibrationOut"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  replaceCalibrations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+        camera_view: components["schemas"]["CameraView"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CalibrationIn"][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CalibrationOut"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getPlaySegments: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlaySegmentIO"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  replacePlaySegments: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PlaySegmentIO"][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlaySegmentIO"][];
         };
       };
       /** @description Validation Error */
