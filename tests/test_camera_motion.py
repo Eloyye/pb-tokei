@@ -268,12 +268,40 @@ def test_tracks_panning_and_zooming_camera_within_half_a_foot_and_flags_cuts(
                 err = math.hypot(pt.x - x, pt.y - y)
                 assert err < ERROR_WARNING_FT, f"frame {f} ({x},{y}) error {err:.3f} ft"
 
-    # Cut frames map to nothing (Unknown) and show up in unmapped_ranges.
+    # Cut frames map to nothing (Unknown) and show up as the exact unmapped range.
     for f in range(25, 32):
         assert mapping.at(f) is None, f"Cut frame {f} should be unmapped"
-    unmapped = span_motion.unmapped_ranges()
-    assert len(unmapped) == 1
-    assert unmapped[0].start_frame <= 25 and unmapped[0].end_frame >= 31
+    assert span_motion.unmapped_ranges() == [FrameRange(25, 31, CameraView.SIDELINE)]
+
+
+@pytest.mark.parametrize(
+    ("start", "mapped_flags", "expected"),
+    [
+        (10, [True, True, True], []),
+        (10, [False, False, True, True], [(10, 11)]),
+        (10, [True, True, False, False], [(12, 13)]),
+        (10, [True, False, True], [(11, 11)]),
+        (10, [False, False, False], [(10, 12)]),
+        (100, [False, True, False, False, True, False], [(100, 100), (102, 103), (105, 105)]),
+    ],
+    ids=["all-mapped", "at-start", "at-end", "single-frame", "all-unmapped", "multiple"],
+)
+def test_span_motion_unmapped_ranges_edge_cases(
+    start: int, mapped_flags: list[bool], expected: list[tuple[int, int]]
+) -> None:
+    n = len(mapped_flags)
+    span = SpanMotion(
+        start_frame=start,
+        end_frame=start + n - 1,
+        camera_view=CameraView.SIDELINE,
+        calibration_effective_from=start,
+        calibration_reference_frame=start,
+        mapped=np.array(mapped_flags, dtype=bool),
+        matrices=np.broadcast_to(np.eye(3, dtype=np.float64), (n, 3, 3)).copy(),
+        line_error_ft=np.full(n, np.nan, dtype=np.float32),
+    )
+
+    assert span.unmapped_ranges() == [FrameRange(s, e, CameraView.SIDELINE) for s, e in expected]
 
 
 def test_tracks_segment_whose_reference_frame_is_in_an_earlier_segment(tmp_path: Path) -> None:

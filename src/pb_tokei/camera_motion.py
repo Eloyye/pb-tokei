@@ -21,15 +21,16 @@ import json
 import math
 import os
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import cv2
 import numpy as np
 
-from pb_tokei.rally_log import Calibration, CameraView, PlaySegment
+from pb_tokei.rally_log import Calibration, CameraView, Landmark, PlaySegment
 
 if TYPE_CHECKING:
     from pb_tokei.calibration import Homography, Matrix
@@ -62,36 +63,71 @@ _MAX_MEDIAN_LINE_ERROR_FT = 0.30
 _MAX_P90_LINE_ERROR_FT = 0.50
 _MIN_FALLBACK_INLIERS = 100
 
-# The 8 painted white court lines: (x1, y1, x2, y2, a, b, c) with a*x + b*y + c = 0, hypot(a,b)=1.
-_COURT_LINES: tuple[tuple[float, float, float, float, float, float, float], ...] = (
-    (-10.0, -22.0, 10.0, -22.0, 0.0, 1.0, 22.0),  # near baseline
-    (-10.0, -7.0, 10.0, -7.0, 0.0, 1.0, 7.0),  # near kitchen line
-    (-10.0, 7.0, 10.0, 7.0, 0.0, 1.0, -7.0),  # far kitchen line
-    (-10.0, 22.0, 10.0, 22.0, 0.0, 1.0, -22.0),  # far baseline
-    (-10.0, -22.0, -10.0, 22.0, 1.0, 0.0, 10.0),  # left sideline
-    (10.0, -22.0, 10.0, 22.0, 1.0, 0.0, -10.0),  # right sideline
-    (0.0, -22.0, 0.0, -7.0, 1.0, 0.0, 0.0),  # near centreline
-    (0.0, 7.0, 0.0, 22.0, 1.0, 0.0, 0.0),  # far centreline
+
+class _CourtLine(NamedTuple):
+    """A painted white court line: endpoints and unit normal equation `a*x + b*y + c = 0`."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    a: float
+    b: float
+    c: float
+
+
+def _court_line(start: Landmark, end: Landmark) -> _CourtLine:
+    p1 = start.court_point
+    p2 = end.court_point
+    dx = p2.x - p1.x
+    dy = p2.y - p1.y
+    length = math.hypot(dx, dy)
+    a = -dy / length
+    b = dx / length
+    c = -(a * p1.x + b * p1.y)
+    return _CourtLine(p1.x, p1.y, p2.x, p2.y, a, b, c)
+
+
+# The 8 painted white court lines, derived from `Landmark.court_point`.
+_COURT_LINES: tuple[_CourtLine, ...] = (
+    _court_line(Landmark.NEAR_BASELINE_LEFT, Landmark.NEAR_BASELINE_RIGHT),
+    _court_line(Landmark.NEAR_KITCHEN_LEFT, Landmark.NEAR_KITCHEN_RIGHT),
+    _court_line(Landmark.FAR_KITCHEN_LEFT, Landmark.FAR_KITCHEN_RIGHT),
+    _court_line(Landmark.FAR_BASELINE_LEFT, Landmark.FAR_BASELINE_RIGHT),
+    _court_line(Landmark.NEAR_BASELINE_LEFT, Landmark.FAR_BASELINE_LEFT),
+    _court_line(Landmark.NEAR_BASELINE_RIGHT, Landmark.FAR_BASELINE_RIGHT),
+    _court_line(Landmark.NEAR_BASELINE_CENTRE, Landmark.NEAR_KITCHEN_CENTRE),
+    _court_line(Landmark.FAR_KITCHEN_CENTRE, Landmark.FAR_BASELINE_CENTRE),
 )
 
 _TS = np.linspace(0.06, 0.94, _SAMPLES_PER_LINE, dtype=np.float64)
 _SAMPLE_COURT_PTS = np.vstack(
     [
-        np.column_stack([x1 + (x2 - x1) * _TS, y1 + (y2 - y1) * _TS, np.ones(_SAMPLES_PER_LINE)])
-        for x1, y1, x2, y2, *_ in _COURT_LINES
+        np.column_stack(
+            [
+                line.x1 + (line.x2 - line.x1) * _TS,
+                line.y1 + (line.y2 - line.y1) * _TS,
+                np.ones(_SAMPLES_PER_LINE),
+            ]
+        )
+        for line in _COURT_LINES
     ]
 )
 _SAMPLE_LINE_EQS = np.vstack(
-    [np.tile([a, b, c], (_SAMPLES_PER_LINE, 1)) for *_, a, b, c in _COURT_LINES]
+    [np.tile([line.a, line.b, line.c], (_SAMPLES_PER_LINE, 1)) for line in _COURT_LINES]
 )
 _SAMPLE_LINE_IDS = np.concatenate(
     [np.full(_SAMPLES_PER_LINE, lid, dtype=np.int32) for lid in range(len(_COURT_LINES))]
 )
-_LINE_EQS = np.array([[a, b, c] for *_, a, b, c in _COURT_LINES], dtype=np.float64)
+_LINE_EQS = np.array([[line.a, line.b, line.c] for line in _COURT_LINES], dtype=np.float64)
 
 
 class CameraMotionError(RuntimeError):
     """Raised when source footage cannot be opened for Camera Motion tracking."""
+
+
+class TrackingCancelledError(RuntimeError):
+    """Raised internally when a superseded Camera Motion tracking job is cancelled."""
 
 
 @dataclass(frozen=True)
@@ -369,12 +405,16 @@ class CameraMotionCache:
         video_path: Path,
         span: CalibrationSpan,
         base_homography: Homography,
+        *,
+        cancel: threading.Event | None = None,
     ) -> SpanMotion:
         """Returns cached Camera Motion for `span`, or tracks and caches it."""
+        _check_cancelled(cancel)
         cached = self.get(video_path, span)
         if cached is not None:
             return cached
-        motion = track_span(video_path, span, base_homography)
+        motion = track_span(video_path, span, base_homography, cancel=cancel)
+        _check_cancelled(cancel)
         self.put(video_path, span, motion)
         return motion
 
@@ -407,12 +447,14 @@ class CameraMotionCache:
         calibrations: Sequence[Calibration],
         *,
         on_span_done: Callable[[SpanMotion], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> CameraMotion:
         """Ensures every complete CalibrationSpan in a Match is tracked and cached."""
         motion, missing = self.load_cached(video_path, segments, calibrations)
         spans = list(motion.spans)
         for span, base in missing:
-            tracked = self.get_or_track(video_path, span, base)
+            _check_cancelled(cancel)
+            tracked = self.get_or_track(video_path, span, base, cancel=cancel)
             spans.append(tracked)
             if on_span_done is not None:
                 on_span_done(tracked)
@@ -420,6 +462,11 @@ class CameraMotionCache:
 
 
 # --- Tracking algorithm -------------------------------------------------------------------
+
+
+def _check_cancelled(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise TrackingCancelledError("Camera Motion tracking cancelled")
 
 
 @dataclass(frozen=True)
@@ -442,6 +489,7 @@ def track_span(
     base_homography: Homography,
     *,
     keyframe_stride: int = _KEYFRAME_STRIDE,
+    cancel: threading.Event | None = None,
 ) -> SpanMotion:
     """Tracks Camera Motion across every frame of `span` from `video_path`.
 
@@ -453,6 +501,7 @@ def track_span(
        mapped keyframes and running fast court-line refinement + verification, while stepping
        frame-by-frame across mapped/unmapped boundaries to pinpoint cuts.
     """
+    _check_cancelled(cancel)
     if not video_path.is_file():
         raise CameraMotionError(f"Source video not found: {video_path}")
     cap = cv2.VideoCapture(str(video_path))
@@ -460,7 +509,9 @@ def track_span(
         raise CameraMotionError(f"Could not open video: {video_path}")
 
     try:
-        return _track_span_open(cap, span, base_homography, keyframe_stride=keyframe_stride)
+        return _track_span_open(
+            cap, span, base_homography, keyframe_stride=keyframe_stride, cancel=cancel
+        )
     finally:
         cap.release()
 
@@ -471,6 +522,7 @@ def _track_span_open(
     base_homography: Homography,
     *,
     keyframe_stride: int,
+    cancel: threading.Event | None = None,
 ) -> SpanMotion:
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -519,6 +571,8 @@ def _track_span_open(
     kf_gray: dict[int, np.ndarray] = {}
     kf_score: dict[int, np.ndarray] = {}
     for f in range(start_f, end_f + 1):
+        if (f - start_f) % 30 == 0:
+            _check_cancelled(cancel)
         if not cap.grab():
             break
         if f in kf_set:
@@ -601,6 +655,7 @@ def _track_span_open(
         last_good = seed_f
         prev_mapped = seed_f is not None
         for idx_k in indices:
+            _check_cancelled(cancel)
             cur_f = available_kfs[idx_k]
             if cur_f in kf_c2p:
                 last_good = cur_f
@@ -665,6 +720,7 @@ def _track_span_open(
             feat_mask=feat_mask,
             ref_f=ref_f,
             store_frame=store_frame,
+            cancel=cancel,
         )
 
     return _build_span_motion(span, mapped, matrices, line_error_ft)
@@ -682,11 +738,13 @@ def _fill_intermediate_frames(
     feat_mask: np.ndarray | None,
     ref_f: int,
     store_frame: Callable[[int, Matrix, float], None],
+    cancel: threading.Event | None = None,
 ) -> None:
     cap.set(cv2.CAP_PROP_POS_FRAMES, available_kfs[0])
     cur_pos = available_kfs[0]
 
     for k_idx in range(len(available_kfs) - 1):
+        _check_cancelled(cancel)
         k0 = available_kfs[k_idx]
         k1 = available_kfs[k_idx + 1]
         if k1 - k0 <= 1:

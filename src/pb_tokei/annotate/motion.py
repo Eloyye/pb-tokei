@@ -6,7 +6,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -16,11 +16,13 @@ from pb_tokei.calibration import CourtMapping, Matrix, fit_landmarks
 from pb_tokei.camera_motion import (
     CameraMotionCache,
     FrameRange,
+    TrackingCancelledError,
     calibration_spans,
 )
 from pb_tokei.rally_log import Calibration, CameraView, MatchId, PlaySegment
 
 MAX_FRAME_WINDOW = 10_000
+MAX_CONCURRENT_JOBS = 2
 
 
 class CameraMotionStatus(StrEnum):
@@ -91,14 +93,17 @@ class _JobState:
     signature: str
     running: bool = False
     error: str | None = None
+    cancel: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
 
 
 class CameraMotionService:
     """Tracks and caches Camera Motion per Match without touching the Rally Log database."""
 
-    def __init__(self, cache_dir: Path) -> None:
+    def __init__(self, cache_dir: Path, *, max_concurrent: int = MAX_CONCURRENT_JOBS) -> None:
         self._cache = CameraMotionCache(cache_dir)
         self._lock = threading.Lock()
+        self._slots = threading.Semaphore(max(1, max_concurrent))
         self._jobs: dict[MatchId, _JobState] = {}
 
     @property
@@ -164,8 +169,9 @@ class CameraMotionService:
 
         with self._lock:
             job = self._jobs.get(match_id)
-            running = job is not None and job.running
-            job_error = job.error if (job is not None and job.signature == sig) else None
+            same_sig = job is not None and job.signature == sig
+            running = same_sig and job.running
+            job_error = job.error if same_sig else None
 
         if running:
             state = CameraMotionStatus.TRACKING
@@ -209,30 +215,34 @@ class CameraMotionService:
         seg_snapshot = tuple(segments)
         cal_snapshot = tuple(calibrations)
 
-        if wait:
-            try:
-                self._cache.track_match(video_path, seg_snapshot, cal_snapshot)
-                with self._lock:
-                    self._jobs[match_id] = _JobState(signature=sig, running=False, error=None)
-            except Exception as exc:
-                with self._lock:
-                    self._jobs[match_id] = _JobState(signature=sig, running=False, error=str(exc))
-            return self.status(match_id, video_path, seg_snapshot, cal_snapshot)
-
+        reused: _JobState | None = None
+        started: _JobState | None = None
         with self._lock:
             existing = self._jobs.get(match_id)
             if existing is not None and existing.running and existing.signature == sig:
-                pass
+                reused = existing
             else:
-                state = _JobState(signature=sig, running=True, error=None)
-                self._jobs[match_id] = state
-                thread = threading.Thread(
-                    target=self._run_job,
-                    args=(match_id, state, video_path, seg_snapshot, cal_snapshot),
-                    daemon=True,
-                )
-                thread.start()
+                if existing is not None and existing.running:
+                    existing.cancel.set()
+                started = _JobState(signature=sig, running=True)
+                self._jobs[match_id] = started
 
+        if reused is not None:
+            if wait:
+                reused.done.wait()
+            return self.status(match_id, video_path, seg_snapshot, cal_snapshot)
+
+        assert started is not None
+        if wait:
+            self._run_job(match_id, started, video_path, seg_snapshot, cal_snapshot)
+            return self.status(match_id, video_path, seg_snapshot, cal_snapshot)
+
+        thread = threading.Thread(
+            target=self._run_job,
+            args=(match_id, started, video_path, seg_snapshot, cal_snapshot),
+            daemon=True,
+        )
+        thread.start()
         return self.status(match_id, video_path, seg_snapshot, cal_snapshot)
 
     def _run_job(
@@ -245,14 +255,19 @@ class CameraMotionService:
     ) -> None:
         error: str | None = None
         try:
-            self._cache.track_match(video_path, segments, calibrations)
+            with self._slots:
+                if not state.cancel.is_set():
+                    self._cache.track_match(video_path, segments, calibrations, cancel=state.cancel)
+        except TrackingCancelledError:
+            pass
         except Exception as exc:
             error = str(exc)
         finally:
             with self._lock:
+                state.running = False
                 if self._jobs.get(match_id) is state:
-                    state.running = False
                     state.error = error
+                state.done.set()
 
     def frames(
         self,
