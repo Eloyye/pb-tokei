@@ -181,10 +181,22 @@ h1 {
 
 .topbar-right {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rally-log-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: 11px;
 }
 
 .help-button {
+  flex-shrink: 0;
   width: 22px;
   height: 22px;
   border: 1px solid var(--line-2);

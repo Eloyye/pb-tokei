@@ -50,14 +50,14 @@ uv sync
 cd web && bun install && bun run build && cd ..
 ```
 
-Write a Roster File template, fill in the Tournament and the four Players, then create the Match. `match add` prints the new Match's id:
+Write a Roster File template, fill in the Tournament and the four Players, then create the Match in a new Rally Log. `match add` prints the new Match's id:
 
 ```bash
 uv run pb-tokei match new rosters/<tournament>/<match>.toml
-uv run pb-tokei match add rosters/<tournament>/<match>.toml
+uv run pb-tokei match add rosters/<tournament>/<match>.toml --db rally_log.duckdb
 ```
 
-Download the broadcast and attach it to the Match. Then open the annotation app:
+Download the broadcast and attach it to the Match. Then open the annotation app (`annotate` remembers this Rally Log so later commands can omit `--db` from any directory):
 
 ```bash
 uv run pb-tokei download <url> --match <match-id>
@@ -66,18 +66,20 @@ uv run pb-tokei annotate
 
 ## Usage
 
-Commands that read or write the Rally Log take `--db <path>`. The default is `rally_log.duckdb` in the directory you run them from.
+Commands that read or write the Rally Log (`annotate`, `match add`, `match list`, `download --match`) take `--db <path>`. When `--db` is omitted, they use the last Rally Log opened in `annotate`, falling back to `./rally_log.duckdb`, and print `Rally Log: <path>` to stderr so writes never go somewhere unexpected. Pass `--db <path>` to `match add` when creating a new Rally Log.
 
 ### Footage
 
-`download` saves a broadcast into `footage/` and converts it to a constant 60 fps MP4. `convert` re-runs the conversion on a file already on disk:
+`download` saves a broadcast and converts it to a constant 60 fps MP4. `convert` re-runs the conversion on a file already on disk:
 
 ```bash
 uv run pb-tokei download <url>
-uv run pb-tokei download <url> --match <match-id> [--db rally_log.duckdb]
+uv run pb-tokei download <url> --match <match-id> [--db <path>]
 uv run pb-tokei download <url> --cookies-from-browser chrome   # or --cookies path/to/cookies.txt
 uv run pb-tokei convert <path-to-original> [--force]
 ```
+
+With `--match`, `--footage-dir` defaults to `<Rally Log dir>/footage` (otherwise `./footage`), and the video path is recorded relative to the Rally Log's directory when inside it, or absolute otherwise ([ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)).
 
 YouTube sometimes asks you to sign in to confirm you're not a bot. If it does, pass `--cookies-from-browser <browser>` (for example `chrome`, `firefox` or `safari`) or `--cookies <path>`. To set a default instead, add a line such as `--cookies-from-browser chrome` to `~/.config/yt-dlp/config`.
 
@@ -87,8 +89,8 @@ A Roster File is a TOML file that sets up one Match: its Tournament, its two Tea
 
 ```bash
 uv run pb-tokei match new rosters/<tournament>/<match>.toml
-uv run pb-tokei match add rosters/<tournament>/<match>.toml [--db rally_log.duckdb]
-uv run pb-tokei match list [--tournament <name>] [--db rally_log.duckdb]
+uv run pb-tokei match add rosters/<tournament>/<match>.toml [--db <path>]
+uv run pb-tokei match list [--tournament <name>] [--db <path>]
 ```
 
 ### Annotation app
@@ -96,10 +98,10 @@ uv run pb-tokei match list [--tournament <name>] [--db rally_log.duckdb]
 A local web app for Chrome. It lists Matches and opens each in a Premiere-style workspace (Calibrate, Annotate, Review), with the Match's 60 fps video, a Timeline and keyboard playback:
 
 ```bash
-uv run pb-tokei annotate [--db rally_log.duckdb] [--port 8000] [--no-browser]
+uv run pb-tokei annotate [--db <path>] [--port 8000] [--no-browser]
 ```
 
-The app serves on `127.0.0.1` only and opens your browser. Relative video paths are resolved from the directory you start it in, as with the other commands. If a Match has no playable video, the app shows the command that fixes it; it never downloads or converts anything itself.
+The app serves on `127.0.0.1` only, opens your browser, and shows the open Rally Log's filename in the header (full path on hover). `annotate` remembers the Rally Log it opens, and relative video paths are resolved relative to the Rally Log's directory ([ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)), so `uv run pb-tokei annotate` reopens it from any directory with its videos playing. If a Match has no playable video, the app shows the command that fixes it; it never downloads or converts anything itself.
 
 Press `?` in the app for every key that works. The full layout and keymap, including planned keys, are in [docs/annotation-ui.md](docs/annotation-ui.md).
 

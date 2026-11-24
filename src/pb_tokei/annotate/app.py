@@ -29,7 +29,6 @@ from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
 from pb_tokei.rally_log import (
-    DEFAULT_DB_PATH,
     Calibration,
     CameraView,
     Landmark,
@@ -40,6 +39,7 @@ from pb_tokei.rally_log import (
     PlaySegment,
     RallyLog,
     SourceVideo,
+    resolve_video_path,
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -53,6 +53,12 @@ class VideoStatus(StrEnum):
     NONE = "none"
     NOT_CONVERTED = "not_converted"
     READY = "ready"
+
+
+class RallyLogOut(BaseModel):
+    """The Rally Log file the annotation app is serving."""
+
+    path: str
 
 
 class MatchOut(BaseModel):
@@ -221,17 +227,16 @@ def _rows(matrix: Matrix) -> list[list[float]]:
 
 
 class _VideoState:
-    """Where a Match's video stands on disk, resolved against the server's start directory."""
+    """Where a Match's video stands on disk, resolved against the Rally Log's directory."""
 
-    def __init__(self, source_video: SourceVideo | None, base_dir: Path) -> None:
+    def __init__(self, source_video: SourceVideo | None, db_file: Path) -> None:
         self.source_video = source_video
         self.source_path: Path | None = None
         self.converted_path: Path | None = None
         if source_video is None:
             self.status = VideoStatus.NONE
             return
-        source = source_video.path
-        self.source_path = source if source.is_absolute() else base_dir / source
+        self.source_path = resolve_video_path(source_video.path, db_file)
         try:
             self.converted_path = converted_path_for(self.source_path)
         except FootageConversionError:
@@ -241,31 +246,26 @@ class _VideoState:
             VideoStatus.READY if self.converted_path.is_file() else VideoStatus.NOT_CONVERTED
         )
 
-    def fix_command(self, match_id: MatchId, db_path: Path) -> str | None:
+    def fix_command(self, match_id: MatchId, db_file: Path) -> str | None:
         if self.status is VideoStatus.READY:
             return None
         if self.source_video is None or self.source_path is None or not self.source_path.is_file():
             url = "<url>" if self.source_video is None else shlex.quote(self.source_video.url)
-            command = f"pb-tokei download {url} --match {match_id}"
-            if db_path != DEFAULT_DB_PATH:
-                command += f" --db {shlex.quote(str(db_path))}"
-            return command
-        return f"pb-tokei convert {shlex.quote(str(self.source_video.path))}"
+            return f"pb-tokei download {url} --match {match_id} --db {shlex.quote(str(db_file))}"
+        return f"pb-tokei convert {shlex.quote(str(self.source_path))}"
 
 
 def create_app(
     db_path: Path,
     *,
-    base_dir: Path,
     static_dir: Path = STATIC_DIR,
     cache_dir: Path | None = None,
 ) -> FastAPI:
     """Builds the app for the Rally Log at `db_path`.
 
-    Relative paths (`db_path`, each `SourceVideo.path`) are resolved against `base_dir`, the
-    directory the server was started from, just as the CLI resolves them.
+    Relative `SourceVideo.path` values are resolved against the Rally Log's directory (ADR 0007).
     """
-    db_file = db_path if db_path.is_absolute() else base_dir / db_path
+    db_file = db_path.resolve()
     motion_service = CameraMotionService(
         default_cache_dir(db_file) if cache_dir is None else cache_dir
     )
@@ -280,7 +280,7 @@ def create_app(
                 raise HTTPException(
                     status_code=404, detail=f"Match not found: {match_id}"
                 ) from None
-        return summary, _VideoState(summary.source_video, base_dir)
+        return summary, _VideoState(summary.source_video, db_file)
 
     def lookup_motion_inputs(
         match_id: UUID,
@@ -295,7 +295,7 @@ def create_app(
                 ) from None
             segments = log.get_play_segments(mid)
             calibrations = log.get_calibrations(mid)
-        video = _VideoState(summary.source_video, base_dir)
+        video = _VideoState(summary.source_video, db_file)
         video_path = video.converted_path if video.status is VideoStatus.READY else None
         return mid, video_path, segments, calibrations
 
@@ -314,20 +314,23 @@ def create_app(
         # Most often the CLI is writing to the file at that moment; a retry will succeed.
         return JSONResponse(status_code=503, content={"detail": f"Rally Log unavailable: {exc}"})
 
+    @app.get("/api/rally-log", operation_id="getRallyLog")
+    def get_rally_log() -> RallyLogOut:
+        return RallyLogOut(path=str(db_file))
+
     @app.get("/api/matches", operation_id="listMatches")
     def list_matches() -> list[MatchOut]:
         with RallyLog.open(db_file) as log:
             summaries = log.list_matches()
         return [
-            MatchOut.from_summary(s, _VideoState(s.source_video, base_dir).status)
-            for s in summaries
+            MatchOut.from_summary(s, _VideoState(s.source_video, db_file).status) for s in summaries
         ]
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
     def get_match(match_id: UUID) -> MatchDetailOut:
         summary, video = lookup(match_id)
         return MatchDetailOut.from_match(
-            MatchOut.from_summary(summary, video.status), video.fix_command(summary.id, db_path)
+            MatchOut.from_summary(summary, video.status), video.fix_command(summary.id, db_file)
         )
 
     @app.get(
@@ -365,7 +368,7 @@ def create_app(
         segments: tuple[PlaySegment, ...],
         source_video: SourceVideo | None,
     ) -> list[CalibrationOut]:
-        video = _VideoState(source_video, base_dir)
+        video = _VideoState(source_video, db_file)
         video_path = video.converted_path if video.status is VideoStatus.READY else None
         out: list[CalibrationOut] = []
         for cal in calibrations:
