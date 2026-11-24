@@ -33,6 +33,16 @@ const GROUPS: [string, [string[], string][]][] = [
     ],
   ],
   [
+    "Calibrate: Landmarks",
+    [
+      [["Click"], "Place the highlighted Landmark on the video"],
+      [["Drag"], "Move a placed Landmark"],
+      [["Tab"], "Skip to the next Landmark"],
+      [["X"], "Clear the selected Landmark"],
+      [["N"], "New Calibration from this Play Segment, copying the one in effect"],
+    ],
+  ],
+  [
     "App",
     [
       [["?"], "This sheet"],

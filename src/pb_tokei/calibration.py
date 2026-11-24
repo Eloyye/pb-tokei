@@ -86,6 +86,10 @@ class LandmarkError:
     def off_court(self) -> bool:
         return math.isinf(self.worst_ft)
 
+    @property
+    def needs_attention(self) -> bool:
+        return self.worst_ft > ERROR_WARNING_FT
+
 
 @dataclass(frozen=True)
 class CalibrationFit:
@@ -105,8 +109,7 @@ class CalibrationFit:
 
     @property
     def needs_attention(self) -> bool:
-        worst = self.worst_error_ft
-        return worst is not None and worst > ERROR_WARNING_FT
+        return any(e.needs_attention for e in self.errors.values())
 
 
 def fit_landmarks(landmarks: Mapping[Landmark, ImagePoint]) -> Homography | None:

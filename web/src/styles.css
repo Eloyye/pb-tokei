@@ -515,6 +515,7 @@ button.panel-tab {
 
 .overlay {
   position: absolute;
+  z-index: 2;
   padding: 3px 8px;
   background: rgb(0 0 0 / 55%);
   border-radius: 2px;
@@ -781,12 +782,282 @@ fieldset.transport-group {
   font-weight: 400;
 }
 
-.cal-view ol {
+.cal-view ul {
   display: grid;
   gap: 1px;
   margin: 0;
-  padding: 0 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.cal-view li {
+  display: flex;
+  align-items: center;
+}
+
+.cal-view li > button:first-child {
+  display: flex;
+  flex: 1;
+  justify-content: space-between;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 2px;
+  background: none;
   color: var(--dim);
+  font: 11px var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cal-view li.current > button:first-child {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.cal-view li > button:first-child:hover {
+  background: var(--hover);
+}
+
+.cal-current {
+  padding: 6px 10px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cal-current h3 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.cal-current h3 span {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+.cal-body {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.landmark-court {
+  width: 64px;
+  background: var(--court);
+  border-radius: 2px;
+}
+
+.landmark-court .line {
+  fill: none;
+  stroke: var(--court-line);
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.landmark-court .net {
+  stroke: var(--text);
+  stroke-width: 1.4;
+}
+
+.landmark-court .dot {
+  fill: var(--court);
+  stroke: var(--court-line);
+  stroke-width: 1;
+  cursor: pointer;
+}
+
+.landmark-court .dot.placed {
+  fill: var(--court-line);
+}
+
+.landmark-court .dot.flagged {
+  fill: var(--warn);
+}
+
+.landmark-court .dot.selected {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.landmarks {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.landmarks button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.landmarks button:hover {
+  background: var(--hover);
+}
+
+.landmarks button.selected {
+  background: var(--accent-soft);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.error-cell {
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.error-cell.unplaced {
+  color: var(--faint);
+}
+
+.error-cell.flagged,
+.cal-view .flagged,
+.fit-summary.flagged {
+  color: var(--warn);
+}
+
+.fit-summary {
+  margin: 8px 0 0;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.cal-keys {
+  padding: 8px 10px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+/* The layer over the video's picture in Calibrate. */
+.calibration-layer {
+  position: absolute;
+  z-index: 1;
+  cursor: not-allowed;
+  touch-action: none;
+}
+
+.calibration-layer.editable {
+  cursor: default;
+}
+
+.calibration-layer.editable.placing {
+  cursor: crosshair;
+}
+
+.court-template {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.court-template polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.85;
+}
+
+.court-template.stale polyline {
+  opacity: 0.35;
+}
+
+.court-template .zone {
+  stroke-dasharray: 6 5;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.landmark-marker {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  padding: 0;
+  border: 2px solid var(--text);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 35%);
+  cursor: grab;
+}
+
+.landmark-marker span {
+  position: absolute;
+  top: -16px;
+  left: 9px;
+  color: var(--text);
+  font: 600 10px var(--mono);
+  text-shadow: 0 0 3px #000;
+}
+
+.landmark-marker.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.landmark-marker.flagged {
+  border-color: var(--warn);
+}
+
+.loupe {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: #000;
+  pointer-events: none;
+}
+
+.loupe canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* Crosshair at the centre of the magnifier: the point a click places. */
+.loupe::before,
+.loupe::after {
+  content: "";
+  position: absolute;
+  background: var(--accent);
+}
+
+.loupe::before {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.loupe::after {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.loupe-label {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  color: var(--text);
+  font-size: 10px;
+  text-shadow: 0 0 3px #000;
 }
 
 /* --- Timeline ----------------------------------------------------------------------------- */

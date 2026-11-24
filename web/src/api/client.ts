@@ -22,9 +22,11 @@ export async function getMatch(matchId: string) {
 
 type Schemas = components["schemas"];
 export type CameraView = Schemas["CameraView"];
+export type Landmark = Schemas["Landmark"];
 /** Live play from one Camera View, `start_frame` to `end_frame` inclusive. */
 export type PlaySegment = Schemas["PlaySegmentIO"];
 export type CalibrationOut = Schemas["CalibrationOut"];
+export type LandmarkErrorOut = Schemas["LandmarkErrorOut"];
 /** A Calibration's own fields, without its fit: what is edited and saved. */
 export type Calibration = Pick<
   CalibrationOut,

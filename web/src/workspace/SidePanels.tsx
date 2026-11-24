@@ -82,39 +82,3 @@ export function RalliesPanel({ focused }: { focused: boolean }) {
     </Panel>
   );
 }
-
-const LANDMARKS = [
-  "Near baseline, left corner",
-  "Near baseline, right corner",
-  "Near kitchen line, left",
-  "Near kitchen line, right",
-  "Far kitchen line, left",
-  "Far kitchen line, right",
-  "Far baseline, left corner",
-  "Far baseline, right corner",
-];
-
-/** Calibrate's right column: landmarks to click per Camera View. Clicking them comes with #10. */
-export function CalibrationPanel({ focused }: { focused: boolean }) {
-  return (
-    <Panel id="calibration" focused={focused} tabs={<PanelTitle>Calibration</PanelTitle>}>
-      <div className="panel-body">
-        {["Main View", "Sideline View"].map((view) => (
-          <div key={view} className="cal-view">
-            <h3>
-              {view} <span>0 / {LANDMARKS.length}</span>
-            </h3>
-            <ol>
-              {LANDMARKS.map((name) => (
-                <li key={name}>{name}</li>
-              ))}
-            </ol>
-          </div>
-        ))}
-        <p className="empty">
-          Calibration isn't built yet. Landmarks will be clicked on the video.
-        </p>
-      </div>
-    </Panel>
-  );
-}

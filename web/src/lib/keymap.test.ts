@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import {
+  calibrationKeyAction,
   changeSpeed,
   historyKeyAction,
   isTextEntry,
@@ -166,5 +167,18 @@ describe("historyKeyAction", () => {
 
   it("ignores plain Z", () => {
     expect(historyKeyAction(press("z"))).toBeNull();
+  });
+});
+
+describe("calibrationKeyAction", () => {
+  it("maps N, Tab and X", () => {
+    expect(calibrationKeyAction(press("n"))).toBe("new");
+    expect(calibrationKeyAction(press("Tab"))).toBe("skip");
+    expect(calibrationKeyAction(press("x"))).toBe("clear");
+  });
+
+  it("leaves Shift+Tab and modified keys alone", () => {
+    expect(calibrationKeyAction(press("Tab", { shiftKey: true }))).toBeNull();
+    expect(calibrationKeyAction(press("n", { metaKey: true }))).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { type FormEvent, type RefObject, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import type { CameraView, MatchDetail } from "../api/client";
 import { formatTimecode } from "../lib/frames";
 import { parseGoto } from "../lib/goto";
@@ -28,6 +28,7 @@ export function Monitor({
   onCloseGoto,
   focused,
   cameraView,
+  overlay,
 }: {
   match: MatchDetail;
   src: string | null;
@@ -40,6 +41,8 @@ export function Monitor({
   focused: boolean;
   /** The Camera View of the Play Segment on screen, "none" outside one, null until known. */
   cameraView: CameraView | "none" | null;
+  /** A layer over the picture, such as Calibrate's Landmarks; it takes clicks on the video. */
+  overlay?: ReactNode;
 }) {
   const lastFrame = Math.max(0, state.totalFrames - 1);
   return (
@@ -66,6 +69,7 @@ export function Monitor({
               playsInline
               onClick={controls.togglePlay}
             />
+            {overlay}
             {cameraView && (
               <div className={`overlay overlay-camera ${cameraView === "none" ? "off" : ""}`}>
                 {cameraTag(cameraView)}

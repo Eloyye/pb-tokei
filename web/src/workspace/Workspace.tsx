@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
-import { type MatchDetail, matchVideoUrl } from "../api/client";
+import { type Landmark, type MatchDetail, matchVideoUrl } from "../api/client";
 import {
+  calibrationAt,
+  calibrationKeyFor,
+  clearLandmark,
+  currentFit,
+  fitKey,
+  deleteCalibration,
+  landmarkLabel,
+  newCalibration,
+  nextLandmark,
+  placeLandmark,
+  type Point,
+  skipLandmark,
+} from "../lib/calibrations";
+import {
+  type CalibrationAction,
+  calibrationKeyAction,
   historyKeyAction,
   isTextEntry,
   keyAction,
@@ -16,7 +32,9 @@ import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
 import type { PanelId } from "./Panel";
-import { CalibrationPanel, CourtPanel, InspectorPanel, RalliesPanel } from "./SidePanels";
+import { CalibrationOverlay } from "./CalibrationOverlay";
+import { CalibrationPanel } from "./CalibrationPanel";
+import { CourtPanel, InspectorPanel, RalliesPanel } from "./SidePanels";
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
@@ -26,7 +44,7 @@ const ZOOM_STEP = 1.5;
 
 const MESSAGES: Record<WorkspaceName, string> = {
   calibrate:
-    "Mark Play Segments: Shift+I and Shift+O at the first and last frame, 1 / 2 for Main or Sideline. Calibration isn't built yet.",
+    "Mark Play Segments with Shift+I and Shift+O, 1 / 2 for Main or Sideline; then click each Landmark on the video.",
   annotate: "Rally and Shot entry isn't built yet. Playback and the Timeline work.",
   review: "Review needs pre-filled Rally Logs, which don't exist yet.",
 };
@@ -49,6 +67,54 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const gridRef = useRef<HTMLDivElement>(null);
   const [recordingState, recording] = useRecording(match.id);
   const calibrating = workspace === "calibrate";
+  const segments = recordingState.recording?.segments ?? null;
+  const segment = (segments && segmentAt(segments, frame)) || undefined;
+
+  // Calibration at the playhead: the one in effect for its Play Segment's Camera View, and the
+  // Landmark to place next. The selection belongs to one Calibration; on another, it restarts.
+  const calibrations = recordingState.recording?.calibrations ?? [];
+  const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
+  const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
+  const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
+    key: null,
+    landmark: null,
+  });
+  const selected =
+    selection.key === calibrationKey
+      ? selection.landmark
+      : nextLandmark(calibration?.landmarks ?? {}, null);
+  const select = (landmark: Landmark | null) => setSelection({ key: calibrationKey, landmark });
+
+  const place = (landmark: Landmark, point: Point, how: "click" | "drag") => {
+    if (!segment) return;
+    recording.editCalibrations((list) => {
+      const edit = placeLandmark(list, segment, frame, landmark, point);
+      // The first click creates the Calibration; the selection follows it either way.
+      if (edit.edited) {
+        const next = how === "drag" ? landmark : nextLandmark(edit.edited.landmarks, landmark);
+        setSelection({ key: fitKey(edit.edited), landmark: next });
+      }
+      return edit;
+    });
+  };
+
+  const calibrate = (action: CalibrationAction) => {
+    if (!segment) return recording.notify("Go to a Play Segment to calibrate its Camera View");
+    switch (action) {
+      case "new":
+        return recording.editCalibrations((list) => newCalibration(list, segment, frame));
+      case "skip": {
+        const next = skipLandmark(selected);
+        select(next);
+        return recording.notify(`Next: ${landmarkLabel(next)}`);
+      }
+      case "clear":
+        if (!selected) return recording.notify("Pick a Landmark in the list first");
+        return recording.editCalibrations((list) =>
+          clearLandmark(list, segment.camera_view, frame, selected),
+        );
+    }
+  };
 
   // Show the whole video once its length is first known, then page the view whenever the
   // playhead moves off screen. Paging only when the frame changes leaves the view where the
@@ -93,15 +159,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     const edit = (action: SegmentAction) => {
       switch (action.type) {
         case "markIn":
-          return recording.editSegments((segments, pending) => markIn(segments, pending, frame));
+          return recording.editSegments((current, pending) => markIn(current, pending, frame));
         case "markOut":
-          return recording.editSegments((segments, pending) => markOut(segments, pending, frame));
+          return recording.editSegments((current, pending) => markOut(current, pending, frame));
         case "setView":
-          return recording.editSegments((segments, pending) =>
-            setCameraView(segments, pending, frame, action.view),
+          return recording.editSegments((current, pending) =>
+            setCameraView(current, pending, frame, action.view),
           );
         case "remove":
-          return recording.editSegments((segments, pending) => removeAt(segments, pending, frame));
+          return recording.editSegments((current, pending) => removeAt(current, pending, frame));
         case "cancel":
           return recording.cancelPending();
       }
@@ -118,6 +184,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       if (segmentAction) {
         event.preventDefault();
         if (!event.repeat) edit(segmentAction);
+        return;
+      }
+      const calibrationAction = calibrationKeyAction(event);
+      if (calibrationAction) {
+        event.preventDefault();
+        if (!event.repeat) calibrate(calibrationAction);
         return;
       }
     }
@@ -158,8 +230,6 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const gridRect = () => gridRef.current?.getBoundingClientRect();
 
   const src = match.video_status === "ready" ? matchVideoUrl(match.id) : null;
-  const segments = recordingState.recording?.segments ?? null;
-  const segment = segments && segmentAt(segments, frame);
 
   return (
     <div className="match-frame">
@@ -185,6 +255,22 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           onCloseGoto={() => setGotoOpen(false)}
           focused={focused === "monitor"}
           cameraView={segments ? (segment?.camera_view ?? "none") : null}
+          overlay={
+            calibrating &&
+            segments && (
+              <CalibrationOverlay
+                videoRef={videoRef}
+                calibration={calibration}
+                fit={calibration && currentFit(recordingState.fits, calibration)}
+                lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
+                selected={selected}
+                editable={Boolean(segment)}
+                onPlace={place}
+                onSelect={select}
+                onBlocked={recording.notify}
+              />
+            )
+          }
         />
         <Splitter
           className="splitter-side"
@@ -199,7 +285,19 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         />
         <div className={`side-column ${calibrating ? "single" : ""}`}>
           {calibrating ? (
-            <CalibrationPanel focused={focused === "calibration"} />
+            <CalibrationPanel
+              focused={focused === "calibration"}
+              segment={segment}
+              calibration={calibration}
+              calibrations={calibrations}
+              fits={recordingState.fits}
+              selected={selected}
+              onSelect={select}
+              onSeek={controls.seek}
+              onDelete={(cameraView, from) =>
+                recording.editCalibrations((list) => deleteCalibration(list, cameraView, from))
+              }
+            />
           ) : (
             <>
               <CourtPanel match={match} focused={focused === "court"} />

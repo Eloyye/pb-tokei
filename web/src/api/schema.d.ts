@@ -211,6 +211,8 @@ export interface components {
     LandmarkErrorOut: {
       /** Leave One Out Ft */
       leave_one_out_ft: number | null;
+      /** Needs Attention */
+      needs_attention: boolean;
       /** Off Court */
       off_court: boolean;
       /** Residual Ft */
