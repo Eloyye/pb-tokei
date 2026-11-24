@@ -66,15 +66,17 @@ def test_new_add_list_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[s
 
     filled = roster_toml(
         match_id=match_id,
-        video={"url": "https://youtu.be/abc", "video_id": "abc", "path": "footage/abc.mp4"},
+        video={"url": "https://youtu.be/abc", "video_id": "abc", "path": "../../footage/abc.mp4"},
     )
     roster_file.write_text(filled)
-    code, out, _ = run(capsys, "match", "add", str(roster_file), "--db", db)
+    code, out, err = run(capsys, "match", "add", str(roster_file), "--db", db)
     assert code == 0
     assert out.strip() == str(match_id)
+    assert f"Rally Log: {Path(db).resolve()}" in err
 
-    code, out, _ = run(capsys, "match", "list", "--db", db)
+    code, out, err = run(capsys, "match", "list", "--db", db)
     assert code == 0
+    assert f"Rally Log: {Path(db).resolve()}" in err
     assert out.splitlines() == [
         f"{match_id}  PPA Atlanta Open 2026  Anna Bright / Ben Johns  vs  Cara Lee / Dan Kim  video"
     ]
@@ -84,6 +86,78 @@ def test_new_add_list_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert match.games == ()
     assert match.source_video is not None
     assert match.source_video.path == Path("footage/abc.mp4")
+
+
+def test_roster_video_path_recording_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    proj = tmp_path / "proj"
+    external = tmp_path / "external"
+    cwd = tmp_path / "unrelated_cwd"
+    for d in (proj / "rosters", external, cwd):
+        d.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    db = proj / "rally_log.duckdb"
+
+    cases = [
+        # Relative to Roster File inside Rally Log dir -> recorded relative to Rally Log dir.
+        (proj / "rosters" / "a.toml", "../footage/a.mp4", Path("footage/a.mp4")),
+        # Relative to Roster File outside Rally Log dir -> recorded absolute.
+        (external / "b.toml", "clips/b.mp4", (external / "clips" / "b.mp4").resolve()),
+        # Absolute path inside Rally Log dir -> recorded relative to Rally Log dir.
+        (external / "c.toml", str((proj / "footage" / "c.mp4").resolve()), Path("footage/c.mp4")),
+        # Absolute path outside Rally Log dir -> recorded absolute.
+        (
+            proj / "rosters" / "d.toml",
+            str((external / "d.mp4").resolve()),
+            (external / "d.mp4").resolve(),
+        ),
+    ]
+    for roster_path, raw_video_path, expected in cases:
+        mid = uuid4()
+        roster_path.write_text(
+            roster_toml(
+                match_id=mid,
+                video={"url": "https://youtu.be/v", "video_id": "v", "path": raw_video_path},
+            )
+        )
+        code, _, _ = run(capsys, "match", "add", str(roster_path), "--db", str(db))
+        assert code == 0, roster_path
+        with RallyLog.open(db) as log:
+            loaded = log.load_match(MatchId(mid))
+        assert loaded.source_video is not None
+        assert loaded.source_video.path == expected
+
+
+def test_match_add_warns_when_roster_video_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "rally_log.duckdb"
+    (tmp_path / "footage").mkdir()
+    present_video = tmp_path / "footage" / "present.mp4"
+    present_video.write_bytes(b"video")
+
+    missing_roster = write(
+        tmp_path,
+        roster_toml(
+            video={"url": "https://youtu.be/m", "video_id": "m", "path": "footage/nope.mp4"}
+        ),
+        "missing.toml",
+    )
+    code, _, err = run(capsys, "match", "add", str(missing_roster), "--db", str(db))
+    assert code == 0
+    assert "warning: source video not found" in err
+
+    present_roster = write(
+        tmp_path,
+        roster_toml(
+            video={"url": "https://youtu.be/p", "video_id": "p", "path": "footage/present.mp4"}
+        ),
+        "present.toml",
+    )
+    code, _, err = run(capsys, "match", "add", str(present_roster), "--db", str(db))
+    assert code == 0
+    assert "warning:" not in err
 
 
 def test_new_refuses_to_overwrite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -388,7 +462,7 @@ def test_existing_match_error_does_not_blame_the_file(
     run(capsys, "match", "add", str(path), "--db", db)
     code, _, err = run(capsys, "match", "add", str(path), "--db", db)
     assert code == 1
-    assert err.startswith("error: Match ")
+    assert err.splitlines()[-1].startswith("error: Match ")
 
 
 @pytest.mark.parametrize("command", ["add", "list"])
@@ -401,4 +475,5 @@ def test_a_database_that_is_not_duckdb_is_an_error_not_a_traceback(
         args.append(str(write(tmp_path, roster_toml())))
     code, _, err = run(capsys, *args, "--db", str(db))
     assert code == 1
-    assert err.startswith("error: ")
+    assert err.splitlines()[-1].startswith("error: ")
+    assert "Traceback" not in err

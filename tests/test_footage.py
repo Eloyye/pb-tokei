@@ -554,14 +554,84 @@ def test_cli_download_records_original_source_video_and_prints_converted_path(
     )
     captured = capsys.readouterr()
 
-    original_path = footage_dir / f"{SAMPLE_ID}.mp4"
     converted_path = footage_dir / f"{SAMPLE_ID}.60fps.mp4"
     assert code == 0
     assert captured.out == f"{converted_path}\n"
+    assert f"Rally Log: {db_path.resolve()}" in captured.err
     with RallyLog.open(db_path) as log:
         loaded = log.load_match(match.id)
     assert loaded.source_video == SourceVideo(
-        url=SAMPLE_URL, video_id=SAMPLE_ID, path=original_path
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=Path("footage") / f"{SAMPLE_ID}.mp4"
+    )
+
+
+def test_cli_download_records_absolute_path_when_footage_is_outside_rally_log_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    db_path = proj / "rally_log.duckdb"
+    external_dir = tmp_path / "external_footage"
+    match = _create_match_in_db(db_path)
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4")
+
+    code = main(
+        [
+            "download",
+            SAMPLE_URL,
+            "--footage-dir",
+            str(external_dir),
+            "--match",
+            str(match.id),
+            "--db",
+            str(db_path),
+        ],
+        run=fake,
+    )
+    capsys.readouterr()
+
+    assert code == 0
+    with RallyLog.open(db_path) as log:
+        loaded = log.load_match(match.id)
+    assert loaded.source_video == SourceVideo(
+        url=SAMPLE_URL,
+        video_id=SAMPLE_ID,
+        path=(external_dir / f"{SAMPLE_ID}.mp4").resolve(),
+    )
+
+
+def test_cli_download_defaults_footage_dir_to_cwd_without_match_and_rally_log_dir_with_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    work = tmp_path / "work"
+    proj = tmp_path / "proj"
+    work.mkdir()
+    proj.mkdir()
+    monkeypatch.chdir(work)
+
+    # Without --match, footage goes into ./footage.
+    fake_plain = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4")
+    code = main(["download", SAMPLE_URL], run=fake_plain)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.err == ""
+    assert (work / "footage" / f"{SAMPLE_ID}.mp4").is_file()
+
+    # With --match, footage defaults to <Rally Log dir>/footage and is recorded relatively.
+    db_path = proj / "rally_log.duckdb"
+    match = _create_match_in_db(db_path)
+    fake_match = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+    code = main(
+        ["download", SAMPLE_URL, "--match", str(match.id), "--db", str(db_path)], run=fake_match
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert f"Rally Log: {db_path.resolve()}" in captured.err
+    assert (proj / "footage" / f"{SAMPLE_ID}.mkv").is_file()
+    with RallyLog.open(db_path) as log:
+        loaded = log.load_match(match.id)
+    assert loaded.source_video == SourceVideo(
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=Path("footage") / f"{SAMPLE_ID}.mkv"
     )
 
 
@@ -598,7 +668,7 @@ def test_cli_download_keeps_original_and_records_match_when_conversion_fails(
     with RallyLog.open(db_path) as log:
         loaded = log.load_match(match.id)
     assert loaded.source_video == SourceVideo(
-        url=SAMPLE_URL, video_id=SAMPLE_ID, path=original_path
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=Path("footage") / f"{SAMPLE_ID}.mkv"
     )
 
 
