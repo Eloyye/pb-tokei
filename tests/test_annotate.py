@@ -299,6 +299,143 @@ def test_unknown_api_path_is_404_not_index_html(client: TestClient) -> None:
     assert "<title>" not in response.text
 
 
+# --- Play Segments and Calibrations -------------------------------------------------------
+
+# Where a camera high behind the near baseline sees the four baseline corners.
+CORNERS = {
+    "near_baseline_left": {"x": 0.1, "y": 0.9},
+    "near_baseline_right": {"x": 0.9, "y": 0.9},
+    "far_baseline_left": {"x": 0.35, "y": 0.2},
+    "far_baseline_right": {"x": 0.65, "y": 0.2},
+}
+
+
+def test_play_segments_are_replaced_and_read_back(client: TestClient, db: Path) -> None:
+    match_id = add_match(db)
+    url = f"/api/matches/{match_id}/play-segments"
+    assert client.get(url).json() == []
+    segments = [
+        {"start_frame": 900, "end_frame": 900, "camera_view": "sideline"},
+        {"start_frame": 100, "end_frame": 899, "camera_view": "main"},
+    ]
+
+    response = client.put(url, json=segments)
+
+    assert response.status_code == 200
+    assert response.json() == [segments[1], segments[0]]
+    assert client.get(url).json() == [segments[1], segments[0]]
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        [
+            {"start_frame": 0, "end_frame": 100, "camera_view": "main"},
+            {"start_frame": 100, "end_frame": 200, "camera_view": "main"},
+        ],
+        [{"start_frame": -1, "end_frame": 100, "camera_view": "main"}],
+        [{"start_frame": 50, "end_frame": 49, "camera_view": "main"}],
+        [{"start_frame": 0, "end_frame": 10, "camera_view": "overhead"}],
+    ],
+    ids=["overlap", "negative", "backwards", "unknown-view"],
+)
+def test_invalid_play_segments_are_refused(
+    client: TestClient, db: Path, segments: list[dict[str, object]]
+) -> None:
+    match_id = add_match(db)
+    url = f"/api/matches/{match_id}/play-segments"
+
+    assert client.put(url, json=segments).status_code == 422
+    assert client.get(url).json() == []
+
+
+def test_calibrations_are_saved_per_view_and_returned_with_their_fit(
+    client: TestClient, db: Path
+) -> None:
+    match_id = add_match(db)
+    main = {"effective_from_frame": 100, "reference_frame": 130, "landmarks": CORNERS}
+    sideline = {"effective_from_frame": 900, "reference_frame": 950, "landmarks": {}}
+
+    response = client.put(f"/api/matches/{match_id}/calibrations/main", json=[main])
+    client.put(f"/api/matches/{match_id}/calibrations/sideline", json=[sideline])
+
+    assert response.status_code == 200
+    (saved,) = response.json()
+    assert saved["camera_view"] == "main"
+    assert saved["landmarks"] == CORNERS
+    assert saved["complete"] is True
+    assert len(saved["image_to_court"]) == 3 and len(saved["court_to_image"]) == 3
+    assert set(saved["errors"]) == set(CORNERS)
+    # Four Landmarks fit exactly, and none can be left out.
+    assert saved["errors"]["far_baseline_left"]["leave_one_out_ft"] is None
+    assert saved["worst_error_ft"] < 1e-6
+    assert saved["needs_attention"] is False
+
+    both = client.get(f"/api/matches/{match_id}/calibrations").json()
+    assert [(c["camera_view"], c["complete"]) for c in both] == [
+        ("main", True),
+        ("sideline", False),
+    ]
+
+
+def test_replacing_one_views_calibrations_keeps_the_others(client: TestClient, db: Path) -> None:
+    match_id = add_match(db)
+    calibration = {"effective_from_frame": 0, "reference_frame": 0, "landmarks": CORNERS}
+    client.put(f"/api/matches/{match_id}/calibrations/sideline", json=[calibration])
+
+    client.put(f"/api/matches/{match_id}/calibrations/main", json=[])
+
+    views = [c["camera_view"] for c in client.get(f"/api/matches/{match_id}/calibrations").json()]
+    assert views == ["sideline"]
+
+
+@pytest.mark.parametrize(
+    "landmarks",
+    [{"halfway_line": {"x": 0.5, "y": 0.5}}, {"near_baseline_left": {"x": 1.5, "y": 0.5}}],
+    ids=["unknown-landmark", "outside-frame"],
+)
+def test_invalid_calibrations_are_refused(
+    client: TestClient, db: Path, landmarks: dict[str, object]
+) -> None:
+    match_id = add_match(db)
+    body = [{"effective_from_frame": 0, "reference_frame": 0, "landmarks": landmarks}]
+
+    response = client.put(f"/api/matches/{match_id}/calibrations/main", json=body)
+
+    assert response.status_code == 422
+
+
+def test_two_calibrations_starting_at_one_frame_are_refused(client: TestClient, db: Path) -> None:
+    match_id = add_match(db)
+    calibration = {"effective_from_frame": 10, "reference_frame": 10, "landmarks": {}}
+
+    response = client.put(
+        f"/api/matches/{match_id}/calibrations/main", json=[calibration, calibration]
+    )
+
+    assert response.status_code == 422
+    assert "start at frame 10" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "play-segments"),
+        ("put", "play-segments"),
+        ("get", "calibrations"),
+        ("put", "calibrations/main"),
+    ],
+)
+def test_segments_and_calibrations_of_a_missing_match_are_404(
+    client: TestClient, method: str, path: str
+) -> None:
+    url = f"/api/matches/{uuid4()}/{path}"
+
+    response = client.get(url) if method == "get" else client.put(url, json=[])
+
+    assert response.status_code == 404
+
+
 # --- CLI ----------------------------------------------------------------------------------
 
 

@@ -8,6 +8,7 @@ app runs.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
@@ -15,11 +16,23 @@ from uuid import UUID
 import duckdb
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from pb_tokei.calibration import Matrix, assess
 from pb_tokei.convert import FootageConversionError, converted_path_for
-from pb_tokei.rally_log import DEFAULT_DB_PATH, MatchId, MatchSummary, RallyLog, SourceVideo
+from pb_tokei.rally_log import (
+    DEFAULT_DB_PATH,
+    Calibration,
+    CameraView,
+    ImagePoint,
+    Landmark,
+    MatchId,
+    MatchSummary,
+    PlaySegment,
+    RallyLog,
+    SourceVideo,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -66,6 +79,91 @@ class MatchDetailOut(MatchOut):
     @classmethod
     def from_match(cls, match: MatchOut, fix_command: str | None) -> MatchDetailOut:
         return MatchDetailOut(**match.model_dump(), fix_command=fix_command)
+
+
+class PlaySegmentIO(BaseModel):
+    """Live play from one Camera View, from `start_frame` to `end_frame` inclusive."""
+
+    start_frame: int = Field(ge=0)
+    end_frame: int = Field(ge=0)
+    camera_view: CameraView
+
+    def to_domain(self) -> PlaySegment:
+        return PlaySegment(self.start_frame, self.end_frame, self.camera_view)
+
+    @classmethod
+    def from_domain(cls, segment: PlaySegment) -> PlaySegmentIO:
+        return PlaySegmentIO(
+            start_frame=segment.start_frame,
+            end_frame=segment.end_frame,
+            camera_view=segment.camera_view,
+        )
+
+
+class ImagePointIO(BaseModel):
+    """A point in the video frame, from 0 to 1 across (left to right) and down (top to bottom)."""
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
+
+class CalibrationIn(BaseModel):
+    """One Calibration's clicked Landmarks; its Camera View is given by the URL."""
+
+    effective_from_frame: int = Field(ge=0)
+    reference_frame: int = Field(ge=0)
+    landmarks: dict[Landmark, ImagePointIO]
+
+    def to_domain(self, camera_view: CameraView) -> Calibration:
+        return Calibration(
+            camera_view,
+            self.effective_from_frame,
+            self.reference_frame,
+            {lm: ImagePoint(p.x, p.y) for lm, p in self.landmarks.items()},
+        )
+
+
+class LandmarkErrorOut(BaseModel):
+    """How far off the fit puts a Landmark, in feet: with it, and refitted without it."""
+
+    residual_ft: float | None
+    leave_one_out_ft: float | None
+
+
+class CalibrationOut(CalibrationIn):
+    """A Calibration with its fit. The matrices are None while it is incomplete."""
+
+    camera_view: CameraView
+    complete: bool
+    image_to_court: list[list[float]] | None
+    court_to_image: list[list[float]] | None
+    errors: dict[Landmark, LandmarkErrorOut]
+    worst_error_ft: float | None
+    needs_attention: bool
+
+    @classmethod
+    def from_domain(cls, calibration: Calibration) -> CalibrationOut:
+        fit = assess(calibration)
+        homography = fit.homography
+        return CalibrationOut(
+            camera_view=calibration.camera_view,
+            effective_from_frame=calibration.effective_from_frame,
+            reference_frame=calibration.reference_frame,
+            landmarks={lm: ImagePointIO(x=p.x, y=p.y) for lm, p in calibration.landmarks.items()},
+            complete=fit.complete,
+            image_to_court=None if homography is None else _rows(homography.image_to_court),
+            court_to_image=None if homography is None else _rows(homography.court_to_image),
+            errors={
+                lm: LandmarkErrorOut(residual_ft=e.residual_ft, leave_one_out_ft=e.leave_one_out_ft)
+                for lm, e in fit.errors.items()
+            },
+            worst_error_ft=fit.worst_error_ft,
+            needs_attention=fit.needs_attention,
+        )
+
+
+def _rows(matrix: Matrix) -> list[list[float]]:
+    return [[float(v) for v in row] for row in matrix]
 
 
 class _VideoState:
@@ -121,6 +219,16 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
                 ) from None
         return summary, _VideoState(summary.source_video, base_dir)
 
+    def edit[T](change: Callable[[RallyLog], T]) -> T:
+        """Runs a change against the Rally Log: 404 for a missing Match, 422 for invalid data."""
+        with RallyLog.open(db_file) as log:
+            try:
+                return change(log)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=f"Match not found: {exc}") from None
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
+
     @app.exception_handler(duckdb.Error)
     async def rally_log_unavailable(_request: Request, exc: duckdb.Error) -> JSONResponse:
         # Most often the CLI is writing to the file at that moment; a retry will succeed.
@@ -154,6 +262,44 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
         if video.status is not VideoStatus.READY or video.converted_path is None:
             raise HTTPException(status_code=404, detail=f"No converted video for Match {match_id}")
         return FileResponse(video.converted_path, media_type="video/mp4")
+
+    # --- Play Segments and Calibrations --------------------------------------------------
+
+    @app.get("/api/matches/{match_id}/play-segments", operation_id="getPlaySegments")
+    def get_play_segments(match_id: UUID) -> list[PlaySegmentIO]:
+        segments = edit(lambda log: log.get_play_segments(MatchId(match_id)))
+        return [PlaySegmentIO.from_domain(s) for s in segments]
+
+    @app.put("/api/matches/{match_id}/play-segments", operation_id="replacePlaySegments")
+    def replace_play_segments(match_id: UUID, body: list[PlaySegmentIO]) -> list[PlaySegmentIO]:
+        """Replaces all of a Match's Play Segments. 422 if any two share a frame."""
+
+        def change(log: RallyLog) -> tuple[PlaySegment, ...]:
+            log.replace_play_segments(MatchId(match_id), [s.to_domain() for s in body])
+            return log.get_play_segments(MatchId(match_id))
+
+        return [PlaySegmentIO.from_domain(s) for s in edit(change)]
+
+    @app.get("/api/matches/{match_id}/calibrations", operation_id="getCalibrations")
+    def get_calibrations(match_id: UUID) -> list[CalibrationOut]:
+        calibrations = edit(lambda log: log.get_calibrations(MatchId(match_id)))
+        return [CalibrationOut.from_domain(c) for c in calibrations]
+
+    @app.put(
+        "/api/matches/{match_id}/calibrations/{camera_view}", operation_id="replaceCalibrations"
+    )
+    def replace_calibrations(
+        match_id: UUID, camera_view: CameraView, body: list[CalibrationIn]
+    ) -> list[CalibrationOut]:
+        """Replaces a Match's Calibrations of one Camera View, returning them with their fits."""
+
+        def change(log: RallyLog) -> list[Calibration]:
+            calibrations = [c.to_domain(camera_view) for c in body]
+            log.replace_calibrations(MatchId(match_id), camera_view, calibrations)
+            saved = log.get_calibrations(MatchId(match_id))
+            return [c for c in saved if c.camera_view is camera_view]
+
+        return [CalibrationOut.from_domain(c) for c in edit(change)]
 
     @app.get("/api/{rest:path}", include_in_schema=False)
     def unknown_api(rest: str) -> None:
