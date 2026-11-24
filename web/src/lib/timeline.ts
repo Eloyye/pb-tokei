@@ -43,8 +43,11 @@ export function fullView(totalFrames: number): FrameRange {
   return { start: 0, end: totalFrames > 0 ? totalFrames : 3600 };
 }
 
-/** Shift the view inside the video, keeping its span up to the video's length. */
-export function clampView(view: FrameRange, totalFrames: number): FrameRange {
+/**
+ * Shift the view inside the video, keeping its span up to the video's length.
+ * Returns the original `view` object when it already fits.
+ */
+function clampView(view: FrameRange, totalFrames: number): FrameRange {
   const end = fullView(totalFrames).end;
   if (view.start >= 0 && view.end <= end) return view;
   const span = Math.min(view.end - view.start, end);
@@ -71,7 +74,10 @@ export function zoomView(
   return clampView({ start: anchor - next * at, end: anchor + next * (1 - at) }, totalFrames);
 }
 
-/** Page the view to keep `frame` on screen within the video bounds. */
+/**
+ * Page the view to keep `frame` on screen within the video bounds.
+ * Returns the original `view` object when the frame is on screen and the view already fits.
+ */
 export function followFrame(view: FrameRange, frame: number, totalFrames: number): FrameRange {
   if (frame >= view.start && frame < view.end) return clampView(view, totalFrames);
   const span = view.end - view.start;
@@ -84,4 +90,26 @@ export function followFrame(view: FrameRange, frame: number, totalFrames: number
 export function centreOn(view: FrameRange, frame: number, totalFrames: number): FrameRange {
   const span = view.end - view.start;
   return clampView({ start: frame - span / 2, end: frame + span / 2 }, totalFrames);
+}
+
+interface PlaybackPosition {
+  frame: number;
+  totalFrames: number;
+}
+
+/**
+ * Fit the whole video when its length first becomes known. On later length changes, shift the
+ * view inside the new bounds, keeping its span when it fits. Follow a changed playhead after
+ * applying the length change.
+ */
+export function reconcileView(
+  view: FrameRange,
+  previous: PlaybackPosition,
+  { frame, totalFrames }: PlaybackPosition,
+): FrameRange {
+  let nextView = view;
+  if (previous.totalFrames !== totalFrames) {
+    nextView = previous.totalFrames === 0 ? fullView(totalFrames) : clampView(view, totalFrames);
+  }
+  return previous.frame === frame ? nextView : followFrame(nextView, frame, totalFrames);
 }

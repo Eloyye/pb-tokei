@@ -33,7 +33,7 @@ import {
 } from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import { clampView, followFrame, type FrameRange, fullView, zoomView } from "../lib/timeline";
+import { type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
@@ -67,8 +67,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const { step, togglePlay, setSpeed } = controls;
   const [gotoOpen, setGotoOpen] = useState(false);
   const [view, setView] = useState<FrameRange>(() => fullView(totalFrames));
-  const [viewFor, setViewFor] = useState(totalFrames);
-  const [followedFrame, setFollowedFrame] = useState(frame);
+  const [previousPosition, setPreviousPosition] = useState({ frame, totalFrames });
   const [sizes, setSizes] = useState<PanelSizes>(loadSizes);
   const [focused, setFocused] = useState<PanelId>("monitor");
   const gridRef = useRef<HTMLDivElement>(null);
@@ -177,21 +176,14 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     }
   };
 
-  // Show the whole video once its length is first known, then page the view whenever the
-  // playhead moves off screen. Paging only when the frame changes leaves the view where the
-  // overview put it while paused. Both adjust state while rendering, React's pattern for state
-  // that follows props, and settle on one view so neither update overrides the other.
-  let nextView = view;
-  if (viewFor !== totalFrames) {
-    setViewFor(totalFrames);
-    // A later correction of the length (at the last frame) keeps the zoom.
-    nextView = viewFor === 0 ? fullView(totalFrames) : clampView(view, totalFrames);
+  // Reconcile the Timeline while rendering so duration and playhead updates use one view.
+  // Paging only on frame changes lets the overview pan while paused.
+  if (previousPosition.totalFrames !== totalFrames || previousPosition.frame !== frame) {
+    const position = { frame, totalFrames };
+    const nextView = reconcileView(view, previousPosition, position);
+    setPreviousPosition(position);
+    if (nextView !== view) setView(nextView);
   }
-  if (followedFrame !== frame) {
-    setFollowedFrame(frame);
-    nextView = followFrame(nextView, frame, totalFrames);
-  }
-  if (nextView !== view) setView(nextView);
   useEffect(() => saveSizes(sizes), [sizes]);
 
   const zoom = useCallback(

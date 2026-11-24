@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   centreOn,
-  clampView,
   followFrame,
   frameAt,
   fullView,
   MIN_SPAN,
+  reconcileView,
   rulerTicks,
   toPercent,
   zoomView,
@@ -50,16 +50,6 @@ describe("fullView", () => {
 
   it("falls back to a minute before the length is known", () => {
     expect(fullView(0)).toEqual({ start: 0, end: 3600 });
-  });
-});
-
-describe("clampView", () => {
-  it("keeps the zoom when the known length gets shorter", () => {
-    expect(clampView({ start: 500, end: 600 }, 580)).toEqual({ start: 480, end: 580 });
-  });
-
-  it("fits the video when the view is wider than the new bounds", () => {
-    expect(clampView({ start: 0, end: 600 }, 580)).toEqual({ start: 0, end: 580 });
   });
 });
 
@@ -128,5 +118,48 @@ describe("centreOn", () => {
   it("keeps the span when centring near either end", () => {
     expect(centreOn(view, 10, 10_000)).toEqual({ start: 0, end: 1000 });
     expect(centreOn(view, 9990, 10_000)).toEqual({ start: 9000, end: 10_000 });
+  });
+});
+
+describe("reconcileView", () => {
+  it("fits the whole video when the length first becomes known", () => {
+    const view = { start: 500, end: 1000 };
+    expect(
+      reconcileView(view, { frame: 0, totalFrames: 0 }, { frame: 0, totalFrames: 600 }),
+    ).toEqual({ start: 0, end: 600 });
+  });
+
+  it("keeps the zoom when the known length gets shorter", () => {
+    const view = { start: 500, end: 600 };
+    expect(
+      reconcileView(view, { frame: 0, totalFrames: 600 }, { frame: 0, totalFrames: 580 }),
+    ).toEqual({ start: 480, end: 580 });
+  });
+
+  it("fits the video when the view is wider than the new bounds", () => {
+    const view = { start: 0, end: 600 };
+    expect(
+      reconcileView(view, { frame: 0, totalFrames: 600 }, { frame: 0, totalFrames: 580 }),
+    ).toEqual({ start: 0, end: 580 });
+  });
+
+  it("returns the original view object when the length grows", () => {
+    const view = { start: 500, end: 600 };
+    expect(
+      reconcileView(view, { frame: 0, totalFrames: 600 }, { frame: 0, totalFrames: 800 }),
+    ).toBe(view);
+  });
+
+  it("applies the new bounds before following a changed playhead", () => {
+    const view = { start: 800, end: 1000 };
+    const previous = { frame: 999, totalFrames: 1000 };
+    expect(reconcileView(view, previous, { frame: 550, totalFrames: 600 })).toEqual({
+      start: 400,
+      end: 600,
+    });
+    expect(reconcileView(view, previous, { frame: 300, totalFrames: 600 })).toEqual({
+      start: 120,
+      end: 320,
+    });
   });
 });
