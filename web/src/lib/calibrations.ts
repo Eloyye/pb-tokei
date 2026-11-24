@@ -1,4 +1,11 @@
-import type { Calibration, CalibrationOut, CameraView, Landmark, PlaySegment } from "../api/client";
+import type {
+  Calibration,
+  CalibrationOut,
+  CameraView,
+  Landmark,
+  PlaySegment,
+  UnmappedRangeOut,
+} from "../api/client";
 import { VIEW_LABELS } from "./segments";
 
 /**
@@ -177,6 +184,43 @@ export function newCalibration(
     calibrations: [...calibrations, created],
     message: `New ${VIEW_LABELS[view]} Calibration from frame ${segment.start_frame}${active ? ", copied from the one before: move the Landmarks that drifted" : ""}`,
   };
+}
+
+/**
+ * Starts a fresh Calibration inside a Play Segment at `frame`, used to re-anchor Camera Motion
+ * after tracking fails (ADR 0006). Starts with no Landmarks so the operator clicks the new angle.
+ */
+export function reanchorCalibration(
+  calibrations: Calibration[],
+  segment: PlaySegment,
+  frame: number,
+): CalibrationEdit {
+  const view = segment.camera_view;
+  if (calibrations.some((c) => c.camera_view === view && c.effective_from_frame === frame)) {
+    return {
+      calibrations,
+      message: `A ${VIEW_LABELS[view]} Calibration already starts at frame ${frame}`,
+    };
+  }
+  const created: Calibration = {
+    camera_view: view,
+    effective_from_frame: frame,
+    reference_frame: frame,
+    landmarks: {},
+  };
+  return {
+    calibrations: [...calibrations, created],
+    edited: created,
+    message: `New ${VIEW_LABELS[view]} Calibration from frame ${frame}: click Landmarks to re-anchor`,
+  };
+}
+
+/** The unmapped Camera Motion range containing `frame`, if any. */
+export function unmappedRangeAt(
+  ranges: readonly UnmappedRangeOut[],
+  frame: number,
+): UnmappedRangeOut | undefined {
+  return ranges.find((r) => frame >= r.start_frame && frame <= r.end_frame);
 }
 
 /** The Calibration of a segment's view that starts with the segment, if there is one. */

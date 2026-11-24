@@ -1,5 +1,5 @@
 import { type PointerEvent, useState } from "react";
-import type { PlaySegment } from "../api/client";
+import type { PlaySegment, UnmappedRangeOut } from "../api/client";
 import { formatTimecode } from "../lib/frames";
 import { describe, moveEdge, type PendingSegment, VIEW_LABELS } from "../lib/segments";
 import {
@@ -33,6 +33,7 @@ export function Timeline({
   onZoom,
   focused,
   segments,
+  unmappedRanges,
   pending,
   editableSegments,
   onMoveEdge,
@@ -46,6 +47,8 @@ export function Timeline({
   focused: boolean;
   /** The Match's Play Segments in frame order; null until loaded. */
   segments: PlaySegment[] | null;
+  /** Stretches inside Play Segments where Camera Motion failed registration. */
+  unmappedRanges?: readonly UnmappedRangeOut[];
   /** A segment begun and not yet ended: drawn from its start to the playhead. */
   pending: PendingSegment | null;
   /** Calibrate marks Play Segments, so the Segments track is the one being edited there. */
@@ -220,6 +223,33 @@ export function Timeline({
                   }}
                 />
               )}
+              {track.id === "segments" &&
+                unmappedRanges?.map((range) => (
+                  <div
+                    key={`seg-unmapped:${range.start_frame}-${range.end_frame}`}
+                    className="seg-unmapped"
+                    style={{
+                      left: `${toPercent(view, range.start_frame)}%`,
+                      width: `${toPercent(view, range.end_frame + 1) - toPercent(view, range.start_frame)}%`,
+                    }}
+                    title={`Unmapped frames ${range.start_frame}–${range.end_frame}: Camera Motion lost`}
+                  />
+                ))}
+              {track.id === "issues" &&
+                unmappedRanges?.map((range) => (
+                  <button
+                    key={`issue-unmapped:${range.start_frame}-${range.end_frame}`}
+                    type="button"
+                    className="issue-unmapped"
+                    style={{
+                      left: `${toPercent(view, range.start_frame)}%`,
+                      width: `${toPercent(view, range.end_frame + 1) - toPercent(view, range.start_frame)}%`,
+                    }}
+                    title={`Unmapped frames ${range.start_frame}–${range.end_frame}: click to seek and re-anchor`}
+                    aria-label={`Unmapped frames ${range.start_frame} to ${range.end_frame}`}
+                    onClick={() => onSeek(range.start_frame)}
+                  />
+                ))}
             </div>
           </div>
         ))}

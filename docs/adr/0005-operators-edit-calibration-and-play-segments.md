@@ -1,5 +1,7 @@
 # Operators edit Calibration and Play Segments too; Event Processing never reads them
 
+_Extended by [ADR 0006](0006-calibration-anchors-a-moving-camera.md): Tracking follows Camera Motion from each Calibration and caches per-frame motion outside the Rally Log as derived, rebuildable data._
+
 ADR 0001 says operators edit nothing but the Rally Log, and that Broadcast Segmentation and Tracking produce Play Segments and court calibration. Until those layers are automated (#25 for Play Segments), an operator marks Play Segments and clicks each Camera View's Landmarks by hand (#10), and even afterwards an operator corrects them. So these two records are operator-edited as well. They are stored in the same DuckDB file as the Rally Log, under the Match, because they describe the same footage and are saved alongside it.
 
 They stay out of Event Processing: stats are still computed from the Rally Log alone. Calibration only feeds Tracking, which turns clicked or detected image points into the court positions that the Rally Log then records as facts.

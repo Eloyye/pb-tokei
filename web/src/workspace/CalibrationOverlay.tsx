@@ -33,9 +33,12 @@ interface Rect {
  */
 export function CalibrationOverlay({
   videoRef,
+  frame,
   calibration,
   fit,
   lastFit,
+  frameMatrix,
+  unmapped,
   selected,
   editable,
   onPlace,
@@ -43,6 +46,8 @@ export function CalibrationOverlay({
   onBlocked,
 }: {
   videoRef: RefObject<HTMLVideoElement | null>;
+  /** The frame currently on screen. */
+  frame: number;
   /** The Calibration in effect at the playhead, if any. */
   calibration: Calibration | undefined;
   /** Its fit, only when the server has fitted its current Landmarks. */
@@ -53,6 +58,13 @@ export function CalibrationOverlay({
    * the current fit.
    */
   lastFit: CalibrationOut | undefined;
+  /**
+   * Per-frame Camera Motion `court_to_image` matrix when tracked: `number[][]` when mapped,
+   * `null` when explicitly unmapped, `undefined` when not tracked yet (falls back to static fit).
+   */
+  frameMatrix?: number[][] | null;
+  /** Whether Camera Motion failed to register this frame (positions are Unknown). */
+  unmapped?: boolean;
   selected: Landmark | null;
   /** Whether the playhead is on a Play Segment, so clicks calibrate its Camera View. */
   editable: boolean;
@@ -101,7 +113,18 @@ export function CalibrationOverlay({
 
   const points: Partial<Record<Landmark, Point>> = { ...calibration?.landmarks };
   if (drag) points[drag.landmark] = drag.at;
-  const matrix = (fit ?? lastFit)?.court_to_image;
+  const matrix = unmapped
+    ? null
+    : frameMatrix !== undefined
+      ? frameMatrix
+      : (fit ?? lastFit)?.court_to_image;
+  // Clicked Landmarks belong to `reference_frame`; hide them on other tracked frames so
+  // reference-frame dots never float away from a panning or zooming camera.
+  const showLandmarks =
+    !calibration ||
+    frame === calibration.reference_frame ||
+    !fit?.complete ||
+    (frameMatrix === undefined && !unmapped);
 
   return (
     <div
@@ -151,31 +174,37 @@ export function CalibrationOverlay({
           )}
         </svg>
       )}
-      {LANDMARKS.map((landmark, index) => {
-        const at = points[landmark];
-        if (!at) return null;
-        const flagged = fit?.errors[landmark]?.needs_attention;
-        return (
-          <button
-            key={landmark}
-            type="button"
-            className={`landmark-marker ${landmark === selected ? "selected" : ""} ${flagged ? "flagged" : ""}`}
-            style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }}
-            title={`${index + 1}. ${landmarkLabel(landmark)}: drag to move`}
-            aria-label={landmarkLabel(landmark)}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              if (!editable) return;
-              onSelect(landmark);
-              // Capture on the layer, which tracks the drag across the picture.
-              event.currentTarget.parentElement?.setPointerCapture(event.pointerId);
-              setDrag({ landmark, from: at, at });
-            }}
-          >
-            <span>{index + 1}</span>
-          </button>
-        );
-      })}
+      {unmapped && (
+        <output className="unmapped-banner">
+          UNMAPPED · Camera Motion lost (positions Unknown)
+        </output>
+      )}
+      {showLandmarks &&
+        LANDMARKS.map((landmark, index) => {
+          const at = points[landmark];
+          if (!at) return null;
+          const flagged = fit?.errors[landmark]?.needs_attention;
+          return (
+            <button
+              key={landmark}
+              type="button"
+              className={`landmark-marker ${landmark === selected ? "selected" : ""} ${flagged ? "flagged" : ""}`}
+              style={{ left: `${at.x * 100}%`, top: `${at.y * 100}%` }}
+              title={`${index + 1}. ${landmarkLabel(landmark)}: drag to move`}
+              aria-label={landmarkLabel(landmark)}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                if (!editable) return;
+                onSelect(landmark);
+                // Capture on the layer, which tracks the drag across the picture.
+                event.currentTarget.parentElement?.setPointerCapture(event.pointerId);
+                setDrag({ landmark, from: at, at });
+              }}
+            >
+              <span>{index + 1}</span>
+            </button>
+          );
+        })}
       {showLoupe && pointer && (
         <div
           className="loupe"

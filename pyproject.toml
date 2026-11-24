@@ -10,6 +10,7 @@ dependencies = [
     "duckdb>=2.0.0",
     "fastapi>=0.165.0",
     "numpy>=2.5.5",
+    "opencv-python-headless>=5.1.0.95",
     "uvicorn>=0.54.0",
 ]
 

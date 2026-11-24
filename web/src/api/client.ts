@@ -27,6 +27,11 @@ export type Landmark = Schemas["Landmark"];
 export type PlaySegment = Schemas["PlaySegmentIO"];
 export type CalibrationOut = Schemas["CalibrationOut"];
 export type LandmarkErrorOut = Schemas["LandmarkErrorOut"];
+export type CameraMotionOut = Schemas["CameraMotionOut"];
+export type CameraMotionSpanOut = Schemas["CameraMotionSpanOut"];
+export type CameraMotionStatus = Schemas["CameraMotionStatus"];
+export type CameraMotionFramesOut = Schemas["CameraMotionFramesOut"];
+export type UnmappedRangeOut = Schemas["UnmappedRangeOut"];
 /** A Calibration's own fields, without its fit: what is edited and saved. */
 export type Calibration = Pick<
   CalibrationOut,
@@ -91,6 +96,37 @@ export async function replaceCalibrations(
 
 export function matchVideoUrl(matchId: string): string {
   return `/api/matches/${encodeURIComponent(matchId)}/video`;
+}
+
+export async function getCameraMotion(matchId: string): Promise<CameraMotionOut> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/camera-motion", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function trackCameraMotion(matchId: string): Promise<CameraMotionOut> {
+  const { data, error, response } = await api.POST("/api/matches/{match_id}/camera-motion/track", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getCameraMotionFrames(
+  matchId: string,
+  startFrame: number,
+  endFrame: number,
+): Promise<CameraMotionFramesOut> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/camera-motion/frames", {
+    params: {
+      path: { match_id: matchId },
+      query: { start_frame: startFrame, end_frame: endFrame },
+    },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
 }
 
 export class ApiError extends Error {

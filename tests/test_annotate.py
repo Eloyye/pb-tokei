@@ -480,6 +480,101 @@ def test_segments_and_calibrations_of_a_missing_match_are_404(
     assert response.status_code == 404
 
 
+# --- Camera Motion ------------------------------------------------------------------------
+
+
+def test_camera_motion_reports_no_video_without_converted_footage(
+    client: TestClient, db: Path
+) -> None:
+    match_id = add_match(db)
+
+    body = client.get(f"/api/matches/{match_id}/camera-motion").json()
+
+    assert body == {
+        "status": "no_video",
+        "error": None,
+        "tracked_spans": 0,
+        "total_spans": 0,
+        "unmapped_ranges": [],
+        "spans": [],
+    }
+
+
+def test_camera_motion_tracks_caches_and_serves_frames_with_unmapped_cuts(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    from test_camera_motion import _panning_camera, write_synthetic_video
+
+    match_id = add_match(db)
+    (tmp_path / "footage").mkdir(exist_ok=True)
+    original = tmp_path / "footage" / "abc123.webm"
+    original.write_bytes(b"original")
+    converted = tmp_path / "footage" / "abc123.60fps.mp4"
+
+    # 20 frames: live play 0..11, hard cut 12..15, live play 16..19.
+    cameras = [None if 12 <= f <= 15 else _panning_camera((f - 5) / 20.0) for f in range(20)]
+    write_synthetic_video(converted, cameras)
+    set_video(db, match_id, Path("footage/abc123.webm"))
+
+    ref_cam = cameras[5]
+    assert ref_cam is not None
+    landmarks = {lm.value: {"x": p.x, "y": p.y} for lm, p in ref_cam.clicks().items()}
+    client.put(
+        f"/api/matches/{match_id}/play-segments",
+        json=[{"start_frame": 0, "end_frame": 19, "camera_view": "sideline"}],
+    )
+    client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[{"effective_from_frame": 0, "reference_frame": 5, "landmarks": landmarks}],
+    )
+
+    before = client.get(f"/api/matches/{match_id}/camera-motion").json()
+    assert before["status"] == "idle"
+    assert before["tracked_spans"] == 0
+    assert before["total_spans"] == 1
+
+    tracked = client.post(f"/api/matches/{match_id}/camera-motion/track?wait=true").json()
+    assert tracked["status"] == "ready"
+    assert tracked["tracked_spans"] == 1
+    assert tracked["total_spans"] == 1
+    assert len(tracked["unmapped_ranges"]) == 1
+    assert tracked["unmapped_ranges"][0]["start_frame"] <= 12
+    assert tracked["unmapped_ranges"][0]["end_frame"] >= 15
+
+    frames = client.get(
+        f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=19"
+    ).json()
+    assert len(frames["court_to_image"]) == 20
+    assert len(frames["unmapped"]) == 20
+    # Reference frame and live-play frames are mapped; cut frames are unmapped (null).
+    assert frames["court_to_image"][5] is not None and frames["unmapped"][5] is False
+    assert frames["court_to_image"][0] is not None and frames["unmapped"][0] is False
+    for cut_f in range(12, 16):
+        assert frames["court_to_image"][cut_f] is None
+        assert frames["unmapped"][cut_f] is True
+
+
+def test_camera_motion_rejects_invalid_frame_windows_and_missing_matches(
+    client: TestClient, db: Path
+) -> None:
+    match_id = add_match(db)
+
+    assert (
+        client.get(
+            f"/api/matches/{match_id}/camera-motion/frames?start_frame=20&end_frame=10"
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=20000"
+        ).status_code
+        == 422
+    )
+    assert client.get(f"/api/matches/{uuid4()}/camera-motion").status_code == 404
+    assert client.post(f"/api/matches/{uuid4()}/camera-motion/track").status_code == 404
+
+
 # --- CLI ----------------------------------------------------------------------------------
 
 
