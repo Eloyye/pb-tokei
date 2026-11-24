@@ -47,7 +47,7 @@ from .model import (
     new_id,
     observed,
 )
-from .store import DEFAULT_DB_PATH, RallyLog
+from .store import DEFAULT_DB_PATH, MatchNotFound, RallyLog
 
 __all__ = [
     "DEFAULT_DB_PATH",
@@ -71,6 +71,7 @@ __all__ = [
     "Landmark",
     "Match",
     "MatchId",
+    "MatchNotFound",
     "MatchSummary",
     "ObservationGap",
     "Parity",

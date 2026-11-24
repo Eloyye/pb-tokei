@@ -225,6 +225,20 @@ def test_a_misclicked_landmark_stands_out_when_left_out() -> None:
     assert fit.needs_attention
 
 
+def test_a_landmark_clicked_above_the_horizon_is_flagged_off_court() -> None:
+    clicks = SIDELINE.clicks()
+    corner = Landmark.FAR_BASELINE_RIGHT
+    clicks[corner] = ImagePoint(clicks[corner].x, 0.0)  # on the backstop, not the line
+
+    fit = assess(Calibration(CameraView.SIDELINE, 0, 0, clicks))
+
+    error = fit.errors[corner]
+    assert error.leave_one_out_ft == math.inf
+    assert error.off_court
+    assert fit.worst_error_ft == math.inf
+    assert fit.needs_attention
+
+
 def test_leave_one_out_needs_four_other_landmarks() -> None:
     four = [
         Landmark.NEAR_BASELINE_LEFT,

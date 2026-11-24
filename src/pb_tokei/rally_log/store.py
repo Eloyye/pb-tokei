@@ -64,6 +64,17 @@ DEFAULT_DB_PATH = Path("rally_log.duckdb")
 """Where the CLI and the annotation app look for the Rally Log when `--db` isn't given."""
 
 
+class MatchNotFound(KeyError):
+    """No Match with this id is in the Rally Log."""
+
+    def __init__(self, match_id: MatchId) -> None:
+        super().__init__(match_id)
+        self.match_id = match_id
+
+    def __str__(self) -> str:
+        return f"Match not found: {self.match_id}"
+
+
 class RallyLog:
     """The Rally Log store. Open it with `RallyLog.open(path)`; the schema is created if missing."""
 
@@ -412,7 +423,7 @@ class RallyLog:
 
     def _require_match(self, match_id: MatchId) -> None:
         if not self.has_match(match_id):
-            raise KeyError(f"no Match for {match_id}")
+            raise MatchNotFound(match_id)
 
     def _load_play_segments(self, match_id: MatchId) -> tuple[PlaySegment, ...]:
         return tuple(

@@ -7,6 +7,7 @@ app runs.
 
 from __future__ import annotations
 
+import math
 import shlex
 from collections.abc import Callable
 from enum import StrEnum
@@ -28,6 +29,7 @@ from pb_tokei.rally_log import (
     ImagePoint,
     Landmark,
     MatchId,
+    MatchNotFound,
     MatchSummary,
     PlaySegment,
     RallyLog,
@@ -124,10 +126,16 @@ class CalibrationIn(BaseModel):
 
 
 class LandmarkErrorOut(BaseModel):
-    """How far off the fit puts a Landmark, in feet: with it, and refitted without it."""
+    """How far off the fit puts a Landmark, in feet: with it, and refitted without it.
+
+    JSON has no infinity, so an error that puts the click off the court (above the horizon) is
+    null with `off_court` true. `leave_one_out_ft` is also null, with `off_court` false, when the
+    other Landmarks can't be fitted without this one.
+    """
 
     residual_ft: float | None
     leave_one_out_ft: float | None
+    off_court: bool
 
 
 class CalibrationOut(CalibrationIn):
@@ -138,6 +146,7 @@ class CalibrationOut(CalibrationIn):
     image_to_court: list[list[float]] | None
     court_to_image: list[list[float]] | None
     errors: dict[Landmark, LandmarkErrorOut]
+    # Null with no fit, or when some click is off the court (that Landmark's `off_court` says so).
     worst_error_ft: float | None
     needs_attention: bool
 
@@ -154,12 +163,20 @@ class CalibrationOut(CalibrationIn):
             image_to_court=None if homography is None else _rows(homography.image_to_court),
             court_to_image=None if homography is None else _rows(homography.court_to_image),
             errors={
-                lm: LandmarkErrorOut(residual_ft=e.residual_ft, leave_one_out_ft=e.leave_one_out_ft)
+                lm: LandmarkErrorOut(
+                    residual_ft=_finite(e.residual_ft),
+                    leave_one_out_ft=_finite(e.leave_one_out_ft),
+                    off_court=e.off_court,
+                )
                 for lm, e in fit.errors.items()
             },
-            worst_error_ft=fit.worst_error_ft,
+            worst_error_ft=_finite(fit.worst_error_ft),
             needs_attention=fit.needs_attention,
         )
+
+
+def _finite(feet: float | None) -> float | None:
+    return None if feet is None or math.isinf(feet) else feet
 
 
 def _rows(matrix: Matrix) -> list[list[float]]:
@@ -219,13 +236,13 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
                 ) from None
         return summary, _VideoState(summary.source_video, base_dir)
 
-    def edit[T](change: Callable[[RallyLog], T]) -> T:
-        """Runs a change against the Rally Log: 404 for a missing Match, 422 for invalid data."""
+    def with_log[T](action: Callable[[RallyLog], T]) -> T:
+        """Runs an action on the Rally Log: 404 for a missing Match, 422 for invalid data."""
         with RallyLog.open(db_file) as log:
             try:
-                return change(log)
-            except KeyError as exc:
-                raise HTTPException(status_code=404, detail=f"Match not found: {exc}") from None
+                return action(log)
+            except MatchNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from None
 
@@ -267,7 +284,7 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
 
     @app.get("/api/matches/{match_id}/play-segments", operation_id="getPlaySegments")
     def get_play_segments(match_id: UUID) -> list[PlaySegmentIO]:
-        segments = edit(lambda log: log.get_play_segments(MatchId(match_id)))
+        segments = with_log(lambda log: log.get_play_segments(MatchId(match_id)))
         return [PlaySegmentIO.from_domain(s) for s in segments]
 
     @app.put("/api/matches/{match_id}/play-segments", operation_id="replacePlaySegments")
@@ -278,11 +295,11 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
             log.replace_play_segments(MatchId(match_id), [s.to_domain() for s in body])
             return log.get_play_segments(MatchId(match_id))
 
-        return [PlaySegmentIO.from_domain(s) for s in edit(change)]
+        return [PlaySegmentIO.from_domain(s) for s in with_log(change)]
 
     @app.get("/api/matches/{match_id}/calibrations", operation_id="getCalibrations")
     def get_calibrations(match_id: UUID) -> list[CalibrationOut]:
-        calibrations = edit(lambda log: log.get_calibrations(MatchId(match_id)))
+        calibrations = with_log(lambda log: log.get_calibrations(MatchId(match_id)))
         return [CalibrationOut.from_domain(c) for c in calibrations]
 
     @app.put(
@@ -299,7 +316,7 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
             saved = log.get_calibrations(MatchId(match_id))
             return [c for c in saved if c.camera_view is camera_view]
 
-        return [CalibrationOut.from_domain(c) for c in edit(change)]
+        return [CalibrationOut.from_domain(c) for c in with_log(change)]
 
     @app.get("/api/{rest:path}", include_in_schema=False)
     def unknown_api(rest: str) -> None:

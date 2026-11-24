@@ -71,15 +71,20 @@ class LandmarkError:
 
     `residual_ft` uses the fit that includes the Landmark. `leave_one_out_ft` refits without it,
     which says how well the fit predicts a point it wasn't given; it is None when the other
-    Landmarks can't be fitted on their own.
+    Landmarks can't be fitted on their own. Either is infinite when that fit puts the click off
+    the court (above the horizon), as a Landmark clicked on the backstop can be.
     """
 
-    residual_ft: float | None
+    residual_ft: float
     leave_one_out_ft: float | None
 
     @property
-    def worst_ft(self) -> float | None:
+    def worst_ft(self) -> float:
         return self.leave_one_out_ft if self.leave_one_out_ft is not None else self.residual_ft
+
+    @property
+    def off_court(self) -> bool:
+        return math.isinf(self.worst_ft)
 
 
 @dataclass(frozen=True)
@@ -95,8 +100,8 @@ class CalibrationFit:
 
     @property
     def worst_error_ft(self) -> float | None:
-        errors = [e.worst_ft for e in self.errors.values() if e.worst_ft is not None]
-        return max(errors, default=None)
+        """The largest Landmark error, infinite if some click is off the court; None if no fit."""
+        return max((e.worst_ft for e in self.errors.values()), default=None)
 
     @property
     def needs_attention(self) -> bool:
@@ -243,9 +248,9 @@ def _apply(matrix: Matrix, x: float, y: float) -> tuple[float, float] | None:
     return float(u / w), float(v / w)
 
 
-def _error_ft(homography: Homography, landmark: Landmark, point: ImagePoint) -> float | None:
+def _error_ft(homography: Homography, landmark: Landmark, point: ImagePoint) -> float:
     court = homography.to_court(point)
     if court is None:
-        return None
+        return math.inf
     target = landmark.court_point
     return math.hypot(court.x - target.x, court.y - target.y)

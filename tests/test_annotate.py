@@ -1,13 +1,23 @@
+import json
 from pathlib import Path
 from uuid import uuid4
 
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
+from test_calibration import SIDELINE
 
 from pb_tokei import main
-from pb_tokei.annotate.app import create_app
-from pb_tokei.rally_log import MatchId, RallyLog, SourceVideo
+from pb_tokei.annotate.app import CalibrationOut, create_app
+from pb_tokei.rally_log import (
+    Calibration,
+    CameraView,
+    ImagePoint,
+    Landmark,
+    MatchId,
+    RallyLog,
+    SourceVideo,
+)
 from pb_tokei.roster import parse_roster, set_up_match
 
 URL = "https://www.youtube.com/watch?v=abc123"
@@ -415,6 +425,21 @@ def test_two_calibrations_starting_at_one_frame_are_refused(client: TestClient, 
 
     assert response.status_code == 422
     assert "start at frame 10" in response.json()["detail"]
+
+
+def test_an_off_court_click_is_reported_without_infinity() -> None:
+    clicks = SIDELINE.clicks()
+    corner = Landmark.FAR_BASELINE_RIGHT
+    clicks[corner] = ImagePoint(clicks[corner].x, 0.0)  # above the horizon
+
+    out = CalibrationOut.from_domain(Calibration(CameraView.SIDELINE, 0, 0, clicks))
+
+    body = json.loads(out.model_dump_json())
+    error = body["errors"]["far_baseline_right"]
+    assert error["leave_one_out_ft"] is None
+    assert error["off_court"] is True
+    assert body["worst_error_ft"] is None
+    assert body["needs_attention"] is True
 
 
 @pytest.mark.parametrize(

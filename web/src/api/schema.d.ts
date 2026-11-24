@@ -203,10 +203,16 @@ export interface components {
     /**
      * LandmarkErrorOut
      * @description How far off the fit puts a Landmark, in feet: with it, and refitted without it.
+     *
+     *     JSON has no infinity, so an error that puts the click off the court (above the horizon) is
+     *     null with `off_court` true. `leave_one_out_ft` is also null, with `off_court` false, when the
+     *     other Landmarks can't be fitted without this one.
      */
     LandmarkErrorOut: {
       /** Leave One Out Ft */
       leave_one_out_ft: number | null;
+      /** Off Court */
+      off_court: boolean;
       /** Residual Ft */
       residual_ft: number | null;
     };

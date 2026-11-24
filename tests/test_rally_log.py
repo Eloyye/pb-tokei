@@ -21,6 +21,7 @@ from pb_tokei.rally_log import (
     Landmark,
     Match,
     MatchId,
+    MatchNotFound,
     ObservationGap,
     Parity,
     Player,
@@ -487,11 +488,11 @@ def test_calibration_landmarks_must_be_inside_the_frame() -> None:
 def test_editing_a_missing_match_fails(log: RallyLog) -> None:
     missing = MatchId(new_id())
 
-    with pytest.raises(KeyError):
+    with pytest.raises(MatchNotFound):
         log.replace_play_segments(missing, [])
-    with pytest.raises(KeyError):
+    with pytest.raises(MatchNotFound):
         log.replace_calibrations(missing, CameraView.MAIN, [])
-    with pytest.raises(KeyError):
+    with pytest.raises(MatchNotFound):
         log.get_calibrations(missing)
 
 
