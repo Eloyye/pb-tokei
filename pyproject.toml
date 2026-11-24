@@ -5,7 +5,7 @@ description = "Statistics on pro doubles pickleball derived from broadcast foota
 authors = [
     { name = "Eloy Ye", email = "yeluo.eloy@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.15"
 dependencies = [
     "duckdb>=2.0.0",
     "fastapi>=0.165.0",
@@ -29,14 +29,14 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py315"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.15"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
