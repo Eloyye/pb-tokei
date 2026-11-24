@@ -35,10 +35,13 @@ function calibrationOut(view: "main" | "sideline", from: number): CalibrationOut
     effective_from_frame: from,
     reference_frame: from,
     landmarks: {},
+    not_visible: [],
     complete: false,
     image_to_court: null,
     court_to_image: null,
     errors: {},
+    resolved_landmarks: {},
+    unmapped_landmarks: [],
     worst_error_ft: null,
     needs_attention: false,
   };
@@ -82,6 +85,7 @@ describe("useRecording", () => {
       effective_from_frame: 100,
       reference_frame: 100,
       landmarks: {},
+      not_visible: [],
     });
   });
 
@@ -110,7 +114,13 @@ describe("useRecording", () => {
     expect(replacePlaySegments).toHaveBeenCalledTimes(1);
     expect(replaceCalibrations).toHaveBeenCalledTimes(1);
     expect(replaceCalibrations).toHaveBeenCalledWith("match-1", "main", [
-      { camera_view: "main", effective_from_frame: 150, reference_frame: 100, landmarks: {} },
+      {
+        camera_view: "main",
+        effective_from_frame: 150,
+        reference_frame: 100,
+        landmarks: {},
+        not_visible: [],
+      },
     ]);
   });
 
@@ -140,14 +150,22 @@ describe("useRecording", () => {
     expect(vi.mocked(replaceCalibrations).mock.calls.at(-1)).toEqual([
       "match-1",
       "main",
-      [{ camera_view: "main", effective_from_frame: 100, reference_frame: 100, landmarks: {} }],
+      [
+        {
+          camera_view: "main",
+          effective_from_frame: 100,
+          reference_frame: 100,
+          landmarks: {},
+          not_visible: [],
+        },
+      ],
     ]);
   });
 
   it("saves a Calibration edit and keeps the fit the server returns", async () => {
     const fitted = {
       ...calibrationOut("main", 100),
-      landmarks: { near_kitchen_left: { x: 0.25, y: 0.5 } },
+      landmarks: { near_kitchen_left: { x: 0.25, y: 0.5, frame: 150 } },
       complete: true,
     };
     vi.mocked(replaceCalibrations).mockResolvedValue([fitted]);
@@ -214,7 +232,10 @@ describe("useRecording", () => {
     // The save sends as soon as the edit is made, so its fit is set up first.
     vi.mocked(replaceCalibrations)
       .mockResolvedValueOnce([
-        { ...calibrationOut("main", 100), landmarks: { near_kitchen_left: point } },
+        {
+          ...calibrationOut("main", 100),
+          landmarks: { near_kitchen_left: { ...point, frame: 150 } },
+        },
       ])
       .mockResolvedValueOnce([calibrationOut("main", 100)]);
     const { result } = await loaded();

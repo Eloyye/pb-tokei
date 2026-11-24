@@ -37,9 +37,11 @@ const GROUPS: [string, [string[], string][]][] = [
     [
       [["Click"], "Place the highlighted Landmark on the video"],
       [["Drag"], "Move a placed Landmark"],
+      [["V"], "Mark the selected Landmark as not visible"],
+      [["C"], "Confirm a carried-over Landmark on the current frame"],
       [["Tab"], "Skip to the next Landmark"],
       [["X"], "Clear the selected Landmark"],
-      [["N"], "New Calibration from this Play Segment, copying the one in effect"],
+      [["N"], "New Calibration from this Play Segment, carrying over the one in effect"],
     ],
   ],
   [

@@ -4,21 +4,26 @@ import {
   calibrationAt,
   calibrationKeyFor,
   clearLandmark,
-  currentFit,
-  fitKey,
+  confirmAllLandmarks,
+  confirmLandmark,
   COURT_LINES,
   courtPoint,
+  currentFit,
   deleteCalibration,
+  fitKey,
+  isCarriedOver,
+  landmarkCounts,
   LANDMARKS,
   landmarkLabel,
+  markNotVisible,
   newCalibration,
   nextLandmark,
   placeLandmark,
   project,
+  projectLine,
   reanchorCalibration,
   reuseBlocker,
   reuseCalibration,
-  projectLine,
   skipLandmark,
   unmappedRangeAt,
 } from "./calibrations";
@@ -27,8 +32,15 @@ function cal(
   view: CameraView,
   from: number,
   landmarks: Calibration["landmarks"] = {},
+  not_visible: Calibration["not_visible"] = [],
 ): Calibration {
-  return { camera_view: view, effective_from_frame: from, reference_frame: from + 5, landmarks };
+  return {
+    camera_view: view,
+    effective_from_frame: from,
+    reference_frame: from + 5,
+    landmarks,
+    not_visible,
+  };
 }
 
 const SEGMENT: PlaySegment = { start_frame: 1000, end_frame: 1999, camera_view: "main" };
@@ -63,7 +75,7 @@ describe("calibrationAt", () => {
 });
 
 describe("placeLandmark", () => {
-  it("creates a Calibration from the segment's start on the first click", () => {
+  it("creates a Calibration from the segment's start on the first click, recording the frame", () => {
     const edit = placeLandmark([], SEGMENT, 1234, "near_kitchen_left", { x: 0.2, y: 0.7 });
 
     expect(edit.calibrations).toEqual([
@@ -71,13 +83,27 @@ describe("placeLandmark", () => {
         camera_view: "main",
         effective_from_frame: 1000,
         reference_frame: 1234,
-        landmarks: { near_kitchen_left: { x: 0.2, y: 0.7 } },
+        landmarks: { near_kitchen_left: { x: 0.2, y: 0.7, frame: 1234 } },
+        not_visible: [],
       },
     ]);
   });
 
-  it("edits the Calibration in effect afterwards, keeping its frames", () => {
-    const existing = cal("main", 400, { near_kitchen_left: { x: 0.1, y: 0.1 } });
+  it("places a Landmark on the reference frame without mentioning mapping", () => {
+    const existing = cal("main", 1000, { near_kitchen_left: { x: 0.1, y: 0.1, frame: 1005 } });
+
+    const edit = placeLandmark([existing], SEGMENT, 1005, "near_kitchen_right", { x: 0.8, y: 0.6 });
+
+    expect(edit.calibrations[0]?.landmarks.near_kitchen_right).toEqual({
+      x: 0.8,
+      y: 0.6,
+      frame: 1005,
+    });
+    expect(edit.message).toBe("Near kitchen line, right placed");
+  });
+
+  it("records the click frame when placing off the reference frame, keeping reference_frame", () => {
+    const existing = cal("main", 400, { near_kitchen_left: { x: 0.1, y: 0.1, frame: 405 } });
     const other = cal("sideline", 400);
 
     const edit = placeLandmark([existing, other], SEGMENT, 1234, "near_kitchen_left", {
@@ -86,22 +112,67 @@ describe("placeLandmark", () => {
     });
 
     expect(edit.calibrations).toEqual([
-      { ...existing, landmarks: { near_kitchen_left: { x: 0.3, y: 1 } } },
+      { ...existing, landmarks: { near_kitchen_left: { x: 0.3, y: 1, frame: 1234 } } },
       other,
     ]);
+    expect(edit.message).toMatch(/frame 1234.*ref frame 405/);
+  });
+
+  it("clears a not-visible mark when the Landmark is placed", () => {
+    const existing = cal("main", 1000, {}, ["near_kitchen_left"]);
+
+    const edit = placeLandmark([existing], SEGMENT, 1005, "near_kitchen_left", { x: 0.2, y: 0.6 });
+
+    expect(edit.edited?.not_visible).toEqual([]);
+    expect(edit.edited?.landmarks.near_kitchen_left).toEqual({ x: 0.2, y: 0.6, frame: 1005 });
   });
 });
 
-describe("clearLandmark", () => {
-  it("removes a placed Landmark from the Calibration in effect", () => {
-    const existing = cal("main", 0, { near_kitchen_left: { x: 0.1, y: 0.1 } });
+describe("markNotVisible and clearLandmark", () => {
+  it("marks a Landmark not visible and removes any placed point", () => {
+    const existing = cal("main", 1000, { near_kitchen_left: { x: 0.1, y: 0.2, frame: 1005 } });
 
-    expect(clearLandmark([existing], "main", 10, "near_kitchen_left").calibrations).toEqual([
-      { ...existing, landmarks: {} },
-    ]);
+    const edit = markNotVisible([existing], SEGMENT, 1005, "near_kitchen_left");
+
+    expect(edit.edited?.landmarks).toEqual({});
+    expect(edit.edited?.not_visible).toEqual(["near_kitchen_left"]);
+    // Marking the same Landmark again is a no-op.
+    expect(markNotVisible(edit.calibrations, SEGMENT, 1005, "near_kitchen_left").calibrations).toBe(
+      edit.calibrations,
+    );
   });
 
-  it("changes nothing for an unplaced Landmark", () => {
+  it("creates a Calibration if marking not visible before any clicks", () => {
+    const edit = markNotVisible([], SEGMENT, 1100, "near_baseline_left");
+
+    expect(edit.edited).toEqual({
+      camera_view: "main",
+      effective_from_frame: 1000,
+      reference_frame: 1100,
+      landmarks: {},
+      not_visible: ["near_baseline_left"],
+    });
+  });
+
+  it("clears a placed Landmark or a not-visible Landmark back to remaining", () => {
+    const existing = cal("main", 0, { near_kitchen_left: { x: 0.1, y: 0.1, frame: 5 } }, [
+      "far_kitchen_left",
+    ]);
+
+    const clearedPlaced = clearLandmark([existing], "main", 10, "near_kitchen_left");
+    expect(clearedPlaced.calibrations[0]?.landmarks).toEqual({});
+    expect(clearedPlaced.calibrations[0]?.not_visible).toEqual(["far_kitchen_left"]);
+
+    const clearedNotVisible = clearLandmark(
+      clearedPlaced.calibrations,
+      "main",
+      10,
+      "far_kitchen_left",
+    );
+    expect(clearedNotVisible.calibrations[0]?.not_visible).toEqual([]);
+  });
+
+  it("changes nothing for a remaining Landmark", () => {
     const list = [cal("main", 0)];
 
     expect(clearLandmark(list, "main", 10, "far_kitchen_left").calibrations).toBe(list);
@@ -109,8 +180,10 @@ describe("clearLandmark", () => {
 });
 
 describe("newCalibration", () => {
-  it("copies the points of the Calibration in effect from the segment's start", () => {
-    const earlier = cal("main", 0, { near_kitchen_left: { x: 0.1, y: 0.2 } });
+  it("carries over Landmarks with their original frames and not_visible marks", () => {
+    const earlier = cal("main", 0, { near_kitchen_left: { x: 0.1, y: 0.2, frame: 5 } }, [
+      "near_baseline_left",
+    ]);
 
     const edit = newCalibration([earlier], SEGMENT, 1500);
 
@@ -118,9 +191,22 @@ describe("newCalibration", () => {
       camera_view: "main",
       effective_from_frame: 1000,
       reference_frame: 1500,
-      landmarks: { near_kitchen_left: { x: 0.1, y: 0.2 } },
+      landmarks: { near_kitchen_left: { x: 0.1, y: 0.2, frame: 5 } },
+      not_visible: ["near_baseline_left"],
     });
     expect(edit.calibrations[1]!.landmarks).not.toBe(earlier.landmarks);
+    expect(edit.calibrations[1]!.landmarks.near_kitchen_left).not.toBe(
+      earlier.landmarks.near_kitchen_left,
+    );
+    expect(isCarriedOver(5, 1500, SEGMENT)).toBe(true);
+    expect(isCarriedOver(1200, 1500, SEGMENT)).toBe(false);
+    expect(landmarkCounts(edit.calibrations[1])).toEqual({
+      placed: 1,
+      notVisible: 1,
+      remaining: 10,
+      confirmedOnRef: 0,
+      otherFrame: 1,
+    });
   });
 
   it("does nothing when one already starts with the segment", () => {
@@ -137,6 +223,51 @@ describe("newCalibration", () => {
   });
 });
 
+describe("confirmLandmark and confirmAllLandmarks", () => {
+  it("confirms a carried-over Landmark on the current frame, adopting resolved coords if given", () => {
+    const carried = cal("main", 1000, {
+      near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
+      near_kitchen_right: { x: 0.8, y: 0.2, frame: 1005 },
+    });
+
+    const one = confirmLandmark([carried], "main", 1005, "near_kitchen_left", { x: 0.12, y: 0.21 });
+    expect(one.edited?.landmarks.near_kitchen_left).toEqual({ x: 0.12, y: 0.21, frame: 1005 });
+
+    // Confirming an already-confirmed Landmark is a no-op.
+    expect(confirmLandmark(one.calibrations, "main", 1005, "near_kitchen_left").calibrations).toBe(
+      one.calibrations,
+    );
+  });
+
+  it("confirms all off-frame Landmarks onto the current frame at once", () => {
+    const carried = cal("main", 1000, {
+      near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
+      far_kitchen_left: { x: 0.3, y: 0.4, frame: 50 },
+    });
+
+    const edit = confirmAllLandmarks([carried], "main", 1005, {
+      near_kitchen_left: { x: 0.11, y: 0.22 },
+      // Out-of-frame resolved point falls back to the stored coordinates.
+      far_kitchen_left: { x: -0.2, y: 0.4 },
+    });
+
+    expect(edit.edited?.landmarks).toEqual({
+      near_kitchen_left: { x: 0.11, y: 0.22, frame: 1005 },
+      far_kitchen_left: { x: 0.3, y: 0.4, frame: 1005 },
+    });
+    expect(landmarkCounts(edit.edited)).toEqual({
+      placed: 2,
+      notVisible: 0,
+      remaining: 10,
+      confirmedOnRef: 2,
+      otherFrame: 0,
+    });
+    expect(confirmAllLandmarks(edit.calibrations, "main", 1005).calibrations).toBe(
+      edit.calibrations,
+    );
+  });
+});
+
 describe("deleteCalibration", () => {
   it("deletes only that view's Calibration from that frame", () => {
     const list = [cal("main", 0), cal("sideline", 0)];
@@ -146,14 +277,16 @@ describe("deleteCalibration", () => {
 });
 
 describe("nextLandmark and skipLandmark", () => {
-  it("moves to the next unplaced Landmark, wrapping round", () => {
+  it("moves to the next remaining Landmark (skipping placed and not visible), wrapping round", () => {
     const placed = { near_baseline_left: {}, near_baseline_centre: {} };
 
     expect(nextLandmark(placed, null)).toBe("near_baseline_right");
+    expect(nextLandmark(placed, null, ["near_baseline_right"])).toBe("near_kitchen_left");
     expect(nextLandmark({ ...placed, far_baseline_right: {} }, "far_baseline_right")).toBe(
       "near_baseline_right",
     );
     expect(nextLandmark(Object.fromEntries(LANDMARKS.map((l) => [l, {}])), null)).toBeNull();
+    expect(nextLandmark({}, null, LANDMARKS)).toBeNull();
   });
 
   it("skips to the next Landmark, placed or not", () => {
@@ -208,44 +341,63 @@ describe("calibrationKeyFor", () => {
 });
 
 describe("currentFit", () => {
-  const placed = cal("main", 0, {
-    near_kitchen_left: { x: 0.1, y: 0.2 },
-    far_kitchen_left: { x: 0.3, y: 0.4 },
-  });
+  const placed = cal(
+    "main",
+    0,
+    {
+      near_kitchen_left: { x: 0.1, y: 0.2, frame: 5 },
+      far_kitchen_left: { x: 0.3, y: 0.4, frame: 8 },
+    },
+    ["near_baseline_left"],
+  );
   const fit = {
     camera_view: "main",
     effective_from_frame: 0,
+    reference_frame: 5,
     landmarks: placed.landmarks,
+    not_visible: placed.not_visible,
   } as CalibrationOut;
   const fits = new Map([[fitKey(placed), fit]]);
 
   it("returns the fit of exactly these Landmarks, in any order", () => {
     const reordered = {
       ...placed,
-      landmarks: { far_kitchen_left: { x: 0.3, y: 0.4 }, near_kitchen_left: { x: 0.1, y: 0.2 } },
+      landmarks: {
+        far_kitchen_left: { x: 0.3, y: 0.4, frame: 8 },
+        near_kitchen_left: { x: 0.1, y: 0.2, frame: 5 },
+      },
     };
 
     expect(currentFit(fits, reordered)).toBe(fit);
   });
 
-  it("returns nothing while an edit is unsaved", () => {
+  it("returns nothing while an edit (coords, frame, or not_visible) is unsaved", () => {
     const moved = {
       ...placed,
-      landmarks: { ...placed.landmarks, near_kitchen_left: { x: 0.1, y: 0.3 } },
+      landmarks: { ...placed.landmarks, near_kitchen_left: { x: 0.1, y: 0.3, frame: 5 } },
     };
+    const reframed = {
+      ...placed,
+      landmarks: { ...placed.landmarks, far_kitchen_left: { x: 0.3, y: 0.4, frame: 5 } },
+    };
+    const differentNotVisible = { ...placed, not_visible: [] };
 
     expect(currentFit(fits, moved)).toBeUndefined();
+    expect(currentFit(fits, reframed)).toBeUndefined();
+    expect(currentFit(fits, differentNotVisible)).toBeUndefined();
     expect(currentFit(fits, cal("main", 5))).toBeUndefined();
   });
 });
 
 describe("reuseCalibration", () => {
-  const original = cal("main", 26, { near_kitchen_left: { x: 0.1, y: 0.2 } });
-  const moved = cal("main", 600, { near_kitchen_left: { x: 0.4, y: 0.5 } });
+  const original = cal("main", 26, { near_kitchen_left: { x: 0.1, y: 0.2, frame: 31 } }, [
+    "near_baseline_left",
+  ]);
+  const moved = cal("main", 600, { near_kitchen_left: { x: 0.4, y: 0.5, frame: 605 } });
   // The camera is back at the frame-26 angle in this later segment.
   const later: PlaySegment = { start_frame: 900, end_frame: 1100, camera_view: "main" };
 
-  it("puts an earlier Calibration's points in effect from the segment's start", () => {
+  it("carries over an earlier Calibration's points (with their original frames) from the segment's start", () => {
     const edit = reuseCalibration([original, moved], original, later, 950);
 
     expect(edit.calibrations).toHaveLength(3);
@@ -254,17 +406,24 @@ describe("reuseCalibration", () => {
       effective_from_frame: 900,
       reference_frame: 950,
       landmarks: original.landmarks,
+      not_visible: original.not_visible,
     });
     expect(edit.edited!.landmarks).not.toBe(original.landmarks);
+    expect(edit.edited!.landmarks.near_kitchen_left?.frame).toBe(31);
     expect(calibrationAt(edit.calibrations, "main", 1000)).toBe(edit.edited);
   });
 
   it("replaces the points of a Calibration already starting with the segment", () => {
-    const here = cal("main", 900, { far_kitchen_left: { x: 0.6, y: 0.3 } });
+    const here = cal("main", 900, { far_kitchen_left: { x: 0.6, y: 0.3, frame: 905 } });
 
     const edit = reuseCalibration([original, moved, here], original, later, 950);
 
-    const replaced = { ...here, reference_frame: 950, landmarks: original.landmarks };
+    const replaced = {
+      ...here,
+      reference_frame: 950,
+      landmarks: original.landmarks,
+      not_visible: original.not_visible,
+    };
     expect(edit.calibrations).toEqual([original, moved, replaced]);
     expect(edit.edited).toBe(edit.calibrations[2]);
     expect(edit.edited!.landmarks).not.toBe(original.landmarks);
@@ -286,7 +445,7 @@ describe("reuseCalibration", () => {
   });
 
   it("refuses when another Calibration starts inside the segment", () => {
-    const inside = cal("main", 1000, { far_kitchen_left: { x: 0.6, y: 0.3 } });
+    const inside = cal("main", 1000, { far_kitchen_left: { x: 0.6, y: 0.3, frame: 1005 } });
     const list = [original, moved, inside];
 
     const edit = reuseCalibration(list, original, later, 950);
@@ -306,8 +465,8 @@ describe("reuseCalibration", () => {
 });
 
 describe("reuseBlocker", () => {
-  const original = cal("main", 26, { near_kitchen_left: { x: 0.1, y: 0.2 } });
-  const moved = cal("main", 600, { near_kitchen_left: { x: 0.4, y: 0.5 } });
+  const original = cal("main", 26, { near_kitchen_left: { x: 0.1, y: 0.2, frame: 31 } });
+  const moved = cal("main", 600, { near_kitchen_left: { x: 0.4, y: 0.5, frame: 605 } });
   const later: PlaySegment = { start_frame: 900, end_frame: 1100, camera_view: "main" };
 
   it("allows an earlier angle on a segment using different points", () => {
@@ -327,7 +486,7 @@ describe("reuseBlocker", () => {
 
 describe("reanchorCalibration", () => {
   it("starts a fresh empty Calibration at the playhead inside a Play Segment", () => {
-    const existing = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.5 } });
+    const existing = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.5, frame: 1005 } });
 
     const edit = reanchorCalibration([existing], SEGMENT, 1450);
 
@@ -337,6 +496,7 @@ describe("reanchorCalibration", () => {
       effective_from_frame: 1450,
       reference_frame: 1450,
       landmarks: {},
+      not_visible: [],
     });
     expect(calibrationAt(edit.calibrations, "main", 1450)).toBe(edit.edited);
   });

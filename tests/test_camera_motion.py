@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
@@ -10,7 +11,7 @@ import numpy as np
 import pytest
 from test_calibration import MAIN, SIDELINE, Camera, assert_near
 
-from pb_tokei.calibration import ERROR_WARNING_FT, CourtMapping, fit_landmarks
+from pb_tokei.calibration import ERROR_WARNING_FT, CourtMapping, assess, fit_landmarks
 from pb_tokei.camera_motion import (
     CameraMotion,
     CameraMotionCache,
@@ -24,7 +25,8 @@ from pb_tokei.rally_log import (
     Calibration,
     CameraView,
     CourtPoint,
-    ImagePoint,
+    Landmark,
+    PlacedLandmark,
     PlaySegment,
 )
 
@@ -106,7 +108,7 @@ def _render_camera_frame(
 
 def write_synthetic_video(
     path: Path,
-    cameras: list[Camera | None],
+    cameras: Sequence[Camera | None],
 ) -> None:
     """Writes an MP4 where each entry is a `Camera` frame or `None` (a hard-cut replay frame)."""
     canvas, court_to_canvas = _make_court_world_canvas()
@@ -186,7 +188,7 @@ def test_court_mapping_returns_none_on_unmapped_frames_and_composes_mapped_ones(
     moved_h = fit_landmarks(cam_moved.clicks())
     assert base is not None and moved_h is not None
 
-    cal = Calibration(CameraView.SIDELINE, 100, 100, cam_ref.clicks())
+    cal = Calibration(CameraView.SIDELINE, 100, 100, cam_ref.placed(100))
     seg = PlaySegment(100, 104, CameraView.SIDELINE)
     f2r = base.court_to_image @ moved_h.image_to_court
 
@@ -214,8 +216,8 @@ def test_court_mapping_returns_none_on_unmapped_frames_and_composes_mapped_ones(
 
 def test_calibration_spans_splits_segment_at_inner_reanchor_calibration() -> None:
     seg = PlaySegment(100, 500, CameraView.SIDELINE)
-    c1 = Calibration(CameraView.SIDELINE, 100, 120, SIDELINE.clicks())
-    c2 = Calibration(CameraView.SIDELINE, 300, 310, SIDELINE.clicks())
+    c1 = Calibration(CameraView.SIDELINE, 100, 120, SIDELINE.placed(120))
+    c2 = Calibration(CameraView.SIDELINE, 300, 310, SIDELINE.placed(310))
 
     spans = calibration_spans([seg], [c2, c1])
 
@@ -246,9 +248,9 @@ def test_tracks_panning_and_zooming_camera_within_half_a_foot_and_flags_cuts(
 
     ref_cam = cameras[ref_frame]
     assert ref_cam is not None
-    cal = Calibration(CameraView.SIDELINE, 0, ref_frame, ref_cam.clicks())
+    cal = Calibration(CameraView.SIDELINE, 0, ref_frame, ref_cam.placed(ref_frame))
     seg = PlaySegment(0, 39, CameraView.SIDELINE)
-    base = fit_landmarks(cal.landmarks)
+    base = assess(cal).homography
     assert base is not None
 
     span = calibration_spans([seg], [cal])[0]
@@ -311,9 +313,9 @@ def test_tracks_segment_whose_reference_frame_is_in_an_earlier_segment(tmp_path:
 
     ref_cam = cameras[2]
     assert ref_cam is not None
-    cal = Calibration(CameraView.SIDELINE, 0, 2, ref_cam.clicks())
+    cal = Calibration(CameraView.SIDELINE, 0, 2, ref_cam.placed(2))
     seg2 = PlaySegment(12, 24, CameraView.SIDELINE)
-    base = fit_landmarks(cal.landmarks)
+    base = assess(cal).homography
     assert base is not None
 
     span = calibration_spans([seg2], [cal])[0]
@@ -325,6 +327,88 @@ def test_tracks_segment_whose_reference_frame_is_in_an_earlier_segment(tmp_path:
     cam_end = cameras[24]
     assert h_end is not None and cam_end is not None
     assert_near(h_end.to_court(cam_end.image(0.0, 7.0)), CourtPoint(0.0, 7.0), ERROR_WARNING_FT)
+
+
+# --- Multi-frame Landmark registration (Option 2) -----------------------------------------
+
+
+def test_registers_multi_frame_landmarks_across_panning_video_and_rejects_cut_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 36 frames: smooth pan/zoom 0..30, hard cut 31..35.
+    ref_frame = 10
+    cameras: list[Camera | None] = [
+        None if f >= 31 else _panning_camera((f - ref_frame) / 24.0) for f in range(36)
+    ]
+    video = tmp_path / "multi_frame.mp4"
+    write_synthetic_video(video, cameras)
+
+    cam_early = cameras[2]
+    cam_ref = cameras[ref_frame]
+    cam_late = cameras[22]
+    assert cam_early is not None and cam_ref is not None and cam_late is not None
+
+    # Split visible Landmarks across 3 different frames (fewer than 4 on reference frame alone!).
+    early_lms = [Landmark.NEAR_KITCHEN_CENTRE, Landmark.NEAR_KITCHEN_RIGHT]
+    ref_lms = [
+        Landmark.FAR_KITCHEN_CENTRE,
+        Landmark.FAR_KITCHEN_RIGHT,
+        Landmark.FAR_BASELINE_CENTRE,
+    ]
+    late_lms = [Landmark.NEAR_BASELINE_RIGHT, Landmark.FAR_BASELINE_RIGHT]
+    landmarks = {
+        **cam_early.placed(2, early_lms),
+        **cam_ref.placed(ref_frame, ref_lms),
+        **cam_late.placed(22, late_lms),
+    }
+    seg = PlaySegment(0, 35, CameraView.SIDELINE)
+    cal = Calibration(CameraView.SIDELINE, 0, ref_frame, landmarks)
+    cache = CameraMotionCache(tmp_path / "cache")
+
+    # Without video registration, reference frame only has 3 points -> incomplete.
+    assert not assess(cal).complete
+
+    # With registration, off-reference frames map to reference_frame and fit within 0.5 ft.
+    f2r = cache.register_calibration_frames(video, cal, [seg])
+    assert 2 in f2r and 22 in f2r
+    fit = assess(cal, frame_to_ref=f2r)
+    assert fit.complete
+    assert fit.unmapped_landmarks == frozenset()
+    assert fit.worst_error_ft is not None and fit.worst_error_ft < ERROR_WARNING_FT
+
+    # Full CameraMotion + CourtMapping tracks accurately from the multi-frame Calibration.
+    motion = cache.track_match(video, [seg], [cal])
+    reg_map = cache.landmark_frame_to_ref(video, [seg], [cal])
+    mapping = CourtMapping([seg], [cal], camera_motion=motion, landmark_frame_to_ref=reg_map)
+    for f in [2, ref_frame, 22]:
+        cam = cameras[f]
+        assert cam is not None
+        h = mapping.at(f)
+        assert h is not None
+        assert_near(h.to_court(cam.image(0.0, 7.0)), CourtPoint(0.0, 7.0), ERROR_WARNING_FT)
+
+    # Second registration call serves from disk cache without invoking OpenCV again.
+    def fail_register(*_args: object, **_kwargs: object) -> dict[int, np.ndarray | None]:
+        raise AssertionError("register_frames_to_reference should not run on a cache hit")
+
+    monkeypatch.setattr("pb_tokei.camera_motion.register_frames_to_reference", fail_register)
+    f2r_cached = cache.register_calibration_frames(video, cal, [seg])
+    assert set(f2r_cached) == {2, 22}
+
+    # A Landmark clicked on a hard-cut frame (33) fails registration and is excluded (unmapped).
+    monkeypatch.undo()
+    with_cut = Calibration(
+        CameraView.SIDELINE,
+        0,
+        ref_frame,
+        {**landmarks, Landmark.NEAR_BASELINE_CENTRE: PlacedLandmark(0.5, 0.5, 33)},
+    )
+    f2r_cut = cache.register_calibration_frames(video, with_cut, [seg])
+    assert 33 not in f2r_cut
+    fit_cut = assess(with_cut, frame_to_ref=f2r_cut)
+    assert fit_cut.complete
+    assert fit_cut.unmapped_landmarks == frozenset({Landmark.NEAR_BASELINE_CENTRE})
+    assert fit_cut.needs_attention
 
 
 # --- Cache invalidation & persistence -----------------------------------------------------
@@ -339,7 +423,7 @@ def test_camera_motion_cache_hits_and_invalidates_on_edits_or_version_bump(
 
     ref_cam = cameras[5]
     assert ref_cam is not None
-    cal = Calibration(CameraView.SIDELINE, 0, 5, ref_cam.clicks())
+    cal = Calibration(CameraView.SIDELINE, 0, 5, ref_cam.placed(5))
     seg = PlaySegment(0, 11, CameraView.SIDELINE)
     cache = CameraMotionCache(tmp_path / "cache")
 
@@ -355,19 +439,24 @@ def test_camera_motion_cache_hits_and_invalidates_on_edits_or_version_bump(
     second = cache.track_match(video, [seg], [cal])
     assert np.allclose(first.spans[0].matrices, second.spans[0].matrices)
 
-    # Key changes when a Landmark moves, segment bounds change, or method_version bumps.
+    # Key changes when a Landmark moves, its frame changes, segment bounds change, or version bumps.
     span = calibration_spans([seg], [cal])[0]
     edited_landmarks = dict(cal.landmarks)
     lm = next(iter(edited_landmarks))
-    edited_landmarks[lm] = ImagePoint(
-        min(1.0, edited_landmarks[lm].x + 0.01), edited_landmarks[lm].y
+    edited_landmarks[lm] = PlacedLandmark(
+        min(1.0, edited_landmarks[lm].x + 0.01), edited_landmarks[lm].y, edited_landmarks[lm].frame
     )
     cal_moved = Calibration(CameraView.SIDELINE, 0, 5, edited_landmarks)
+    reframed_landmarks = dict(cal.landmarks)
+    reframed_landmarks[lm] = PlacedLandmark(reframed_landmarks[lm].x, reframed_landmarks[lm].y, 6)
+    cal_reframed = Calibration(CameraView.SIDELINE, 0, 5, reframed_landmarks)
     span_moved = calibration_spans([seg], [cal_moved])[0]
+    span_reframed = calibration_spans([seg], [cal_reframed])[0]
     span_shorter = calibration_spans([PlaySegment(0, 10, CameraView.SIDELINE)], [cal])[0]
 
     k_base = span_cache_key(video, span, method_version=1)
     assert span_cache_key(video, span_moved, method_version=1) != k_base
+    assert span_cache_key(video, span_reframed, method_version=1) != k_base
     assert span_cache_key(video, span_shorter, method_version=1) != k_base
     assert span_cache_key(video, span, method_version=2) != k_base
     assert CameraMotionCache(tmp_path / "cache", method_version=2).get(video, span) is None

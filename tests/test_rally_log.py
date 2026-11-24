@@ -17,13 +17,13 @@ from pb_tokei.rally_log import (
     Fact,
     Game,
     Handedness,
-    ImagePoint,
     Landmark,
     Match,
     MatchId,
     MatchNotFound,
     ObservationGap,
     Parity,
+    PlacedLandmark,
     Player,
     PlayerId,
     PlaySegment,
@@ -145,11 +145,12 @@ MAIN_CALIBRATION = Calibration(
     effective_from_frame=90,
     reference_frame=120,
     landmarks={
-        Landmark.NEAR_BASELINE_LEFT: ImagePoint(0.12, 0.93),
-        Landmark.NEAR_BASELINE_RIGHT: ImagePoint(0.88, 0.93),
-        Landmark.FAR_BASELINE_LEFT: ImagePoint(0.32, 0.18),
-        Landmark.FAR_BASELINE_RIGHT: ImagePoint(0.68, 0.18),
+        Landmark.NEAR_BASELINE_LEFT: PlacedLandmark(0.12, 0.93, 120),
+        Landmark.NEAR_BASELINE_RIGHT: PlacedLandmark(0.88, 0.93, 120),
+        Landmark.FAR_BASELINE_LEFT: PlacedLandmark(0.32, 0.18, 125),
+        Landmark.FAR_BASELINE_RIGHT: PlacedLandmark(0.68, 0.18, 120),
     },
+    not_visible=frozenset({Landmark.NEAR_KITCHEN_CENTRE}),
 )
 
 
@@ -452,7 +453,11 @@ def test_calibrations_of_one_view_can_be_replaced(log: RallyLog) -> None:
     match = small_match()
     log.save_match(match)
     later = Calibration(
-        CameraView.MAIN, 5000, 5010, {Landmark.FAR_KITCHEN_CENTRE: ImagePoint(0.5, 0.4)}
+        CameraView.MAIN,
+        5000,
+        5010,
+        {Landmark.FAR_KITCHEN_CENTRE: PlacedLandmark(0.5, 0.4, 5015)},
+        frozenset({Landmark.NEAR_BASELINE_LEFT}),
     )
 
     log.replace_calibrations(match.id, CameraView.MAIN, [MAIN_CALIBRATION, later])
@@ -482,7 +487,65 @@ def test_two_calibrations_of_a_view_cannot_start_at_one_frame(log: RallyLog) -> 
 
 def test_calibration_landmarks_must_be_inside_the_frame() -> None:
     with pytest.raises(ValueError, match="outside the video frame"):
-        Calibration(CameraView.MAIN, 0, 0, {Landmark.NEAR_KITCHEN_LEFT: ImagePoint(1.2, 0.5)})
+        PlacedLandmark(1.2, 0.5, 0)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        PlacedLandmark(0.5, 0.5, -1)
+
+
+def test_calibration_landmark_cannot_be_both_placed_and_not_visible() -> None:
+    with pytest.raises(ValueError, match="both placed and not visible"):
+        Calibration(
+            CameraView.MAIN,
+            0,
+            0,
+            {Landmark.NEAR_KITCHEN_LEFT: PlacedLandmark(0.2, 0.5, 0)},
+            frozenset({Landmark.NEAR_KITCHEN_LEFT}),
+        )
+
+
+def test_opening_an_older_database_migrates_calibration_landmarks(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_landmarks.duckdb"
+    match = small_match()
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+    with duckdb.connect(str(path)) as conn:
+        # Legacy 6-column table without `status` or `frame`.
+        conn.execute("DROP TABLE calibration_landmarks")
+        conn.execute(
+            "CREATE TABLE calibration_landmarks ("
+            "match_id UUID NOT NULL, camera_view VARCHAR NOT NULL, "
+            "effective_from_frame INTEGER NOT NULL, landmark VARCHAR NOT NULL, "
+            "image_x DOUBLE NOT NULL, image_y DOUBLE NOT NULL, "
+            "PRIMARY KEY (match_id, camera_view, effective_from_frame, landmark))"
+        )
+        conn.execute(
+            "INSERT INTO calibration_landmarks VALUES "
+            "(?, 'main', 90, 'near_baseline_left', 0.1, 0.9)",
+            [match.id],
+        )
+
+    with RallyLog.open(path) as log:
+        loaded = [c for c in log.get_calibrations(match.id) if c.camera_view is CameraView.MAIN]
+        assert loaded == [
+            Calibration(
+                CameraView.MAIN,
+                90,
+                120,
+                {Landmark.NEAR_BASELINE_LEFT: PlacedLandmark(0.1, 0.9, 120)},
+            )
+        ]
+        # Can now store off-reference frames and not_visible marks.
+        updated = Calibration(
+            CameraView.MAIN,
+            90,
+            120,
+            {Landmark.NEAR_BASELINE_LEFT: PlacedLandmark(0.1, 0.9, 135)},
+            frozenset({Landmark.FAR_BASELINE_LEFT}),
+        )
+        log.replace_calibrations(match.id, CameraView.MAIN, [updated])
+        reloaded = [c for c in log.get_calibrations(match.id) if c.camera_view is CameraView.MAIN]
+        assert reloaded == [updated]
 
 
 def test_editing_a_missing_match_fails(log: RallyLog) -> None:

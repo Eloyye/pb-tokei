@@ -26,6 +26,7 @@ function cal(view: CameraView, from: number): Calibration {
     effective_from_frame: from,
     reference_frame: from + 10,
     landmarks: {},
+    not_visible: [],
   };
 }
 

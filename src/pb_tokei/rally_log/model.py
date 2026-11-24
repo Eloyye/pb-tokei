@@ -338,25 +338,58 @@ class ImagePoint:
 
 
 @dataclass(frozen=True)
+class PlacedLandmark:
+    """A Landmark clicked on a specific video frame, in normalised image coordinates (0 to 1)."""
+
+    x: float
+    y: float
+    frame: int
+
+    def __post_init__(self) -> None:
+        if self.frame < 0:
+            raise ValueError(f"Landmark frame cannot be negative: {self.frame}")
+        if not (0 <= self.x <= 1 and 0 <= self.y <= 1):
+            raise ValueError(f"Landmark point is outside the video frame: ({self.x}, {self.y})")
+
+    @property
+    def point(self) -> ImagePoint:
+        return ImagePoint(self.x, self.y)
+
+    @classmethod
+    def at(cls, point: ImagePoint, frame: int) -> PlacedLandmark:
+        return cls(point.x, point.y, frame)
+
+
+@dataclass(frozen=True)
 class Calibration:
     """Landmarks clicked in one Camera View, in effect from `effective_from_frame` on.
 
     The Calibration in effect at a frame is the latest of that frame's Camera View that starts at
-    or before it, or else the earliest of that view. `reference_frame` is the frame it was clicked
-    on. Only the clicked points are kept; the court mapping is fitted from them when needed.
+    or before it, or else the earliest of that view. `reference_frame` is the frame the court
+    mapping is anchored to; each placed Landmark records the `frame` it was clicked on, so clicks
+    from other frames are mapped back to `reference_frame` via Camera Motion before fitting.
+    `not_visible` records Landmarks deliberately marked as not visible in this Calibration.
+    Only the clicked points are kept; the court mapping is fitted from them when needed.
     """
 
     camera_view: CameraView
     effective_from_frame: int
     reference_frame: int
-    landmarks: dict[Landmark, ImagePoint] = field(default_factory=dict)
+    landmarks: dict[Landmark, PlacedLandmark] = field(default_factory=dict)
+    not_visible: frozenset[Landmark] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         if self.effective_from_frame < 0 or self.reference_frame < 0:
             raise ValueError("Calibration frames cannot be negative")
-        for landmark, point in self.landmarks.items():
-            if not (0 <= point.x <= 1 and 0 <= point.y <= 1):
-                raise ValueError(f"{landmark} is outside the video frame: {point}")
+        overlap = self.not_visible.intersection(self.landmarks)
+        if overlap:
+            names = ", ".join(sorted(lm.value for lm in overlap))
+            raise ValueError(f"Landmarks cannot be both placed and not visible: {names}")
+
+    @property
+    def has_off_reference_landmarks(self) -> bool:
+        """Whether any placed Landmark was clicked on a frame other than `reference_frame`."""
+        return any(placed.frame != self.reference_frame for placed in self.landmarks.values())
 
 
 def check_calibrations(calibrations: Iterable[Calibration]) -> None:

@@ -4,10 +4,13 @@ import {
   calibrationAt,
   calibrationKeyFor,
   clearLandmark,
+  confirmAllLandmarks,
+  confirmLandmark,
   currentFit,
-  fitKey,
   deleteCalibration,
+  fitKey,
   landmarkLabel,
+  markNotVisible,
   newCalibration,
   nextLandmark,
   placeLandmark,
@@ -89,6 +92,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const unmappedHere = unmappedRangeAt(unmappedRanges, frame);
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
   const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
+  const activeFit = calibration ? currentFit(recordingState.fits, calibration) : undefined;
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,
     landmark: null,
@@ -96,7 +100,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const selected =
     selection.key === calibrationKey
       ? selection.landmark
-      : nextLandmark(calibration?.landmarks ?? {}, null);
+      : nextLandmark(calibration?.landmarks ?? {}, null, calibration?.not_visible ?? []);
   const select = (landmark: Landmark | null) => setSelection({ key: calibrationKey, landmark });
 
   const place = (landmark: Landmark, point: Point, how: "click" | "drag") => {
@@ -105,11 +109,48 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       const edit = placeLandmark(list, segment, frame, landmark, point);
       // The first click creates the Calibration; the selection follows it either way.
       if (edit.edited) {
-        const next = how === "drag" ? landmark : nextLandmark(edit.edited.landmarks, landmark);
+        const next =
+          how === "drag"
+            ? landmark
+            : nextLandmark(edit.edited.landmarks, landmark, edit.edited.not_visible);
         setSelection({ key: fitKey(edit.edited), landmark: next });
       }
       return edit;
     });
+  };
+
+  const setNotVisible = (landmark: Landmark) => {
+    if (!segment) return;
+    recording.editCalibrations((list) => {
+      const edit = markNotVisible(list, segment, frame, landmark);
+      if (edit.edited) {
+        const next = nextLandmark(edit.edited.landmarks, landmark, edit.edited.not_visible);
+        setSelection({ key: fitKey(edit.edited), landmark: next });
+      }
+      return edit;
+    });
+  };
+
+  const confirmOne = (landmark: Landmark) => {
+    if (!segment) return;
+    const resolved =
+      calibration && frame === calibration.reference_frame
+        ? activeFit?.resolved_landmarks[landmark]
+        : undefined;
+    recording.editCalibrations((list) =>
+      confirmLandmark(list, segment.camera_view, frame, landmark, resolved),
+    );
+  };
+
+  const confirmAllHere = () => {
+    if (!segment) return;
+    const resolved =
+      calibration && frame === calibration.reference_frame
+        ? activeFit?.resolved_landmarks
+        : undefined;
+    recording.editCalibrations((list) =>
+      confirmAllLandmarks(list, segment.camera_view, frame, resolved),
+    );
   };
 
   const calibrate = (action: CalibrationAction) => {
@@ -127,6 +168,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return recording.editCalibrations((list) =>
           clearLandmark(list, segment.camera_view, frame, selected),
         );
+      case "notVisible":
+        if (!selected) return recording.notify("Pick a Landmark in the list first");
+        return setNotVisible(selected);
+      case "confirm":
+        if (!selected) return recording.notify("Pick a Landmark in the list first");
+        return confirmOne(selected);
     }
   };
 
@@ -276,7 +323,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 videoRef={videoRef}
                 frame={frame}
                 calibration={calibration}
-                fit={calibration && currentFit(recordingState.fits, calibration)}
+                fit={activeFit}
                 lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
                 frameMatrix={cameraMotion.frameMatrix}
                 unmapped={cameraMotion.frameUnmapped}
@@ -327,6 +374,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 if (!segment) return;
                 recording.editCalibrations((list) => reanchorCalibration(list, segment, frame));
               }}
+              onMarkNotVisible={setNotVisible}
+              onClearLandmark={(landmark) => {
+                if (!segment) return;
+                recording.editCalibrations((list) =>
+                  clearLandmark(list, segment.camera_view, frame, landmark),
+                );
+              }}
+              onConfirmLandmark={confirmOne}
+              onConfirmAll={confirmAllHere}
               onRetrack={cameraMotion.retrack}
             />
           ) : (

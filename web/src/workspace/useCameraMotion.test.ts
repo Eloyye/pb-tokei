@@ -23,7 +23,13 @@ vi.mock("../api/client", async (importActual) => ({
 
 const SEGMENTS: PlaySegment[] = [{ start_frame: 100, end_frame: 103, camera_view: "sideline" }];
 const CALIBRATIONS: Calibration[] = [
-  { camera_view: "sideline", effective_from_frame: 100, reference_frame: 100, landmarks: {} },
+  {
+    camera_view: "sideline",
+    effective_from_frame: 100,
+    reference_frame: 100,
+    landmarks: {},
+    not_visible: [],
+  },
 ];
 const SAVED = { state: "saved" as const };
 const MATRIX_A = [
@@ -183,7 +189,7 @@ describe("useCameraMotion", () => {
     const edited: Calibration[] = [
       {
         ...CALIBRATIONS[0]!,
-        landmarks: { near_kitchen_left: { x: 0.25, y: 0.6 } },
+        landmarks: { near_kitchen_left: { x: 0.25, y: 0.6, frame: 100 } },
       },
     ];
     const nextMotionReq = deferred<CameraMotionOut>();

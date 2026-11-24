@@ -9,6 +9,7 @@ from pb_tokei.calibration import (
     assess,
     calibration_at,
     fit_landmarks,
+    resolve_landmarks,
 )
 from pb_tokei.rally_log import (
     Calibration,
@@ -16,6 +17,7 @@ from pb_tokei.rally_log import (
     CourtPoint,
     ImagePoint,
     Landmark,
+    PlacedLandmark,
     PlaySegment,
 )
 
@@ -71,6 +73,19 @@ class Camera:
             noise = rng.normal(0, noise_px, 2) if noise_px else (0.0, 0.0)
             clicks[landmark] = self.image(p.x, p.y, (float(noise[0]), float(noise[1])))
         return clicks
+
+    def placed(
+        self,
+        frame: int = 0,
+        landmarks: list[Landmark] | None = None,
+        noise_px: float = 0,
+        seed: int = 0,
+    ) -> dict[Landmark, PlacedLandmark]:
+        """Same as `clicks`, tagged with `frame` for constructing a `Calibration`."""
+        return {
+            lm: PlacedLandmark.at(pt, frame)
+            for lm, pt in self.clicks(landmarks, noise_px=noise_px, seed=seed).items()
+        }
 
 
 # High behind the near baseline, the whole court in shot.
@@ -206,17 +221,18 @@ def test_image_points_above_the_horizon_are_not_on_the_court() -> None:
 
 
 def test_exact_clicks_have_no_error() -> None:
-    fit = assess(Calibration(CameraView.MAIN, 0, 0, MAIN.clicks()))
+    fit = assess(Calibration(CameraView.MAIN, 0, 0, MAIN.placed(0)))
 
     assert fit.complete
     assert fit.worst_error_ft == pytest.approx(0, abs=1e-6)
     assert not fit.needs_attention
+    assert fit.unmapped_landmarks == frozenset()
 
 
 def test_a_misclicked_landmark_stands_out_when_left_out() -> None:
-    clicks = MAIN.clicks()
+    clicks = MAIN.placed(0)
     corner = Landmark.FAR_BASELINE_RIGHT
-    clicks[corner] = ImagePoint(clicks[corner].x + 0.02, clicks[corner].y)
+    clicks[corner] = PlacedLandmark(clicks[corner].x + 0.02, clicks[corner].y, 0)
 
     fit = assess(Calibration(CameraView.MAIN, 0, 0, clicks))
 
@@ -227,9 +243,9 @@ def test_a_misclicked_landmark_stands_out_when_left_out() -> None:
 
 
 def test_a_landmark_clicked_above_the_horizon_is_flagged_off_court() -> None:
-    clicks = SIDELINE.clicks()
+    clicks = SIDELINE.placed(0)
     corner = Landmark.FAR_BASELINE_RIGHT
-    clicks[corner] = ImagePoint(clicks[corner].x, 0.0)  # on the backstop, not the line
+    clicks[corner] = PlacedLandmark(clicks[corner].x, 0.0, 0)  # on the backstop, not the line
 
     fit = assess(Calibration(CameraView.SIDELINE, 0, 0, clicks))
 
@@ -248,7 +264,7 @@ def test_leave_one_out_needs_four_other_landmarks() -> None:
         Landmark.FAR_BASELINE_RIGHT,
     ]
 
-    fit = assess(Calibration(CameraView.MAIN, 0, 0, MAIN.clicks(four)))
+    fit = assess(Calibration(CameraView.MAIN, 0, 0, MAIN.placed(0, four)))
 
     assert fit.complete
     assert all(e.leave_one_out_ft is None for e in fit.errors.values())
@@ -263,11 +279,70 @@ def test_an_incomplete_calibration_has_no_fit_and_no_errors() -> None:
     assert fit.worst_error_ft is None
 
 
+# --- Multi-frame Landmarks (Option 2) -----------------------------------------------------
+
+
+def test_off_reference_landmark_without_frame_to_ref_is_excluded_not_silently_mixed() -> None:
+    clicks = MAIN.placed(100)
+    # One Landmark was clicked on frame 140 (different camera angle) with no registration available.
+    off_ref = Landmark.FAR_BASELINE_RIGHT
+    clicks[off_ref] = PlacedLandmark(0.05, 0.05, 140)
+    cal = Calibration(CameraView.MAIN, 0, 100, clicks)
+
+    resolved, unmapped = resolve_landmarks(cal)
+    assert off_ref not in resolved
+    assert unmapped == frozenset({off_ref})
+
+    fit = assess(cal)
+    assert fit.complete
+    assert fit.unmapped_landmarks == frozenset({off_ref})
+    assert off_ref not in fit.errors
+    assert fit.needs_attention
+    # Remaining 11 reference-frame clicks still fit cleanly with ~0 error.
+    assert fit.worst_error_ft == pytest.approx(0, abs=1e-6)
+
+
+def test_multi_frame_landmarks_mapped_through_frame_to_ref_recover_exact_homography() -> None:
+    cam_ref = Camera(position=(-22, -4, 11), target=(1.5, 0.0, 0), fov=64)
+    cam_pan = Camera(position=(-22, -4, 11), target=(4.5, 4.5, 0), fov=74)
+    h_ref = fit_landmarks(cam_ref.clicks())
+    h_pan = fit_landmarks(cam_pan.clicks())
+    assert h_ref is not None and h_pan is not None
+    pan_to_ref = h_ref.court_to_image @ h_pan.image_to_court
+
+    # Only 2 Landmarks on reference frame 100, plus 3 clicked on panned frame 150!
+    ref_lms = [Landmark.NEAR_KITCHEN_CENTRE, Landmark.NEAR_KITCHEN_RIGHT]
+    pan_lms = [
+        Landmark.FAR_KITCHEN_CENTRE,
+        Landmark.FAR_KITCHEN_RIGHT,
+        Landmark.FAR_BASELINE_RIGHT,
+    ]
+    landmarks = {**cam_ref.placed(100, ref_lms), **cam_pan.placed(150, pan_lms)}
+    cal = Calibration(CameraView.SIDELINE, 0, 100, landmarks)
+
+    # Without frame_to_ref, only 2 points resolve -> incomplete and 3 unmapped.
+    unregistered_fit = assess(cal)
+    assert not unregistered_fit.complete
+    assert unregistered_fit.unmapped_landmarks == frozenset(pan_lms)
+
+    # With pan_to_ref, all 5 resolve into reference-frame coordinates and fit exactly.
+    fit = assess(cal, frame_to_ref={150: pan_to_ref})
+    assert fit.complete
+    assert fit.homography is not None
+    assert fit.unmapped_landmarks == frozenset()
+    assert fit.worst_error_ft == pytest.approx(0, abs=1e-5)
+    assert not fit.needs_attention
+
+    for x, y in [(0.0, -7.0), (5.0, 7.0), (10.0, 12.0)]:
+        if cam_ref.in_frame(x, y):
+            assert_near(fit.homography.to_court(cam_ref.image(x, y)), CourtPoint(x, y), 1e-5)
+
+
 # --- Which Calibration is in effect -------------------------------------------------------
 
-MAIN_EARLY = Calibration(CameraView.MAIN, 100, 150, MAIN.clicks())
-MAIN_LATE = Calibration(CameraView.MAIN, 5000, 5100, MAIN.clicks())
-SIDE = Calibration(CameraView.SIDELINE, 2000, 2100, SIDELINE.clicks())
+MAIN_EARLY = Calibration(CameraView.MAIN, 100, 150, MAIN.placed(150))
+MAIN_LATE = Calibration(CameraView.MAIN, 5000, 5100, MAIN.placed(5100))
+SIDE = Calibration(CameraView.SIDELINE, 2000, 2100, SIDELINE.placed(2100))
 CALIBRATIONS = [MAIN_LATE, SIDE, MAIN_EARLY]
 
 

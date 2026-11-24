@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from pb_tokei.calibration import CourtMapping, Matrix, fit_landmarks
+from pb_tokei.calibration import CourtMapping, Matrix, assess
 from pb_tokei.camera_motion import (
     CameraMotionCache,
     FrameRange,
@@ -127,13 +127,16 @@ class CameraMotionService:
                 spans=[],
             )
         sig = _match_signature(video_path, segments, calibrations)
+        reg_map = self._cache.landmark_frame_to_ref(video_path, segments, calibrations)
         cached, missing = self._cache.load_cached(video_path, segments, calibrations)
         cached_by_bounds = {(s.start_frame, s.end_frame): s for s in cached.spans}
 
         span_outs: list[CameraMotionSpanOut] = []
         all_unmapped: list[UnmappedRangeOut] = []
         for span in calibration_spans(segments, calibrations):
-            if fit_landmarks(span.calibration.landmarks) is None:
+            cal = span.calibration
+            cal_f2r = reg_map.get((cal.camera_view, cal.effective_from_frame))
+            if assess(cal, frame_to_ref=cal_f2r).homography is None:
                 continue
             hit = cached_by_bounds.get((span.start_frame, span.end_frame))
             if hit is not None:
@@ -291,8 +294,11 @@ class CameraMotionService:
                 unmapped=[False] * count,
             )
 
+        reg_map = self._cache.landmark_frame_to_ref(video_path, segments, calibrations)
         cached, _ = self._cache.load_cached(video_path, segments, calibrations)
-        mapping = CourtMapping(segments, calibrations, camera_motion=cached)
+        mapping = CourtMapping(
+            segments, calibrations, camera_motion=cached, landmark_frame_to_ref=reg_map
+        )
         matrices: list[list[list[float]] | None] = []
         unmapped: list[bool] = []
         for frame in range(start_frame, end_frame + 1):
@@ -329,7 +335,10 @@ def _match_signature(
                 c.camera_view.value,
                 c.effective_from_frame,
                 c.reference_frame,
-                [(lm.value, c.landmarks[lm].x, c.landmarks[lm].y) for lm in sorted(c.landmarks)],
+                [
+                    (lm.value, c.landmarks[lm].x, c.landmarks[lm].y, c.landmarks[lm].frame)
+                    for lm in sorted(c.landmarks)
+                ],
             )
             for c in calibrations
         ],
