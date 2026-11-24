@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type Calibration,
+  type CalibrationOut,
   type CameraView,
   getCalibrations,
   getPlaySegments,
@@ -13,6 +14,7 @@ import {
 import { commit, type History, redo, startHistory, undo } from "../lib/history";
 import { withRetries } from "../lib/retry";
 import { combineStatus, createSaveQueue, type SaveQueue, type SaveStatus } from "../lib/saveQueue";
+import type { CalibrationEdit } from "../lib/calibrations";
 import { followStart, type PendingSegment, type SegmentEdit } from "../lib/segments";
 
 /** A Match's Play Segments and Calibrations: what Calibrate edits, undoes and saves. */
@@ -28,6 +30,11 @@ export interface RecordingState {
   /** The last edit's hint, or a load error. */
   message: string | null;
   saveStatus: SaveStatus;
+  /**
+   * Each Calibration's fit as the server last returned it, keyed by `fitKey`. It lags an edit
+   * until that edit is saved; `fitFor` says whether it is current.
+   */
+  fits: Map<string, CalibrationOut>;
 }
 
 export interface RecordingControls {
@@ -35,7 +42,11 @@ export interface RecordingControls {
   editSegments(
     edit: (segments: PlaySegment[], pending: PendingSegment | null) => SegmentEdit,
   ): void;
+  /** Applies a Calibration edit from `lib/calibrations` to the current Calibrations. */
+  editCalibrations(edit: (calibrations: Calibration[]) => CalibrationEdit): void;
   cancelPending(): void;
+  /** Shows a hint in the status bar. */
+  notify(message: string): void;
   undo(): void;
   redo(): void;
 }
@@ -56,6 +67,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
   const [pending, setPending] = useState<PendingSegment | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ state: "saved" });
+  const [fits, setFits] = useState<Map<string, CalibrationOut>>(() => new Map());
   // Key handlers run outside render, so they read the latest state from refs.
   const historyRef = useRef<History<Recording> | null>(null);
   const pendingRef = useRef<PendingSegment | null>(null);
@@ -71,6 +83,16 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         if (!cancelled) setSaveStatus(combineStatus([...statuses.values()]));
       },
     });
+    // A view's saved Calibrations come back fitted; their fits replace that view's.
+    const saveCalibrations = async (view: CameraView, list: Calibration[]) => {
+      const saved = await replaceCalibrations(matchId, view, list);
+      if (cancelled) return;
+      setFits((previous) => {
+        const next = new Map([...previous].filter(([, fit]) => fit.camera_view !== view));
+        for (const fit of saved) next.set(fitKey(fit), fit);
+        return next;
+      });
+    };
     const queue = <T>(key: string, save: (value: T) => Promise<unknown>) =>
       createSaveQueue(save, options(key));
     const queues: Queues = {
@@ -78,10 +100,8 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         replacePlaySegments(matchId, segments),
       ),
       calibrations: {
-        main: queue("main", (list: Calibration[]) => replaceCalibrations(matchId, "main", list)),
-        sideline: queue("sideline", (list: Calibration[]) =>
-          replaceCalibrations(matchId, "sideline", list),
-        ),
+        main: queue("main", (list: Calibration[]) => saveCalibrations("main", list)),
+        sideline: queue("sideline", (list: Calibration[]) => saveCalibrations("sideline", list)),
       },
     };
     queuesRef.current = queues;
@@ -98,6 +118,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         });
         historyRef.current = start;
         setHistory(start);
+        setFits(new Map(calibrations.map((fit) => [fitKey(fit), fit])));
       },
       (error: unknown) => {
         if (!cancelled) setMessage(`Couldn't load Play Segments: ${errorMessage(error)}`);
@@ -161,6 +182,18 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     [update, setPendingSegment],
   );
 
+  const editCalibrations = useCallback<RecordingControls["editCalibrations"]>(
+    (edit) => {
+      const current = historyRef.current;
+      if (!current) return;
+      const result = edit(current.present.calibrations);
+      setMessage(result.message);
+      if (result.calibrations === current.present.calibrations) return;
+      update(commit(current, { ...current.present, calibrations: result.calibrations }));
+    },
+    [update],
+  );
+
   const cancelPending = useCallback(() => {
     if (!pendingRef.current) return;
     setPendingSegment(null);
@@ -185,12 +218,37 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
 
   const controls: RecordingControls = {
     editSegments,
+    editCalibrations,
     cancelPending,
+    notify: setMessage,
     undo: undoEdit,
     redo: redoEdit,
   };
 
-  return [{ recording: history?.present ?? null, pending, message, saveStatus }, controls];
+  return [{ recording: history?.present ?? null, pending, message, saveStatus, fits }, controls];
+}
+
+/** Identifies a Calibration: its view and the frame it is in effect from. */
+export function fitKey(calibration: Pick<Calibration, "camera_view" | "effective_from_frame">) {
+  return `${calibration.camera_view}:${calibration.effective_from_frame}`;
+}
+
+/**
+ * A Calibration's fit, if the server has fitted exactly these Landmarks; `stale` while a newer
+ * edit is still being saved.
+ */
+export function fitFor(
+  fits: Map<string, CalibrationOut>,
+  calibration: Calibration,
+): { fit: CalibrationOut | undefined; stale: boolean } {
+  const fit = fits.get(fitKey(calibration));
+  return { fit, stale: !fit || !sameLandmarks(fit.landmarks, calibration.landmarks) };
+}
+
+function sameLandmarks(a: Calibration["landmarks"], b: Calibration["landmarks"]): boolean {
+  const keys = Object.keys(a) as (keyof typeof a)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k]?.x === b[k]?.x && a[k]?.y === b[k]?.y);
 }
 
 function ofView(calibrations: Calibration[], view: CameraView): Calibration[] {

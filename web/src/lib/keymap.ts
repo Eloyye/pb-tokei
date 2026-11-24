@@ -120,3 +120,25 @@ export function historyKeyAction(event: KeyInput): "undo" | "redo" | null {
   if (key === "y" && event.ctrlKey && !event.shiftKey) return "redo";
   return null;
 }
+
+export type CalibrationAction = "new" | "skip" | "clear";
+
+/**
+ * Calibrate's Landmark keys: `N` starts a new Calibration from the Play Segment under the
+ * playhead, `Tab` skips to the next Landmark and `X` clears the selected one.
+ */
+export function calibrationKeyAction(event: KeyInput): CalibrationAction | null {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return null;
+  switch (event.key) {
+    case "n":
+    case "N":
+      return "new";
+    case "Tab":
+      return "skip";
+    case "x":
+    case "X":
+      return "clear";
+    default:
+      return null;
+  }
+}

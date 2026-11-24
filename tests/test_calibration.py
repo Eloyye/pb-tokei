@@ -222,6 +222,7 @@ def test_a_misclicked_landmark_stands_out_when_left_out() -> None:
 
     worst = max(fit.errors, key=lambda lm: fit.errors[lm].leave_one_out_ft or 0)
     assert worst is corner
+    assert fit.errors[corner].needs_attention
     assert fit.needs_attention
 
 

@@ -136,6 +136,8 @@ class LandmarkErrorOut(BaseModel):
     residual_ft: float | None
     leave_one_out_ft: float | None
     off_court: bool
+    # Whether the error is big enough to flag: over `ERROR_WARNING_FT`, or off the court.
+    needs_attention: bool
 
 
 class CalibrationOut(CalibrationIn):
@@ -167,6 +169,7 @@ class CalibrationOut(CalibrationIn):
                     residual_ft=_finite(e.residual_ft),
                     leave_one_out_ft=_finite(e.leave_one_out_ft),
                     off_court=e.off_court,
+                    needs_attention=e.needs_attention,
                 )
                 for lm, e in fit.errors.items()
             },

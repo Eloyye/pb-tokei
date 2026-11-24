@@ -10,8 +10,9 @@ import {
   replaceCalibrations,
   replacePlaySegments,
 } from "../api/client";
+import { placeLandmark } from "../lib/calibrations";
 import { markIn, markOut } from "../lib/segments";
-import { useRecording } from "./useRecording";
+import { fitFor, useRecording } from "./useRecording";
 
 type Client = typeof import("../api/client");
 
@@ -141,6 +142,29 @@ describe("useRecording", () => {
       "main",
       [{ camera_view: "main", effective_from_frame: 100, reference_frame: 100, landmarks: {} }],
     ]);
+  });
+
+  it("saves a Calibration edit and keeps the fit the server returns", async () => {
+    const fitted = {
+      ...calibrationOut("main", 100),
+      landmarks: { near_kitchen_left: { x: 0.25, y: 0.5 } },
+      complete: true,
+    };
+    vi.mocked(replaceCalibrations).mockResolvedValue([fitted]);
+    const { result } = await loaded();
+
+    act(() =>
+      result.current[1].editCalibrations((list) =>
+        placeLandmark(list, SEGMENTS[0]!, 150, "near_kitchen_left", { x: 0.25, y: 0.5 }),
+      ),
+    );
+    const edited = result.current[0].recording!.calibrations[0]!;
+    expect(fitFor(result.current[0].fits, edited).stale).toBe(true);
+    await flush();
+
+    expect(replacePlaySegments).not.toHaveBeenCalled();
+    expect(replaceCalibrations).toHaveBeenCalledWith("match-1", "main", [edited]);
+    expect(fitFor(result.current[0].fits, edited)).toEqual({ fit: fitted, stale: false });
   });
 
   it("retries loading while the Rally Log is busy", async () => {
