@@ -2,10 +2,12 @@
 import { describe, expect, it } from "vitest";
 import {
   changeSpeed,
+  historyKeyAction,
   isTextEntry,
   keyAction,
   type KeyInput,
   SPEEDS,
+  segmentKeyAction,
   zoomKeyAction,
 } from "./keymap";
 
@@ -131,5 +133,38 @@ describe("zoomKeyAction", () => {
     expect(zoomKeyAction(press("-", { ctrlKey: true }))).toBeNull();
     expect(zoomKeyAction(press("+", { shiftKey: true }))).toBeNull();
     expect(zoomKeyAction(press("m"))).toBeNull();
+  });
+});
+
+describe("segmentKeyAction", () => {
+  it("sets bounds with Shift+I and Shift+O, whatever the key's case", () => {
+    expect(segmentKeyAction(press("I", { shiftKey: true }))).toEqual({ type: "markIn" });
+    expect(segmentKeyAction(press("o", { shiftKey: true }))).toEqual({ type: "markOut" });
+    expect(segmentKeyAction(press("i"))).toBeNull();
+  });
+
+  it("sets the view with 1 and 2, removes with Backspace, cancels with Esc", () => {
+    expect(segmentKeyAction(press("1"))).toEqual({ type: "setView", view: "main" });
+    expect(segmentKeyAction(press("2"))).toEqual({ type: "setView", view: "sideline" });
+    expect(segmentKeyAction(press("Backspace"))).toEqual({ type: "remove" });
+    expect(segmentKeyAction(press("Escape"))).toEqual({ type: "cancel" });
+  });
+
+  it("leaves modified keys to the browser", () => {
+    expect(segmentKeyAction(press("i", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(segmentKeyAction(press("1", { altKey: true }))).toBeNull();
+  });
+});
+
+describe("historyKeyAction", () => {
+  it("undoes with Cmd+Z or Ctrl+Z and redoes with Shift", () => {
+    expect(historyKeyAction(press("z", { metaKey: true }))).toBe("undo");
+    expect(historyKeyAction(press("z", { ctrlKey: true }))).toBe("undo");
+    expect(historyKeyAction(press("Z", { metaKey: true, shiftKey: true }))).toBe("redo");
+    expect(historyKeyAction(press("y", { ctrlKey: true }))).toBe("redo");
+  });
+
+  it("ignores plain Z", () => {
+    expect(historyKeyAction(press("z"))).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import createClient from "openapi-fetch";
-import type { paths } from "./schema";
+import type { components, paths } from "./schema";
 
 const api = createClient<paths>();
 
@@ -20,6 +20,73 @@ export async function getMatch(matchId: string) {
   return data;
 }
 
+type Schemas = components["schemas"];
+export type CameraView = Schemas["CameraView"];
+/** Live play from one Camera View, `start_frame` to `end_frame` inclusive. */
+export type PlaySegment = Schemas["PlaySegmentIO"];
+export type CalibrationOut = Schemas["CalibrationOut"];
+/** A Calibration's own fields, without its fit: what is edited and saved. */
+export type Calibration = Pick<
+  CalibrationOut,
+  "camera_view" | "effective_from_frame" | "reference_frame" | "landmarks"
+>;
+
+/** A Calibration's own fields, dropping the fit the server computed. */
+export function toCalibration({
+  camera_view,
+  effective_from_frame,
+  reference_frame,
+  landmarks,
+}: CalibrationOut): Calibration {
+  return { camera_view, effective_from_frame, reference_frame, landmarks };
+}
+
+export async function getPlaySegments(matchId: string): Promise<PlaySegment[]> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/play-segments", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function replacePlaySegments(
+  matchId: string,
+  segments: PlaySegment[],
+): Promise<PlaySegment[]> {
+  const { data, error, response } = await api.PUT("/api/matches/{match_id}/play-segments", {
+    params: { path: { match_id: matchId } },
+    body: segments,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getCalibrations(matchId: string): Promise<CalibrationOut[]> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/calibrations", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+/** Replaces one Camera View's Calibrations; the others are left as they are. */
+export async function replaceCalibrations(
+  matchId: string,
+  cameraView: CameraView,
+  calibrations: Calibration[],
+): Promise<CalibrationOut[]> {
+  const { data, error, response } = await api.PUT(
+    "/api/matches/{match_id}/calibrations/{camera_view}",
+    {
+      params: { path: { match_id: matchId, camera_view: cameraView } },
+      // The Camera View is in the path, not the body.
+      body: calibrations.map(({ camera_view: _view, ...fields }) => fields),
+    },
+  );
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
 export function matchVideoUrl(matchId: string): string {
   return `/api/matches/${encodeURIComponent(matchId)}/video`;
 }
@@ -31,6 +98,11 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+/** Whether a failed request may succeed if tried again: not a 4xx (a 422, a deleted Match). */
+export function isRetryable(error: unknown): boolean {
+  return !(error instanceof ApiError && error.status >= 400 && error.status < 500);
 }
 
 function apiError(response: Response, body: unknown): ApiError {

@@ -78,3 +78,45 @@ export function zoomKeyAction(event: KeyInput): "in" | "out" | null {
   if (event.key === "=") return "in";
   return null;
 }
+
+export type SegmentAction =
+  | { type: "markIn" }
+  | { type: "markOut" }
+  | { type: "setView"; view: "main" | "sideline" }
+  | { type: "remove" }
+  | { type: "cancel" };
+
+/**
+ * Calibrate's Play Segment keys: `Shift+I`/`Shift+O` set a segment's bounds, `1`/`2` its Camera
+ * View, `Backspace` removes it and `Esc` drops one not yet ended. `null` for anything else.
+ */
+export function segmentKeyAction(event: KeyInput): SegmentAction | null {
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  const key = event.key.toLowerCase();
+  if (event.shiftKey) {
+    if (key === "i") return { type: "markIn" };
+    if (key === "o") return { type: "markOut" };
+    return null;
+  }
+  switch (event.key) {
+    case "1":
+      return { type: "setView", view: "main" };
+    case "2":
+      return { type: "setView", view: "sideline" };
+    case "Backspace":
+      return { type: "remove" };
+    case "Escape":
+      return { type: "cancel" };
+    default:
+      return null;
+  }
+}
+
+/** `⌘Z` (`Ctrl+Z`) undoes and `⇧⌘Z` (`Ctrl+Shift+Z`, `Ctrl+Y`) redoes; `null` for anything else. */
+export function historyKeyAction(event: KeyInput): "undo" | "redo" | null {
+  if (event.altKey || !(event.metaKey || event.ctrlKey)) return null;
+  const key = event.key.toLowerCase();
+  if (key === "z") return event.shiftKey ? "redo" : "undo";
+  if (key === "y" && event.ctrlKey && !event.shiftKey) return "redo";
+  return null;
+}
