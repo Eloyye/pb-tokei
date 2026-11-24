@@ -265,6 +265,10 @@ class CourtMapping:
         self._landmark_courts: dict[tuple[CameraView, int], np.ndarray] = {}
 
     def _frame_to_ref_for(self, calibration: Calibration) -> dict[int, Matrix]:
+        # Explicit `landmark_frame_to_ref` takes precedence over `camera_motion`: it is estimated
+        # independently of the Calibration's own fit and also covers clicks from outside the active
+        # span (e.g. carried over from an earlier Play Segment). `camera_motion` is a fallback for
+        # off-reference clicks inside a span tracked for the same view and reference frame.
         key = (calibration.camera_view, calibration.effective_from_frame)
         f2r: dict[int, Matrix] = {}
         if self._landmark_frame_to_ref is not None:

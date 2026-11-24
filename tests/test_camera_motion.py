@@ -211,6 +211,49 @@ def test_court_mapping_returns_none_on_unmapped_frames_and_composes_mapped_ones(
     assert_near(h_moved.to_court(cam_moved.image(pt.x, pt.y)), pt, 1e-5)
 
 
+def test_court_mapping_camera_motion_fallback_resolves_off_ref_click_and_enforces_guards() -> None:
+    cam_ref = _panning_camera(0.0)
+    cam_moved = _panning_camera(0.7)
+    base = fit_landmarks(cam_ref.clicks())
+    moved_h = fit_landmarks(cam_moved.clicks())
+    assert base is not None and moved_h is not None
+    f2r = base.court_to_image @ moved_h.image_to_court
+
+    # Only 3 Landmarks on reference frame 100 + 2 on frame 101 -> requires f2r to fit.
+    ref_lms = [
+        Landmark.NEAR_KITCHEN_CENTRE,
+        Landmark.NEAR_KITCHEN_RIGHT,
+        Landmark.FAR_KITCHEN_RIGHT,
+    ]
+    moved_lms = [Landmark.FAR_KITCHEN_CENTRE, Landmark.FAR_BASELINE_RIGHT]
+    cal = Calibration(
+        CameraView.SIDELINE,
+        100,
+        100,
+        {**cam_ref.placed(100, ref_lms), **cam_moved.placed(101, moved_lms)},
+    )
+    seg = PlaySegment(100, 101, CameraView.SIDELINE)
+    mapped = np.array([True, True], dtype=bool)
+    matrices = np.stack([np.eye(3), f2r], axis=0)
+    errors = np.array([0.0, 0.04], dtype=np.float32)
+
+    # 1. Matching view and reference_frame: CourtMapping resolves via camera_motion alone.
+    matching_span = SpanMotion(100, 101, CameraView.SIDELINE, 100, 100, mapped, matrices, errors)
+    mapping = CourtMapping([seg], [cal], camera_motion=CameraMotion([matching_span]))
+    h_ref = mapping.at(100)
+    assert h_ref is not None
+    pt = CourtPoint(2.0, 7.0)
+    assert_near(h_ref.to_court(cam_ref.image(pt.x, pt.y)), pt, 1e-5)
+
+    # 2. Span of another CameraView: guard rejects it, leaving only 3 Landmarks -> no fit.
+    wrong_view_span = SpanMotion(100, 101, CameraView.MAIN, 100, 100, mapped, matrices, errors)
+    assert CourtMapping([seg], [cal], camera_motion=CameraMotion([wrong_view_span])).at(100) is None
+
+    # 3. Span anchored to a different reference_frame: guard rejects it -> no fit.
+    wrong_ref_span = SpanMotion(100, 101, CameraView.SIDELINE, 100, 99, mapped, matrices, errors)
+    assert CourtMapping([seg], [cal], camera_motion=CameraMotion([wrong_ref_span])).at(100) is None
+
+
 # --- Span partitioning --------------------------------------------------------------------
 
 
@@ -409,6 +452,59 @@ def test_registers_multi_frame_landmarks_across_panning_video_and_rejects_cut_fr
     assert fit_cut.complete
     assert fit_cut.unmapped_landmarks == frozenset({Landmark.NEAR_BASELINE_CENTRE})
     assert fit_cut.needs_attention
+
+
+def test_transient_open_failure_and_out_of_bounds_frames_are_not_cached_as_unmapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cameras: list[Camera | None] = [_panning_camera((f - 5) / 20.0) for f in range(12)]
+    video = tmp_path / "transient.mp4"
+    write_synthetic_video(video, cameras)
+
+    cam_ref = cameras[5]
+    cam_off = cameras[9]
+    assert cam_ref is not None and cam_off is not None
+    cal = Calibration(
+        CameraView.SIDELINE,
+        0,
+        5,
+        {
+            **cam_ref.placed(5, [Landmark.NEAR_KITCHEN_CENTRE, Landmark.NEAR_KITCHEN_RIGHT]),
+            **cam_off.placed(9, [Landmark.FAR_KITCHEN_RIGHT]),
+        },
+    )
+    seg = PlaySegment(0, 11, CameraView.SIDELINE)
+    cache_dir = tmp_path / "cache"
+    cache = CameraMotionCache(cache_dir)
+
+    # Simulate a transient failure to open the video during registration.
+    class _UnopenedCapture:
+        def isOpened(self) -> bool:
+            return False
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda *_a, **_kw: _UnopenedCapture())
+    assert cache.register_calibration_frames(video, cal, [seg]) == {}
+    assert list(cache_dir.glob("reg_*.npz")) == []
+
+    # Once VideoCapture works again, the retry succeeds instead of hitting a stale negative cache.
+    monkeypatch.undo()
+    f2r = cache.register_calibration_frames(video, cal, [seg])
+    assert 9 in f2r
+    assert len(list(cache_dir.glob("reg_*.npz"))) == 1
+
+    # Out-of-bounds Landmark frame (>= video frame count) is skipped without writing a cache file.
+    oob = Calibration(
+        CameraView.SIDELINE,
+        0,
+        5,
+        {**cal.landmarks, Landmark.FAR_BASELINE_RIGHT: PlacedLandmark(0.5, 0.5, 9999)},
+    )
+    f2r_oob = cache.register_calibration_frames(video, oob, [seg])
+    assert 9 in f2r_oob and 9999 not in f2r_oob
+    assert len(list(cache_dir.glob("reg_*.npz"))) == 1
 
 
 # --- Cache invalidation & persistence -----------------------------------------------------

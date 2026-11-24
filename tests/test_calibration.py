@@ -338,6 +338,28 @@ def test_multi_frame_landmarks_mapped_through_frame_to_ref_recover_exact_homogra
             assert_near(fit.homography.to_court(cam_ref.image(x, y)), CourtPoint(x, y), 1e-5)
 
 
+def test_resolve_landmarks_marks_behind_camera_and_non_finite_warps_unmapped() -> None:
+    behind_matrix = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]], dtype=np.float64)
+    nan_matrix = np.array(
+        [[float("nan"), 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
+    )
+    cal = Calibration(
+        CameraView.MAIN,
+        0,
+        100,
+        {
+            Landmark.NEAR_BASELINE_LEFT: PlacedLandmark(0.1, 0.9, 100),
+            Landmark.NEAR_BASELINE_RIGHT: PlacedLandmark(0.9, 0.9, 101),
+            Landmark.FAR_BASELINE_LEFT: PlacedLandmark(0.3, 0.2, 102),
+        },
+    )
+
+    resolved, unmapped = resolve_landmarks(cal, frame_to_ref={101: behind_matrix, 102: nan_matrix})
+
+    assert resolved == {Landmark.NEAR_BASELINE_LEFT: ImagePoint(0.1, 0.9)}
+    assert unmapped == frozenset({Landmark.NEAR_BASELINE_RIGHT, Landmark.FAR_BASELINE_LEFT})
+
+
 # --- Which Calibration is in effect -------------------------------------------------------
 
 MAIN_EARLY = Calibration(CameraView.MAIN, 100, 150, MAIN.placed(150))

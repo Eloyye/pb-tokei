@@ -12,6 +12,7 @@ import {
   courtPoint,
   currentFit,
   isCarriedOver,
+  isInFramePoint,
   landmarkCounts,
   LANDMARKS,
   landmarkLabel,
@@ -88,7 +89,24 @@ export function CalibrationPanel({
       : 0;
   const selectedPlaced = selected ? calibration?.landmarks[selected] : undefined;
   const selectedNotVisible = selected ? notVisibleSet.has(selected) : false;
-  const canConfirmSelected = Boolean(selectedPlaced && selectedPlaced.frame !== frame);
+  const confirmableCount =
+    calibration && onRef
+      ? LANDMARKS.filter((lm) => {
+          const placed = calibration.landmarks[lm];
+          return (
+            placed &&
+            placed.frame !== calibration.reference_frame &&
+            isInFramePoint(fit?.resolved_landmarks[lm])
+          );
+        }).length
+      : 0;
+  const canConfirmSelected = Boolean(
+    onRef &&
+    selected &&
+    selectedPlaced &&
+    selectedPlaced.frame !== frame &&
+    isInFramePoint(fit?.resolved_landmarks[selected]),
+  );
 
   return (
     <Panel id="calibration" focused={focused} tabs={<PanelTitle>Calibration</PanelTitle>}>
@@ -130,11 +148,11 @@ export function CalibrationPanel({
                       Go to ref {calibration.reference_frame}
                     </button>
                   )}
-                  {onRef && counts.otherFrame > 0 && (
+                  {onRef && confirmableCount > 0 && (
                     <button
                       type="button"
                       className="icon-button"
-                      title={`Confirm all ${counts.otherFrame} off-reference Landmarks on frame ${frame}`}
+                      title={`Confirm ${confirmableCount} mapped off-reference ${confirmableCount === 1 ? "Landmark" : "Landmarks"} on frame ${frame}`}
                       onClick={onConfirmAll}
                     >
                       Confirm all on f{frame}

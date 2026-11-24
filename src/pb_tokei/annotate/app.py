@@ -26,7 +26,7 @@ from pb_tokei.annotate.motion import (
     CameraMotionService,
 )
 from pb_tokei.calibration import Matrix, assess
-from pb_tokei.camera_motion import default_cache_dir
+from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
 from pb_tokei.rally_log import (
     DEFAULT_DB_PATH,
@@ -400,23 +400,40 @@ def create_app(
     ) -> list[CalibrationOut]:
         """Replaces a Match's Calibrations of one Camera View, returning them with their fits."""
         mid = MatchId(match_id)
+        summary, video = lookup(match_id)
+        if video.status is VideoStatus.READY and video.converted_path is not None:
+            frame_count = video_frame_count(video.converted_path)
+            if frame_count is not None:
+                for item in body:
+                    if item.reference_frame >= frame_count:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"reference_frame {item.reference_frame} is outside the video "
+                                f"(length {frame_count} frames)"
+                            ),
+                        )
+                    for lm, placed in item.landmarks.items():
+                        if placed.frame >= frame_count:
+                            raise HTTPException(
+                                status_code=422,
+                                detail=(
+                                    f"Landmark {lm.value} frame {placed.frame} is outside the "
+                                    f"video (length {frame_count} frames)"
+                                ),
+                            )
 
         def change(
             log: RallyLog,
-        ) -> tuple[list[Calibration], tuple[PlaySegment, ...], SourceVideo | None]:
+        ) -> tuple[list[Calibration], tuple[PlaySegment, ...]]:
             calibrations = [c.to_domain(camera_view) for c in body]
             log.replace_calibrations(mid, camera_view, calibrations)
             saved = log.get_calibrations(mid)
             segments = log.get_play_segments(mid)
-            summary = log.get_match_summary(mid)
-            return (
-                [c for c in saved if c.camera_view is camera_view],
-                segments,
-                summary.source_video,
-            )
+            return [c for c in saved if c.camera_view is camera_view], segments
 
-        saved_of_view, segments, source_video = with_log(change)
-        return fit_calibrations(saved_of_view, segments, source_video)
+        saved_of_view, segments = with_log(change)
+        return fit_calibrations(saved_of_view, segments, summary.source_video)
 
     # --- Camera Motion -------------------------------------------------------------------
 

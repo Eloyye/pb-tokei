@@ -282,10 +282,24 @@ export function clearLandmark(
   };
 }
 
+/** Whether a normalised image point lies inside `[0, 1]^2` (with finite coordinates). */
+export function isInFramePoint(point: Point | null | undefined): point is Point {
+  return (
+    point !== null &&
+    point !== undefined &&
+    Number.isFinite(point.x) &&
+    Number.isFinite(point.y) &&
+    point.x >= 0 &&
+    point.x <= 1 &&
+    point.y >= 0 &&
+    point.y <= 1
+  );
+}
+
 /**
- * `C`: confirms a placed Landmark on `frame` (typically the Calibration's `reference_frame`, e.g.
- * after `N` or "Use here"). If `resolvedPoint` is provided and inside the frame, adopts it so the
- * marker stays where it was projected on `frame`.
+ * `C`: confirms an off-reference placed Landmark onto the Calibration's `reference_frame` (e.g.
+ * after `N` or "Use here"). Only allowed on `reference_frame` when Camera Motion has mapped the
+ * Landmark to a valid in-frame `resolvedPoint`; never stamps a stale point from another frame.
  */
 export function confirmLandmark(
   calibrations: Calibration[],
@@ -299,21 +313,27 @@ export function confirmLandmark(
   if (!active || !existing) {
     return { calibrations, message: `${landmarkLabel(landmark)} isn't placed` };
   }
+  if (frame !== active.reference_frame) {
+    return {
+      calibrations,
+      message: `Go to reference frame ${active.reference_frame} to confirm ${landmarkLabel(landmark)}`,
+    };
+  }
   if (existing.frame === frame) {
     return {
       calibrations,
       message: `${landmarkLabel(landmark)} is already confirmed on frame ${frame}`,
     };
   }
-  const useResolved =
-    resolvedPoint &&
-    resolvedPoint.x >= 0 &&
-    resolvedPoint.x <= 1 &&
-    resolvedPoint.y >= 0 &&
-    resolvedPoint.y <= 1;
+  if (!isInFramePoint(resolvedPoint)) {
+    return {
+      calibrations,
+      message: `Can't confirm ${landmarkLabel(landmark)} automatically: re-click it on frame ${frame}`,
+    };
+  }
   const updated = {
-    x: useResolved ? resolvedPoint.x : existing.x,
-    y: useResolved ? resolvedPoint.y : existing.y,
+    x: resolvedPoint.x,
+    y: resolvedPoint.y,
     frame,
   };
   const edited: Calibration = {
@@ -328,8 +348,9 @@ export function confirmLandmark(
 }
 
 /**
- * Confirms every off-frame placed Landmark of the active Calibration onto `frame` (used on
- * `reference_frame` after `N` or "Use here" when the copied points still line up).
+ * Confirms every off-reference placed Landmark of the active Calibration that has a valid
+ * in-frame mapped position on `reference_frame`. Unmapped or out-of-frame Landmarks are left
+ * untouched so they can be re-clicked rather than stamped at stale coordinates.
  */
 export function confirmAllLandmarks(
   calibrations: Calibration[],
@@ -339,7 +360,14 @@ export function confirmAllLandmarks(
 ): CalibrationEdit {
   const active = calibrationAt(calibrations, view, frame);
   if (!active) return { calibrations, message: "No Calibration in effect" };
+  if (frame !== active.reference_frame) {
+    return {
+      calibrations,
+      message: `Go to reference frame ${active.reference_frame} to confirm Landmarks`,
+    };
+  }
   let changed = 0;
+  let skipped = 0;
   const landmarks: Calibration["landmarks"] = {};
   for (const [key, placed] of Object.entries(active.landmarks)) {
     const lm = key as Landmark;
@@ -348,27 +376,34 @@ export function confirmAllLandmarks(
       landmarks[lm] = placed;
       continue;
     }
-    changed += 1;
     const resolved = resolvedLandmarks?.[lm];
-    const useResolved =
-      resolved && resolved.x >= 0 && resolved.x <= 1 && resolved.y >= 0 && resolved.y <= 1;
+    if (!isInFramePoint(resolved)) {
+      skipped += 1;
+      landmarks[lm] = placed;
+      continue;
+    }
+    changed += 1;
     landmarks[lm] = {
-      x: useResolved ? resolved.x : placed.x,
-      y: useResolved ? resolved.y : placed.y,
+      x: resolved.x,
+      y: resolved.y,
       frame,
     };
   }
   if (changed === 0) {
     return {
       calibrations,
-      message: `All placed Landmarks are already confirmed on frame ${frame}`,
+      message:
+        skipped > 0
+          ? `No off-reference Landmarks can be confirmed automatically: re-click them on frame ${frame}`
+          : `All placed Landmarks are already confirmed on frame ${frame}`,
     };
   }
   const edited: Calibration = { ...active, landmarks };
+  const suffix = skipped > 0 ? ` (${skipped} still need re-clicking)` : "";
   return {
     calibrations: replace(calibrations, active, edited),
     edited,
-    message: `Confirmed ${changed} ${changed === 1 ? "Landmark" : "Landmarks"} on frame ${frame}`,
+    message: `Confirmed ${changed} ${changed === 1 ? "Landmark" : "Landmarks"} on frame ${frame}${suffix}`,
   };
 }
 

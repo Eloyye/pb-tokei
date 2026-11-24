@@ -98,7 +98,7 @@ describe("CalibrationPanel", () => {
   });
 
   it("distinguishes confirmed, carried-over, and other-frame Landmarks and wires actions", () => {
-    const { onMarkNotVisible, onClearLandmark, onConfirmLandmark, onConfirmAll } = renderPanel();
+    const { onMarkNotVisible, onClearLandmark, onConfirmAll } = renderPanel();
 
     expect(screen.getByText("1 confirmed on ref 1500 · 1 carried over")).toBeTruthy();
     expect(screen.getByText("carried f120")).toBeTruthy();
@@ -106,11 +106,12 @@ describe("CalibrationPanel", () => {
     expect(screen.getByText("unmapped")).toBeTruthy();
     expect(screen.getAllByText("not visible")).toHaveLength(2);
 
+    // Selected Landmark is unmapped -> Confirm button is hidden.
+    expect(screen.queryByRole("button", { name: /Confirm on f1500/i })).toBeNull();
+
+    // `far_kitchen_right` is mapped in-frame -> Confirm all is available.
     fireEvent.click(screen.getByRole("button", { name: /Confirm all on f1500/i }));
     expect(onConfirmAll).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole("button", { name: /Confirm on f1500/i }));
-    expect(onConfirmLandmark).toHaveBeenCalledWith("near_kitchen_right");
 
     fireEvent.click(screen.getByRole("button", { name: /^Not visible V$/i }));
     expect(onMarkNotVisible).toHaveBeenCalledWith("near_kitchen_right");
@@ -119,10 +120,17 @@ describe("CalibrationPanel", () => {
     expect(onClearLandmark).toHaveBeenCalledWith("near_kitchen_right");
   });
 
-  it("offers a Go to ref button when viewing a frame other than reference_frame", () => {
-    const { onSeek } = renderPanel({ frame: 1520 });
+  it("shows Confirm on reference_frame for a mapped off-ref Landmark, and hides it off reference_frame", () => {
+    const onRef = renderPanel({ selected: "far_kitchen_right" });
+    fireEvent.click(screen.getByRole("button", { name: /Confirm on f1500/i }));
+    expect(onRef.onConfirmLandmark).toHaveBeenCalledWith("far_kitchen_right");
 
+    cleanup();
+
+    const offRef = renderPanel({ frame: 1520, selected: "near_kitchen_right" });
+    expect(screen.queryByRole("button", { name: /Confirm on f/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Confirm all on f/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Go to ref 1500/i }));
-    expect(onSeek).toHaveBeenCalledWith(1500);
+    expect(offRef.onSeek).toHaveBeenCalledWith(1500);
   });
 });

@@ -224,7 +224,7 @@ describe("newCalibration", () => {
 });
 
 describe("confirmLandmark and confirmAllLandmarks", () => {
-  it("confirms a carried-over Landmark on the current frame, adopting resolved coords if given", () => {
+  it("confirms a mapped carried-over Landmark on reference_frame using its resolved coords", () => {
     const carried = cal("main", 1000, {
       near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
       near_kitchen_right: { x: 0.8, y: 0.2, frame: 1005 },
@@ -239,32 +239,80 @@ describe("confirmLandmark and confirmAllLandmarks", () => {
     );
   });
 
-  it("confirms all off-frame Landmarks onto the current frame at once", () => {
-    const carried = cal("main", 1000, {
-      near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
-      far_kitchen_left: { x: 0.3, y: 0.4, frame: 50 },
-    });
+  it("refuses to confirm a Landmark off reference_frame", () => {
+    const list = [
+      cal("main", 1000, {
+        near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
+      }),
+    ];
 
-    const edit = confirmAllLandmarks([carried], "main", 1005, {
+    const edit = confirmLandmark(list, "main", 1050, "near_kitchen_left", { x: 0.12, y: 0.21 });
+
+    expect(edit.calibrations).toBe(list);
+    expect(edit.message).toMatch(/reference frame 1005/);
+  });
+
+  it("refuses to confirm an unmapped or out-of-range Landmark instead of stamping stale coords", () => {
+    const list = [
+      cal("main", 1000, {
+        near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
+      }),
+    ];
+
+    const missing = confirmLandmark(list, "main", 1005, "near_kitchen_left");
+    expect(missing.calibrations).toBe(list);
+    expect(missing.message).toMatch(/re-click/i);
+
+    const outOfRange = confirmLandmark(list, "main", 1005, "near_kitchen_left", {
+      x: -0.05,
+      y: 0.2,
+    });
+    expect(outOfRange.calibrations).toBe(list);
+    expect(outOfRange.message).toMatch(/re-click/i);
+  });
+
+  it("confirmAllLandmarks only confirms mapped in-frame Landmarks on reference_frame and skips others", () => {
+    const list = [
+      cal("main", 1000, {
+        near_kitchen_left: { x: 0.1, y: 0.2, frame: 50 },
+        far_kitchen_left: { x: 0.3, y: 0.4, frame: 50 },
+        far_kitchen_right: { x: 0.7, y: 0.4, frame: 50 },
+      }),
+    ];
+
+    // Refused off reference_frame.
+    const offRef = confirmAllLandmarks(list, "main", 1050, {
       near_kitchen_left: { x: 0.11, y: 0.22 },
-      // Out-of-frame resolved point falls back to the stored coordinates.
+    });
+    expect(offRef.calibrations).toBe(list);
+    expect(offRef.message).toMatch(/reference frame 1005/);
+
+    // On reference_frame: confirms mapped in-frame point, leaves out-of-range & unmapped untouched.
+    const edit = confirmAllLandmarks(list, "main", 1005, {
+      near_kitchen_left: { x: 0.11, y: 0.22 },
       far_kitchen_left: { x: -0.2, y: 0.4 },
     });
 
     expect(edit.edited?.landmarks).toEqual({
       near_kitchen_left: { x: 0.11, y: 0.22, frame: 1005 },
-      far_kitchen_left: { x: 0.3, y: 0.4, frame: 1005 },
+      far_kitchen_left: { x: 0.3, y: 0.4, frame: 50 },
+      far_kitchen_right: { x: 0.7, y: 0.4, frame: 50 },
     });
+    expect(edit.message).toMatch(/Confirmed 1 Landmark on frame 1005 \(2 still need re-clicking\)/);
     expect(landmarkCounts(edit.edited)).toEqual({
-      placed: 2,
+      placed: 3,
       notVisible: 0,
-      remaining: 10,
-      confirmedOnRef: 2,
-      otherFrame: 0,
+      remaining: 9,
+      confirmedOnRef: 1,
+      otherFrame: 2,
     });
-    expect(confirmAllLandmarks(edit.calibrations, "main", 1005).calibrations).toBe(
-      edit.calibrations,
-    );
+
+    // Calling again when only unmapped/out-of-range Landmarks remain is a no-op.
+    const second = confirmAllLandmarks(edit.calibrations, "main", 1005, {
+      far_kitchen_left: { x: -0.2, y: 0.4 },
+    });
+    expect(second.calibrations).toBe(edit.calibrations);
+    expect(second.message).toMatch(/re-click/i);
   });
 });
 

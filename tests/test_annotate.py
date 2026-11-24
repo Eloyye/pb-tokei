@@ -655,6 +655,24 @@ def test_calibrations_api_registers_off_reference_landmarks_on_panning_video(
     assert tracked["tracked_spans"] == 1
     assert tracked["unmapped_ranges"] == []
 
+    # Frames at or beyond the video's frame count (15) are rejected with 422.
+    bad_ref = client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[{"effective_from_frame": 0, "reference_frame": 15, "landmarks": {}}],
+    )
+    assert bad_ref.status_code == 422
+    bad_lm = client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[
+            {
+                "effective_from_frame": 0,
+                "reference_frame": 5,
+                "landmarks": {"near_kitchen_left": {"x": 0.2, "y": 0.5, "frame": 15}},
+            }
+        ],
+    )
+    assert bad_lm.status_code == 422
+
 
 def test_camera_motion_rejects_invalid_frame_windows_and_missing_matches(
     client: TestClient, db: Path
