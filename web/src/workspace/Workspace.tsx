@@ -12,6 +12,7 @@ import {
   nextLandmark,
   placeLandmark,
   type Point,
+  reuseCalibration,
   skipLandmark,
 } from "../lib/calibrations";
 import {
@@ -297,6 +298,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
               onDelete={(cameraView, from) =>
                 recording.editCalibrations((list) => deleteCalibration(list, cameraView, from))
               }
+              onReuse={(source) => {
+                if (!segment) return;
+                recording.editCalibrations((list) =>
+                  reuseCalibration(list, source, segment, frame),
+                );
+              }}
             />
           ) : (
             <>

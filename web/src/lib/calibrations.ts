@@ -182,6 +182,48 @@ export function newCalibration(
   };
 }
 
+/**
+ * "Use here": puts an earlier Calibration's points in effect from the segment's start, for a
+ * camera that has gone back to an angle it had before. If a Calibration of the view already
+ * starts with the segment, its points are replaced; otherwise a new one is made.
+ */
+export function reuseCalibration(
+  calibrations: Calibration[],
+  source: Calibration,
+  segment: PlaySegment,
+  frame: number,
+): CalibrationEdit {
+  const view = segment.camera_view;
+  if (source.camera_view !== view) {
+    return {
+      calibrations,
+      message: `That's a ${VIEW_LABELS[source.camera_view]} Calibration; this Play Segment is ${VIEW_LABELS[view]}`,
+    };
+  }
+  const from = `the Calibration from frame ${source.effective_from_frame}`;
+  if (calibrationAt(calibrations, view, frame) === source) {
+    return { calibrations, message: `${from} is already in effect here` };
+  }
+  const landmarks = { ...source.landmarks };
+  const existing = calibrations.find(
+    (c) => c.camera_view === view && c.effective_from_frame === segment.start_frame,
+  );
+  if (existing) {
+    const edited = { ...existing, landmarks };
+    return {
+      calibrations: replace(calibrations, existing, edited),
+      edited,
+      message: `This Play Segment's Calibration now uses the points of ${from}`,
+    };
+  }
+  const created: Calibration = { ...startingWith(segment, frame), landmarks };
+  return {
+    calibrations: [...calibrations, created],
+    edited: created,
+    message: `New ${VIEW_LABELS[view]} Calibration from frame ${segment.start_frame}, using the points of ${from}`,
+  };
+}
+
 export function deleteCalibration(
   calibrations: Calibration[],
   view: CameraView,

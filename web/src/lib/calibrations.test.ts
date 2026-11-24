@@ -15,6 +15,7 @@ import {
   nextLandmark,
   placeLandmark,
   project,
+  reuseCalibration,
   projectLine,
   skipLandmark,
 } from "./calibrations";
@@ -232,5 +233,53 @@ describe("currentFit", () => {
 
     expect(currentFit(fits, moved)).toBeUndefined();
     expect(currentFit(fits, cal("main", 5))).toBeUndefined();
+  });
+});
+
+describe("reuseCalibration", () => {
+  const original = cal("main", 26, { near_kitchen_left: { x: 0.1, y: 0.2 } });
+  const moved = cal("main", 600, { near_kitchen_left: { x: 0.4, y: 0.5 } });
+  // The camera is back at the frame-26 angle in this later segment.
+  const later: PlaySegment = { start_frame: 900, end_frame: 1100, camera_view: "main" };
+
+  it("puts an earlier Calibration's points in effect from the segment's start", () => {
+    const edit = reuseCalibration([original, moved], original, later, 950);
+
+    expect(edit.calibrations).toHaveLength(3);
+    expect(edit.edited).toEqual({
+      camera_view: "main",
+      effective_from_frame: 900,
+      reference_frame: 950,
+      landmarks: original.landmarks,
+    });
+    expect(edit.edited!.landmarks).not.toBe(original.landmarks);
+    expect(calibrationAt(edit.calibrations, "main", 1000)).toBe(edit.edited);
+  });
+
+  it("replaces the points of a Calibration already starting with the segment", () => {
+    const here = cal("main", 900, { far_kitchen_left: { x: 0.6, y: 0.3 } });
+
+    const edit = reuseCalibration([original, moved, here], original, later, 950);
+
+    expect(edit.calibrations).toEqual([
+      original,
+      moved,
+      { ...here, landmarks: original.landmarks },
+    ]);
+  });
+
+  it("does nothing when that Calibration is already in effect", () => {
+    const list = [original];
+
+    expect(reuseCalibration(list, original, later, 950).calibrations).toBe(list);
+  });
+
+  it("refuses another view's Calibration", () => {
+    const list = [original, cal("sideline", 0)];
+
+    const edit = reuseCalibration(list, list[1]!, later, 950);
+
+    expect(edit.calibrations).toBe(list);
+    expect(edit.message).toMatch(/Sideline View Calibration/);
   });
 });

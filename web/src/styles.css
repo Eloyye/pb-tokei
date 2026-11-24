@@ -814,6 +814,12 @@ fieldset.transport-group {
   color: var(--text);
 }
 
+.cal-view .reuse {
+  margin-left: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .cal-view li > button:first-child:hover {
   background: var(--hover);
 }

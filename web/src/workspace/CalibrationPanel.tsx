@@ -24,6 +24,7 @@ export function CalibrationPanel({
   onSelect,
   onSeek,
   onDelete,
+  onReuse,
 }: {
   focused: boolean;
   /** The Play Segment under the playhead. */
@@ -36,6 +37,8 @@ export function CalibrationPanel({
   onSelect: (landmark: Landmark) => void;
   onSeek: (frame: number) => void;
   onDelete: (view: CameraView, effectiveFrom: number) => void;
+  /** Puts an earlier Calibration's points in effect from the current Play Segment's start. */
+  onReuse: (source: Calibration) => void;
 }) {
   const fit = calibration && currentFit(fits, calibration);
   const placed = calibration ? Object.keys(calibration.landmarks).length : 0;
@@ -94,8 +97,10 @@ export function CalibrationPanel({
             calibrations={calibrations.filter((c) => c.camera_view === view)}
             fits={fits}
             current={calibration}
+            segment={segment}
             onSeek={onSeek}
             onDelete={onDelete}
+            onReuse={onReuse}
           />
         ))}
         <p className="cal-keys">
@@ -138,16 +143,22 @@ function CalibrationList({
   calibrations,
   fits,
   current,
+  segment,
   onSeek,
   onDelete,
+  onReuse,
 }: {
   view: CameraView;
   calibrations: Calibration[];
   fits: Map<string, CalibrationOut>;
   current: Calibration | undefined;
+  segment: PlaySegment | undefined;
   onSeek: (frame: number) => void;
   onDelete: (view: CameraView, effectiveFrom: number) => void;
+  onReuse: (source: Calibration) => void;
 }) {
+  // A Calibration can be reused on a Play Segment of its own view, other than the one in effect.
+  const reusable = (c: Calibration) => segment?.camera_view === view && c !== current;
   return (
     <section className="cal-view">
       <h3>
@@ -172,6 +183,16 @@ function CalibrationList({
                     from frame {c.effective_from_frame}
                     <span className={fit?.needs_attention ? "flagged" : ""}>{worst}</span>
                   </button>
+                  {reusable(c) && segment && (
+                    <button
+                      type="button"
+                      className="icon-button reuse"
+                      title={`The camera is back at this angle: use these points from frame ${segment.start_frame}`}
+                      onClick={() => onReuse(c)}
+                    >
+                      Use here
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="icon-button"
