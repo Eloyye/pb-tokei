@@ -974,6 +974,10 @@ fieldset.transport-group {
   opacity: 0.85;
 }
 
+.court-template.stale polyline {
+  opacity: 0.35;
+}
+
 .court-template .zone {
   stroke-dasharray: 6 5;
   stroke-width: 1;

@@ -14,7 +14,7 @@ import {
 import { commit, type History, redo, startHistory, undo } from "../lib/history";
 import { withRetries } from "../lib/retry";
 import { combineStatus, createSaveQueue, type SaveQueue, type SaveStatus } from "../lib/saveQueue";
-import type { CalibrationEdit } from "../lib/calibrations";
+import { type CalibrationEdit, fitKey } from "../lib/calibrations";
 import { followStart, type PendingSegment, type SegmentEdit } from "../lib/segments";
 
 /** A Match's Play Segments and Calibrations: what Calibrate edits, undoes and saves. */
@@ -32,7 +32,7 @@ export interface RecordingState {
   saveStatus: SaveStatus;
   /**
    * Each Calibration's fit as the server last returned it, keyed by `fitKey`. It lags an edit
-   * until that edit is saved; `fitFor` says whether it is current.
+   * until that edit is saved; `currentFit` returns it only once it is current.
    */
   fits: Map<string, CalibrationOut>;
 }
@@ -226,29 +226,6 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
   };
 
   return [{ recording: history?.present ?? null, pending, message, saveStatus, fits }, controls];
-}
-
-/** Identifies a Calibration: its view and the frame it is in effect from. */
-export function fitKey(calibration: Pick<Calibration, "camera_view" | "effective_from_frame">) {
-  return `${calibration.camera_view}:${calibration.effective_from_frame}`;
-}
-
-/**
- * A Calibration's fit, if the server has fitted exactly these Landmarks; `stale` while a newer
- * edit is still being saved.
- */
-export function fitFor(
-  fits: Map<string, CalibrationOut>,
-  calibration: Calibration,
-): { fit: CalibrationOut | undefined; stale: boolean } {
-  const fit = fits.get(fitKey(calibration));
-  return { fit, stale: !fit || !sameLandmarks(fit.landmarks, calibration.landmarks) };
-}
-
-function sameLandmarks(a: Calibration["landmarks"], b: Calibration["landmarks"]): boolean {
-  const keys = Object.keys(a) as (keyof typeof a)[];
-  if (keys.length !== Object.keys(b).length) return false;
-  return keys.every((k) => a[k]?.x === b[k]?.x && a[k]?.y === b[k]?.y);
 }
 
 function ofView(calibrations: Calibration[], view: CameraView): Calibration[] {

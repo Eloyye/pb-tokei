@@ -35,6 +35,7 @@ export function CalibrationOverlay({
   videoRef,
   calibration,
   fit,
+  lastFit,
   selected,
   editable,
   onPlace,
@@ -44,8 +45,14 @@ export function CalibrationOverlay({
   videoRef: RefObject<HTMLVideoElement | null>;
   /** The Calibration in effect at the playhead, if any. */
   calibration: Calibration | undefined;
-  /** Its fit, when the server has fitted its current Landmarks. */
+  /** Its fit, only when the server has fitted its current Landmarks. */
   fit: CalibrationOut | undefined;
+  /**
+   * The last fit returned for it, which lags an edit until it is saved. Its court template is
+   * drawn dimmed meanwhile, so the lines don't flicker on every click; Landmark flags wait for
+   * the current fit.
+   */
+  lastFit: CalibrationOut | undefined;
   selected: Landmark | null;
   /** Whether the playhead is on a Play Segment, so clicks calibrate its Camera View. */
   editable: boolean;
@@ -94,7 +101,7 @@ export function CalibrationOverlay({
 
   const points: Partial<Record<Landmark, Point>> = { ...calibration?.landmarks };
   if (drag) points[drag.landmark] = drag.at;
-  const matrix = fit?.court_to_image;
+  const matrix = (fit ?? lastFit)?.court_to_image;
 
   return (
     <div
@@ -126,7 +133,12 @@ export function CalibrationOverlay({
       onPointerCancel={() => setDrag(null)}
     >
       {matrix && (
-        <svg className="court-template" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden>
+        <svg
+          className={`court-template ${fit ? "" : "stale"}`}
+          viewBox="0 0 1 1"
+          preserveAspectRatio="none"
+          aria-hidden
+        >
           {COURT_LINES.flatMap((courtLine, i) =>
             projectLine(matrix, courtLine).map((run, j) => (
               <polyline

@@ -5,7 +5,7 @@ from uuid import uuid4
 import duckdb
 import pytest
 from fastapi.testclient import TestClient
-from test_calibration import SIDELINE
+from test_calibration import MAIN, SIDELINE
 
 from pb_tokei import main
 from pb_tokei.annotate.app import CalibrationOut, create_app
@@ -380,6 +380,7 @@ def test_calibrations_are_saved_per_view_and_returned_with_their_fit(
     assert saved["errors"]["far_baseline_left"]["leave_one_out_ft"] is None
     assert saved["worst_error_ft"] < 1e-6
     assert saved["needs_attention"] is False
+    assert not any(e["needs_attention"] for e in saved["errors"].values())
 
     both = client.get(f"/api/matches/{match_id}/calibrations").json()
     assert [(c["camera_view"], c["complete"]) for c in both] == [
@@ -438,7 +439,25 @@ def test_an_off_court_click_is_reported_without_infinity() -> None:
     error = body["errors"]["far_baseline_right"]
     assert error["leave_one_out_ft"] is None
     assert error["off_court"] is True
+    # The feet are null, so the flag is what marks this Landmark.
+    assert error["needs_attention"] is True
     assert body["worst_error_ft"] is None
+    assert body["needs_attention"] is True
+
+
+def test_a_misclicked_landmark_is_flagged_and_has_the_largest_error() -> None:
+    clicks = MAIN.clicks()
+    corner = Landmark.FAR_BASELINE_RIGHT
+    clicks[corner] = ImagePoint(clicks[corner].x + 0.02, clicks[corner].y)
+
+    body = json.loads(
+        CalibrationOut.from_domain(Calibration(CameraView.MAIN, 0, 0, clicks)).model_dump_json()
+    )
+
+    errors = body["errors"]
+    assert errors["far_baseline_right"]["needs_attention"] is True
+    worst = max(errors, key=lambda lm: errors[lm]["leave_one_out_ft"])
+    assert worst == "far_baseline_right"
     assert body["needs_attention"] is True
 
 

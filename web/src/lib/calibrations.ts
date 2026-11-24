@@ -1,4 +1,4 @@
-import type { Calibration, CameraView, Landmark, PlaySegment } from "../api/client";
+import type { Calibration, CalibrationOut, CameraView, Landmark, PlaySegment } from "../api/client";
 import { VIEW_LABELS } from "./segments";
 
 /**
@@ -60,6 +60,49 @@ export function calibrationAt(
 export interface CalibrationEdit {
   calibrations: Calibration[];
   message: string;
+  /** The Calibration the edit changed or created, if any. */
+  edited?: Calibration;
+}
+
+/** Identifies a Calibration: its view and the frame it is in effect from. */
+export function fitKey(calibration: Pick<Calibration, "camera_view" | "effective_from_frame">) {
+  return `${calibration.camera_view}:${calibration.effective_from_frame}`;
+}
+
+/**
+ * The key of the Calibration that clicks on a segment edit: the one in effect, or else the one
+ * the first click will create, which starts with the segment (as `placeLandmark` creates it).
+ */
+export function calibrationKeyFor(segment: PlaySegment, calibration: Calibration | undefined) {
+  return fitKey(calibration ?? startingWith(segment, 0));
+}
+
+/**
+ * A Calibration's fit, only if the server has fitted exactly its current Landmarks; undefined
+ * while an edit to it is still being saved.
+ */
+export function currentFit(
+  fits: Map<string, CalibrationOut>,
+  calibration: Calibration,
+): CalibrationOut | undefined {
+  const fit = fits.get(fitKey(calibration));
+  return fit && sameLandmarks(fit.landmarks, calibration.landmarks) ? fit : undefined;
+}
+
+function sameLandmarks(a: Calibration["landmarks"], b: Calibration["landmarks"]): boolean {
+  const keys = Object.keys(a) as (keyof typeof a)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => a[k]?.x === b[k]?.x && a[k]?.y === b[k]?.y);
+}
+
+/** A new, empty Calibration of a segment's view, in effect from the segment's start. */
+function startingWith(segment: PlaySegment, frame: number): Calibration {
+  return {
+    camera_view: segment.camera_view,
+    effective_from_frame: segment.start_frame,
+    reference_frame: frame,
+    landmarks: {},
+  };
 }
 
 /**
@@ -76,22 +119,17 @@ export function placeLandmark(
   const at = { x: clamp01(point.x), y: clamp01(point.y) };
   const active = calibrationAt(calibrations, segment.camera_view, frame);
   if (!active) {
-    const created: Calibration = {
-      camera_view: segment.camera_view,
-      effective_from_frame: segment.start_frame,
-      reference_frame: frame,
-      landmarks: { [landmark]: at },
-    };
+    const created: Calibration = { ...startingWith(segment, frame), landmarks: { [landmark]: at } };
     return {
       calibrations: [...calibrations, created],
+      edited: created,
       message: `New ${VIEW_LABELS[segment.camera_view]} Calibration from frame ${segment.start_frame}: ${landmarkLabel(landmark)} placed`,
     };
   }
+  const edited = { ...active, landmarks: { ...active.landmarks, [landmark]: at } };
   return {
-    calibrations: replace(calibrations, active, {
-      ...active,
-      landmarks: { ...active.landmarks, [landmark]: at },
-    }),
+    calibrations: replace(calibrations, active, edited),
+    edited,
     message: `${landmarkLabel(landmark)} placed`,
   };
 }
@@ -135,9 +173,7 @@ export function newCalibration(
   }
   const active = calibrationAt(calibrations, view, frame);
   const created: Calibration = {
-    camera_view: view,
-    effective_from_frame: segment.start_frame,
-    reference_frame: frame,
+    ...startingWith(segment, frame),
     landmarks: { ...active?.landmarks },
   };
   return {

@@ -10,9 +10,9 @@ import {
   replaceCalibrations,
   replacePlaySegments,
 } from "../api/client";
-import { placeLandmark } from "../lib/calibrations";
+import { clearLandmark, currentFit, fitKey, placeLandmark } from "../lib/calibrations";
 import { markIn, markOut } from "../lib/segments";
-import { fitFor, useRecording } from "./useRecording";
+import { useRecording } from "./useRecording";
 
 type Client = typeof import("../api/client");
 
@@ -159,12 +159,95 @@ describe("useRecording", () => {
       ),
     );
     const edited = result.current[0].recording!.calibrations[0]!;
-    expect(fitFor(result.current[0].fits, edited).stale).toBe(true);
+    expect(currentFit(result.current[0].fits, edited)).toBeUndefined();
     await flush();
 
     expect(replacePlaySegments).not.toHaveBeenCalled();
     expect(replaceCalibrations).toHaveBeenCalledWith("match-1", "main", [edited]);
-    expect(fitFor(result.current[0].fits, edited)).toEqual({ fit: fitted, stale: false });
+    expect(currentFit(result.current[0].fits, edited)).toBe(fitted);
+  });
+
+  it("undoes and redoes a Calibration edit, saving only its view", async () => {
+    const { result } = await loaded();
+    const before = result.current[0].recording!.calibrations;
+    act(() =>
+      result.current[1].editCalibrations((list) =>
+        placeLandmark(list, SEGMENTS[0]!, 150, "near_kitchen_left", { x: 0.25, y: 0.5 }),
+      ),
+    );
+    const after = result.current[0].recording!.calibrations;
+    await flush();
+    vi.mocked(replaceCalibrations).mockClear();
+
+    act(() => result.current[1].undo());
+    expect(result.current[0].recording!.calibrations).toEqual(before);
+    await flush();
+    expect(replaceCalibrations).toHaveBeenCalledTimes(1);
+    expect(replaceCalibrations).toHaveBeenCalledWith("match-1", "main", [before[0]]);
+
+    act(() => result.current[1].redo());
+    expect(result.current[0].recording!.calibrations).toEqual(after);
+  });
+
+  it("records no undo step for a Calibration edit that changes nothing", async () => {
+    const { result } = await loaded();
+    act(() =>
+      result.current[1].editCalibrations((list) =>
+        placeLandmark(list, SEGMENTS[0]!, 150, "near_kitchen_left", { x: 0.25, y: 0.5 }),
+      ),
+    );
+
+    act(() =>
+      result.current[1].editCalibrations((list) =>
+        clearLandmark(list, "main", 150, "far_kitchen_left"),
+      ),
+    );
+    expect(result.current[0].message).toMatch(/isn't placed/);
+    act(() => result.current[1].undo());
+
+    // The undo took back the placement, the edit before the one that changed nothing.
+    expect(result.current[0].recording!.calibrations[0]!.landmarks).toEqual({});
+  });
+
+  it("treats a fit as stale after an undo until that save comes back", async () => {
+    const point = { x: 0.25, y: 0.5 };
+    // The save sends as soon as the edit is made, so its fit is set up first.
+    vi.mocked(replaceCalibrations)
+      .mockResolvedValueOnce([
+        { ...calibrationOut("main", 100), landmarks: { near_kitchen_left: point } },
+      ])
+      .mockResolvedValueOnce([calibrationOut("main", 100)]);
+    const { result } = await loaded();
+    act(() =>
+      result.current[1].editCalibrations((list) =>
+        placeLandmark(list, SEGMENTS[0]!, 150, "near_kitchen_left", point),
+      ),
+    );
+    const placed = result.current[0].recording!.calibrations[0]!;
+    await flush();
+    expect(currentFit(result.current[0].fits, placed)).toBeDefined();
+
+    act(() => result.current[1].undo());
+    const restored = result.current[0].recording!.calibrations[0]!;
+
+    expect(currentFit(result.current[0].fits, restored)).toBeUndefined();
+    await flush();
+    expect(currentFit(result.current[0].fits, restored)).toBeDefined();
+  });
+
+  it("keeps the other view's fits when one view is saved", async () => {
+    const { result } = await loaded();
+    const sidelineKey = fitKey({ camera_view: "sideline", effective_from_frame: 300 });
+    expect(result.current[0].fits.has(sidelineKey)).toBe(true);
+
+    act(() =>
+      result.current[1].editCalibrations((list) =>
+        placeLandmark(list, SEGMENTS[0]!, 150, "near_kitchen_left", { x: 0.25, y: 0.5 }),
+      ),
+    );
+    await flush();
+
+    expect(result.current[0].fits.has(sidelineKey)).toBe(true);
   });
 
   it("retries loading while the Rally Log is busy", async () => {

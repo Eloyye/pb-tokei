@@ -2,7 +2,10 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
 import { type Landmark, type MatchDetail, matchVideoUrl } from "../api/client";
 import {
   calibrationAt,
+  calibrationKeyFor,
   clearLandmark,
+  currentFit,
+  fitKey,
   deleteCalibration,
   landmarkLabel,
   newCalibration,
@@ -35,7 +38,7 @@ import { CourtPanel, InspectorPanel, RalliesPanel } from "./SidePanels";
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
-import { fitFor, fitKey, useRecording } from "./useRecording";
+import { useRecording } from "./useRecording";
 
 const ZOOM_STEP = 1.5;
 
@@ -71,9 +74,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   // Landmark to place next. The selection belongs to one Calibration; on another, it restarts.
   const calibrations = recordingState.recording?.calibrations ?? [];
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
-  const calibrationKey = segment
-    ? fitKey(calibration ?? { camera_view: segment.camera_view, effective_from_frame: -1 })
-    : null;
+  const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,
     landmark: null,
@@ -86,16 +87,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
 
   const place = (landmark: Landmark, point: Point, how: "click" | "drag") => {
     if (!segment) return;
-    recording.editCalibrations((list) => placeLandmark(list, segment, frame, landmark, point));
-    // Placing the first Landmark creates the Calibration, in effect from the segment's start.
-    const key = fitKey(
-      calibration ?? {
-        camera_view: segment.camera_view,
-        effective_from_frame: segment.start_frame,
-      },
-    );
-    const placed = { ...calibration?.landmarks, [landmark]: point };
-    setSelection({ key, landmark: how === "drag" ? landmark : nextLandmark(placed, landmark) });
+    recording.editCalibrations((list) => {
+      const edit = placeLandmark(list, segment, frame, landmark, point);
+      // The first click creates the Calibration; the selection follows it either way.
+      if (edit.edited) {
+        const next = how === "drag" ? landmark : nextLandmark(edit.edited.landmarks, landmark);
+        setSelection({ key: fitKey(edit.edited), landmark: next });
+      }
+      return edit;
+    });
   };
 
   const calibrate = (action: CalibrationAction) => {
@@ -261,10 +261,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
               <CalibrationOverlay
                 videoRef={videoRef}
                 calibration={calibration}
-                fit={calibration && fitFor(recordingState.fits, calibration).fit}
+                fit={calibration && currentFit(recordingState.fits, calibration)}
+                lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
                 selected={selected}
                 editable={Boolean(segment)}
-                onPlace={(landmark, point, how) => place(landmark, point, how)}
+                onPlace={place}
                 onSelect={select}
                 onBlocked={recording.notify}
               />

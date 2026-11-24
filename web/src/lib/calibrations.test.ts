@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { Calibration, CameraView, PlaySegment } from "../api/client";
+import type { Calibration, CalibrationOut, CameraView, PlaySegment } from "../api/client";
 import {
   calibrationAt,
+  calibrationKeyFor,
   clearLandmark,
+  currentFit,
+  fitKey,
   COURT_LINES,
   courtPoint,
   deleteCalibration,
@@ -183,5 +186,51 @@ describe("project", () => {
     expect(COURT_LINES.filter((l) => l.dashed).map((l) => l.from.y)).toEqual([
       -18, -12, -9, 9, 12, 18,
     ]);
+  });
+});
+
+describe("calibrationKeyFor", () => {
+  it("names the Calibration the first click creates", () => {
+    const edit = placeLandmark([], SEGMENT, 1234, "near_kitchen_left", { x: 0.2, y: 0.7 });
+
+    expect(calibrationKeyFor(SEGMENT, undefined)).toBe(fitKey(edit.edited!));
+  });
+
+  it("names the Calibration in effect when there is one", () => {
+    const existing = cal("main", 400);
+
+    expect(calibrationKeyFor(SEGMENT, existing)).toBe("main:400");
+  });
+});
+
+describe("currentFit", () => {
+  const placed = cal("main", 0, {
+    near_kitchen_left: { x: 0.1, y: 0.2 },
+    far_kitchen_left: { x: 0.3, y: 0.4 },
+  });
+  const fit = {
+    camera_view: "main",
+    effective_from_frame: 0,
+    landmarks: placed.landmarks,
+  } as CalibrationOut;
+  const fits = new Map([[fitKey(placed), fit]]);
+
+  it("returns the fit of exactly these Landmarks, in any order", () => {
+    const reordered = {
+      ...placed,
+      landmarks: { far_kitchen_left: { x: 0.3, y: 0.4 }, near_kitchen_left: { x: 0.1, y: 0.2 } },
+    };
+
+    expect(currentFit(fits, reordered)).toBe(fit);
+  });
+
+  it("returns nothing while an edit is unsaved", () => {
+    const moved = {
+      ...placed,
+      landmarks: { ...placed.landmarks, near_kitchen_left: { x: 0.1, y: 0.3 } },
+    };
+
+    expect(currentFit(fits, moved)).toBeUndefined();
+    expect(currentFit(fits, cal("main", 5))).toBeUndefined();
   });
 });

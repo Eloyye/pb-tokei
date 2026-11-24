@@ -6,10 +6,9 @@ import type {
   LandmarkErrorOut,
   PlaySegment,
 } from "../api/client";
-import { courtPoint, LANDMARKS, landmarkLabel } from "../lib/calibrations";
+import { courtPoint, currentFit, LANDMARKS, landmarkLabel } from "../lib/calibrations";
 import { VIEW_LABELS } from "../lib/segments";
 import { Panel, PanelTitle } from "./Panel";
-import { fitFor } from "./useRecording";
 
 /**
  * Calibrate's right column: the Landmarks of the Calibration in effect at the playhead, each
@@ -38,7 +37,7 @@ export function CalibrationPanel({
   onSeek: (frame: number) => void;
   onDelete: (view: CameraView, effectiveFrom: number) => void;
 }) {
-  const { fit, stale } = calibration ? fitFor(fits, calibration) : { fit: undefined, stale: false };
+  const fit = calibration && currentFit(fits, calibration);
   const placed = calibration ? Object.keys(calibration.landmarks).length : 0;
   return (
     <Panel id="calibration" focused={focused} tabs={<PanelTitle>Calibration</PanelTitle>}>
@@ -56,7 +55,7 @@ export function CalibrationPanel({
             <div className="cal-body">
               <LandmarkCourt
                 points={calibration?.landmarks ?? {}}
-                errors={stale ? {} : (fit?.errors ?? {})}
+                errors={fit?.errors ?? {}}
                 selected={selected}
                 onSelect={onSelect}
               />
@@ -72,15 +71,15 @@ export function CalibrationPanel({
                       <span>{landmarkLabel(landmark)}</span>
                       <ErrorCell
                         placed={Boolean(calibration?.landmarks[landmark])}
-                        error={stale ? undefined : fit?.errors[landmark]}
+                        error={fit?.errors[landmark]}
                       />
                     </button>
                   </li>
                 ))}
               </ol>
             </div>
-            <p className={`fit-summary ${fit?.needs_attention && !stale ? "flagged" : ""}`}>
-              {fitSummary(placed, fit, stale)}
+            <p className={`fit-summary ${fit?.needs_attention ? "flagged" : ""}`}>
+              {fitSummary(placed, fit)}
             </p>
           </section>
         ) : (
@@ -108,10 +107,10 @@ export function CalibrationPanel({
   );
 }
 
-function fitSummary(placed: number, fit: CalibrationOut | undefined, stale: boolean): string {
+function fitSummary(placed: number, fit: CalibrationOut | undefined): string {
   if (placed === 0) return "Click the highlighted Landmark on the video.";
-  if (stale) return "Fitting…";
-  if (!fit?.complete) return "Incomplete: place at least 4 Landmarks, not all on one line.";
+  if (!fit) return "Fitting…";
+  if (!fit.complete) return "Incomplete: place at least 4 Landmarks, not all on one line.";
   if (fit.worst_error_ft === null) return "A Landmark is off the court: move it onto its line.";
   return `Worst error ${fit.worst_error_ft.toFixed(2)} ft${fit.needs_attention ? ": check the flagged Landmarks" : ""}`;
 }
@@ -161,8 +160,8 @@ function CalibrationList({
           {calibrations
             .toSorted((a, b) => a.effective_from_frame - b.effective_from_frame)
             .map((c) => {
-              const { fit, stale } = fitFor(fits, c);
-              const worst = stale ? "…" : fitWorst(fit);
+              const fit = currentFit(fits, c);
+              const worst = fit ? fitWorst(fit) : "…";
               return (
                 <li key={c.effective_from_frame} className={c === current ? "current" : ""}>
                   <button
@@ -171,7 +170,7 @@ function CalibrationList({
                     onClick={() => onSeek(c.reference_frame)}
                   >
                     from frame {c.effective_from_frame}
-                    <span className={fit?.needs_attention && !stale ? "flagged" : ""}>{worst}</span>
+                    <span className={fit?.needs_attention ? "flagged" : ""}>{worst}</span>
                   </button>
                   <button
                     type="button"
@@ -191,8 +190,8 @@ function CalibrationList({
   );
 }
 
-function fitWorst(fit: CalibrationOut | undefined): string {
-  if (!fit?.complete) return "incomplete";
+function fitWorst(fit: CalibrationOut): string {
+  if (!fit.complete) return "incomplete";
   return fit.worst_error_ft === null ? "off court" : `${fit.worst_error_ft.toFixed(2)} ft`;
 }
 
