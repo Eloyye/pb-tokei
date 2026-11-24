@@ -6,7 +6,13 @@ import type {
   LandmarkErrorOut,
   PlaySegment,
 } from "../api/client";
-import { courtPoint, currentFit, LANDMARKS, landmarkLabel } from "../lib/calibrations";
+import {
+  courtPoint,
+  currentFit,
+  LANDMARKS,
+  landmarkLabel,
+  reuseBlocker,
+} from "../lib/calibrations";
 import { VIEW_LABELS } from "../lib/segments";
 import { Panel, PanelTitle } from "./Panel";
 
@@ -24,6 +30,7 @@ export function CalibrationPanel({
   onSelect,
   onSeek,
   onDelete,
+  onReuse,
 }: {
   focused: boolean;
   /** The Play Segment under the playhead. */
@@ -36,6 +43,8 @@ export function CalibrationPanel({
   onSelect: (landmark: Landmark) => void;
   onSeek: (frame: number) => void;
   onDelete: (view: CameraView, effectiveFrom: number) => void;
+  /** Puts an earlier Calibration's points in effect from the current Play Segment's start. */
+  onReuse: (source: Calibration) => void;
 }) {
   const fit = calibration && currentFit(fits, calibration);
   const placed = calibration ? Object.keys(calibration.landmarks).length : 0;
@@ -92,10 +101,13 @@ export function CalibrationPanel({
             key={view}
             view={view}
             calibrations={calibrations.filter((c) => c.camera_view === view)}
+            all={calibrations}
             fits={fits}
             current={calibration}
+            segment={segment}
             onSeek={onSeek}
             onDelete={onDelete}
+            onReuse={onReuse}
           />
         ))}
         <p className="cal-keys">
@@ -136,17 +148,24 @@ function ErrorCell({ placed, error }: { placed: boolean; error: LandmarkErrorOut
 function CalibrationList({
   view,
   calibrations,
+  all,
   fits,
   current,
+  segment,
   onSeek,
   onDelete,
+  onReuse,
 }: {
   view: CameraView;
   calibrations: Calibration[];
+  /** Every Calibration, both views: what "Use here" checks against. */
+  all: Calibration[];
   fits: Map<string, CalibrationOut>;
   current: Calibration | undefined;
+  segment: PlaySegment | undefined;
   onSeek: (frame: number) => void;
   onDelete: (view: CameraView, effectiveFrom: number) => void;
+  onReuse: (source: Calibration) => void;
 }) {
   return (
     <section className="cal-view">
@@ -161,6 +180,9 @@ function CalibrationList({
             .toSorted((a, b) => a.effective_from_frame - b.effective_from_frame)
             .map((c) => {
               const fit = currentFit(fits, c);
+              // The Play Segment under the playhead, if "Use here" can put these points on it.
+              const reuseOn =
+                segment && reuseBlocker(all, c, segment) === null ? segment : undefined;
               const worst = fit ? fitWorst(fit) : "…";
               return (
                 <li key={c.effective_from_frame} className={c === current ? "current" : ""}>
@@ -172,6 +194,16 @@ function CalibrationList({
                     from frame {c.effective_from_frame}
                     <span className={fit?.needs_attention ? "flagged" : ""}>{worst}</span>
                   </button>
+                  {reuseOn && (
+                    <button
+                      type="button"
+                      className="icon-button reuse"
+                      title={`The camera is back at this angle: use these points from frame ${reuseOn.start_frame}`}
+                      onClick={() => onReuse(c)}
+                    >
+                      Use here
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="icon-button"
