@@ -122,8 +122,8 @@ export function Timeline({
           <div
             className="overview-window"
             style={{
-              left: `${(Math.max(0, view.start) / whole.end) * 100}%`,
-              width: `${((Math.min(whole.end, view.end) - Math.max(0, view.start)) / whole.end) * 100}%`,
+              left: `${toPercent(whole, view.start)}%`,
+              width: `${((view.end - view.start) / whole.end) * 100}%`,
             }}
           />
           {hasVideo && (
@@ -135,7 +135,8 @@ export function Timeline({
             style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }}
             onClick={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
-              onViewChange(centreOn(view, ((event.clientX - rect.left) / rect.width) * whole.end));
+              const fraction = (event.clientX - rect.left) / rect.width;
+              onViewChange(centreOn(view, fraction * whole.end, totalFrames));
             }}
           />
         </div>
