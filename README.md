@@ -7,14 +7,16 @@ Statistics on professional side-out-scored doubles pickleball (PPA, APP, MLP), d
 
 ## Usage
 
-Download broadcast footage into `footage/` and convert it to constant 60 fps MP4 (requires `yt-dlp` and `ffmpeg` on `PATH`):
+Download broadcast footage and convert it to constant 60 fps MP4 (requires `yt-dlp` and `ffmpeg` on `PATH`):
 
 ```bash
 uv run pb-tokei download <url>
-uv run pb-tokei download <url> --match <match-id> [--db rally_log.duckdb]
+uv run pb-tokei download <url> --match <match-id> [--db <path>]
 uv run pb-tokei download <url> --cookies-from-browser chrome   # or --cookies path/to/cookies.txt
 uv run pb-tokei convert <path-to-original> [--force]
 ```
+
+With `--match`, `--footage-dir` defaults to `<Rally Log dir>/footage` (otherwise `./footage`), and the video path is recorded relative to the Rally Log's directory when inside it (or absolute otherwise; see [ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)).
 
 If YouTube asks you to sign in to confirm you're not a bot, pass `--cookies-from-browser <browser>` (e.g. `chrome`, `firefox`, `safari`) or `--cookies <path>`, or configure a default in `~/.config/yt-dlp/config` (e.g. `--cookies-from-browser chrome`).
 
@@ -22,9 +24,11 @@ Set up a Match from a Roster File (by convention kept in `rosters/`), then list 
 
 ```bash
 uv run pb-tokei match new rosters/<tournament>/<match>.toml
-uv run pb-tokei match add rosters/<tournament>/<match>.toml [--db rally_log.duckdb]
-uv run pb-tokei match list [--tournament <name>] [--db rally_log.duckdb]
+uv run pb-tokei match add rosters/<tournament>/<match>.toml --db rally_log.duckdb
+uv run pb-tokei match list [--tournament <name>] [--db <path>]
 ```
+
+Pass `--db <path>` to `match add` when creating a new Rally Log. Once a Rally Log has been opened in `annotate` (or `./rally_log.duckdb` exists), you can omit `--db`: `annotate`, `match add`, `match list`, and `download --match` fall back to the last Rally Log opened in `annotate`, then `./rally_log.duckdb`, and print `Rally Log: <path>` to stderr so writes never go somewhere unexpected.
 
 ### Annotation app
 
@@ -32,10 +36,11 @@ A local web app (Chrome) that lists Matches and opens each in a Premiere-style w
 
 ```bash
 cd web && bun install && bun run build && cd ..
-uv run pb-tokei annotate [--db rally_log.duckdb] [--port 8000] [--no-browser]
+uv run pb-tokei annotate --db rally_log.duckdb   # remembers this Rally Log
+uv run pb-tokei annotate [--port 8000] [--no-browser]
 ```
 
-It serves on `127.0.0.1` only and opens the browser. Relative video paths are resolved from the directory you start it in, as with the other commands. A Match without a playable video shows the command that fixes it; the app never downloads or converts anything.
+It serves on `127.0.0.1` only, opens the browser, and shows the open Rally Log's name in the header (full path on hover). `annotate` remembers the Rally Log it opens, and relative video paths are resolved relative to the Rally Log's directory, so `uv run pb-tokei annotate` reopens it from any directory with its videos playing. A Match without a playable video shows the command that fixes it; the app never downloads or converts anything.
 
 | Key | Action |
 |---|---|

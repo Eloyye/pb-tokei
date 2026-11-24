@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useParams } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { getMatch } from "../api/client";
+import { getMatch, getRallyLog } from "../api/client";
 import { isTextEntry } from "../lib/keymap";
 import { WORKSPACE_LABELS, WORKSPACES } from "../lib/workspaces";
 import { teamsLabel } from "../routes/teams";
@@ -46,8 +46,18 @@ export function AppShell() {
   );
 }
 
+export function rallyLogFileName(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  return parts.at(-1) ?? path;
+}
+
 function TopBar({ onHelp }: { onHelp: () => void }) {
   const { matchId, workspace } = useParams({ strict: false });
+  const rallyLog = useQuery({
+    queryKey: ["rally-log"],
+    queryFn: getRallyLog,
+    staleTime: Infinity,
+  });
   const match = useQuery({
     queryKey: ["matches", matchId],
     queryFn: () => getMatch(matchId ?? ""),
@@ -92,6 +102,11 @@ function TopBar({ onHelp }: { onHelp: () => void }) {
           ))}
       </nav>
       <div className="topbar-right">
+        {rallyLog.data && (
+          <span className="rally-log-name mono" title={rallyLog.data.path}>
+            {rallyLogFileName(rallyLog.data.path)}
+          </span>
+        )}
         <button
           type="button"
           className="help-button"

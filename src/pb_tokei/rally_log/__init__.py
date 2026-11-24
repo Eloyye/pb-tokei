@@ -47,7 +47,13 @@ from .model import (
     new_id,
     observed,
 )
-from .store import DEFAULT_DB_PATH, MatchNotFound, RallyLog
+from .store import (
+    DEFAULT_DB_PATH,
+    MatchNotFound,
+    RallyLog,
+    resolve_video_path,
+    stored_video_path,
+)
 
 __all__ = [
     "DEFAULT_DB_PATH",
@@ -98,4 +104,6 @@ __all__ = [
     "inferred",
     "new_id",
     "observed",
+    "resolve_video_path",
+    "stored_video_path",
 ]

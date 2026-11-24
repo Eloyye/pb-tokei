@@ -6,6 +6,7 @@ import argparse
 import shlex
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -18,8 +19,15 @@ from pb_tokei.footage import (
     FootageDownloadError,
     download_footage,
 )
-from pb_tokei.rally_log import DEFAULT_DB_PATH, MatchId, MatchSummary, RallyLog
+from pb_tokei.rally_log import (
+    DEFAULT_DB_PATH,
+    MatchId,
+    MatchSummary,
+    RallyLog,
+    stored_video_path,
+)
 from pb_tokei.roster import RosterError, read_roster, roster_template, set_up_match
+from pb_tokei.state import RallyLogNotFoundError, resolve_rally_log, write_last_rally_log
 
 DEFAULT_ANNOTATE_PORT = 8000
 
@@ -39,8 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument(
         "--footage-dir",
         type=Path,
-        default=DEFAULT_FOOTAGE_DIR,
-        help=f"Directory to store downloaded footage (default: {DEFAULT_FOOTAGE_DIR}).",
+        default=None,
+        help=(
+            "Directory to store downloaded footage "
+            f"(default: <Rally Log dir>/{DEFAULT_FOOTAGE_DIR} with --match, "
+            f"otherwise {DEFAULT_FOOTAGE_DIR})."
+        ),
     )
     download.add_argument(
         "--match",
@@ -51,7 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--db",
         type=Path,
         default=None,
-        help=f"Path to the Rally Log DuckDB file (default when --match is set: {DEFAULT_DB_PATH}).",
+        help=(
+            "Path to the Rally Log DuckDB file "
+            f"(default when --match is set: last opened in annotate, else {DEFAULT_DB_PATH})."
+        ),
     )
     cookies_group = download.add_mutually_exclusive_group()
     cookies_group.add_argument(
@@ -126,9 +141,22 @@ def _db_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db",
         type=Path,
-        default=DEFAULT_DB_PATH,
-        help=f"Path to the Rally Log DuckDB file (default: {DEFAULT_DB_PATH}).",
+        default=None,
+        help=(
+            "Path to the Rally Log DuckDB file "
+            f"(default: last opened in annotate, else {DEFAULT_DB_PATH})."
+        ),
     )
+
+
+def _resolve_cli_db(explicit: Path | None, *, allow_create: bool = False) -> Path | None:
+    try:
+        db_path = resolve_rally_log(explicit, allow_create=allow_create)
+    except RallyLogNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+    print(f"Rally Log: {db_path}", file=sys.stderr)
+    return db_path
 
 
 def main(
@@ -167,19 +195,23 @@ def _run_download(
             match_id = MatchId(UUID(args.match_id))
         except ValueError:
             parser.error(f"Invalid --match UUID: {args.match_id}")
-        db_path = DEFAULT_DB_PATH if args.db is None else args.db
-        if not db_path.is_file():
-            print(f"error: Rally Log database not found: {db_path}", file=sys.stderr)
+        db_path = _resolve_cli_db(args.db)
+        if db_path is None:
             return 1
         with RallyLog.open(db_path) as log:
             if not log.has_match(match_id):
                 print(f"error: Match not found in {db_path}: {match_id}", file=sys.stderr)
                 return 1
+        footage_dir = (
+            db_path.parent / DEFAULT_FOOTAGE_DIR if args.footage_dir is None else args.footage_dir
+        )
+    else:
+        footage_dir = DEFAULT_FOOTAGE_DIR if args.footage_dir is None else args.footage_dir
 
     try:
         result = download_footage(
             args.url,
-            args.footage_dir,
+            footage_dir,
             cookies=args.cookies,
             cookies_from_browser=args.cookies_from_browser,
             run=run,
@@ -200,9 +232,13 @@ def _run_download(
         return 1
 
     if match_id is not None and db_path is not None:
+        recorded_video = replace(
+            result.source_video,
+            path=stored_video_path(result.source_video.path, db_path),
+        )
         try:
             with RallyLog.open(db_path) as log:
-                log.set_match_source_video(match_id, result.source_video)
+                log.set_match_source_video(match_id, recorded_video)
         except KeyError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -263,8 +299,16 @@ def _match_add(args: argparse.Namespace) -> int:
     except RosterError as exc:
         print(f"error: {args.file}: {exc}", file=sys.stderr)
         return 1
+    db_path = _resolve_cli_db(args.db, allow_create=True)
+    if db_path is None:
+        return 1
+    if roster.video is not None:
+        roster = replace(
+            roster,
+            video=replace(roster.video, path=stored_video_path(roster.video.path, db_path)),
+        )
     try:
-        with RallyLog.open(args.db) as log:
+        with RallyLog.open(db_path) as log:
             match = set_up_match(log, roster)
     except (RosterError, duckdb.Error, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -274,11 +318,11 @@ def _match_add(args: argparse.Namespace) -> int:
 
 
 def _match_list(args: argparse.Namespace) -> int:
-    if not args.db.is_file():
-        print(f"error: Rally Log database not found: {args.db}", file=sys.stderr)
+    db_path = _resolve_cli_db(args.db)
+    if db_path is None:
         return 1
     try:
-        with RallyLog.open(args.db) as log:
+        with RallyLog.open(db_path) as log:
             summaries = log.list_matches(args.tournament)
     except (duckdb.Error, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -301,11 +345,16 @@ def _run_annotate(args: argparse.Namespace) -> int:
     # Imported here so the other commands don't pay for loading FastAPI and uvicorn.
     from pb_tokei.annotate.server import FrontEndNotBuiltError, serve
 
-    if not args.db.is_file():
-        print(f"error: Rally Log database not found: {args.db}", file=sys.stderr)
+    db_path = _resolve_cli_db(args.db)
+    if db_path is None:
         return 1
     try:
-        serve(args.db, port=args.port, open_browser=not args.no_browser)
+        serve(
+            db_path,
+            port=args.port,
+            open_browser=not args.no_browser,
+            on_ready=lambda: write_last_rally_log(db_path),
+        )
     except FrontEndNotBuiltError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

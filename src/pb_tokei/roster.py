@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -75,7 +75,11 @@ def read_roster(path: Path) -> Roster:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise RosterError(f"cannot read Roster File {path}: {exc.strerror}") from exc
-    return parse_roster(text)
+    roster = parse_roster(text)
+    if roster.video is not None and not roster.video.path.is_absolute():
+        resolved = (path.resolve().parent / roster.video.path).resolve()
+        roster = replace(roster, video=replace(roster.video, path=resolved))
+    return roster
 
 
 def parse_roster(text: str) -> Roster:
@@ -247,7 +251,7 @@ handedness = "right"
 # [video]
 # url = ""
 # video_id = ""
-# path = ""
+# path = ""          # relative to this Roster File, or absolute
 '''
 
 

@@ -59,8 +59,8 @@ def static_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def client(db: Path, tmp_path: Path, static_dir: Path) -> TestClient:
-    return TestClient(create_app(db, base_dir=tmp_path, static_dir=static_dir), base_url=LOCAL)
+def client(db: Path, static_dir: Path) -> TestClient:
+    return TestClient(create_app(db, static_dir=static_dir), base_url=LOCAL)
 
 
 def footage(tmp_path: Path, *, converted: bool) -> Path:
@@ -110,37 +110,78 @@ def test_lists_matches_with_roster_and_video_status(
     ]
 
 
+def test_rally_log_endpoint_returns_absolute_path(
+    tmp_path: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "demo.duckdb"
+    add_match(db)
+    app_client = TestClient(
+        create_app(Path("demo.duckdb"), static_dir=static_dir),
+        base_url=LOCAL,
+    )
+
+    response = app_client.get("/api/rally-log")
+
+    assert response.status_code == 200
+    assert response.json() == {"path": str(db.resolve())}
+
+
+def test_relative_video_resolves_against_rally_log_dir_not_cwd(
+    tmp_path: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = tmp_path / "proj"
+    other = tmp_path / "other"
+    proj.mkdir()
+    other.mkdir()
+    db = proj / "demo.duckdb"
+    match_id = add_match(db)
+    footage(proj, converted=True)
+    set_video(db, match_id, Path("footage/abc123.webm"))
+
+    monkeypatch.chdir(other)
+    app_client = TestClient(create_app(db, static_dir=static_dir), base_url=LOCAL)
+
+    assert app_client.get(f"/api/matches/{match_id}").json()["video_status"] == "ready"
+    video = app_client.get(f"/api/matches/{match_id}/video")
+    assert video.status_code == 200
+    assert video.content == VIDEO_BYTES
+
+
 def test_match_without_video_says_to_download(client: TestClient, db: Path) -> None:
     match_id = add_match(db)
 
     body = client.get(f"/api/matches/{match_id}").json()
 
     assert body["video_status"] == "none"
-    assert body["fix_command"] == f"pb-tokei download <url> --match {match_id} --db {db}"
+    assert body["fix_command"] == f"pb-tokei download <url> --match {match_id} --db {db.resolve()}"
 
 
-def test_fix_command_leaves_out_the_default_db(tmp_path: Path, static_dir: Path) -> None:
+def test_fix_command_always_includes_absolute_db_path(
+    tmp_path: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
     db = tmp_path / "rally_log.duckdb"
     match_id = add_match(db)
     client = TestClient(
-        create_app(Path("rally_log.duckdb"), base_dir=tmp_path, static_dir=static_dir),
+        create_app(Path("rally_log.duckdb"), static_dir=static_dir),
         base_url=LOCAL,
     )
 
     body = client.get(f"/api/matches/{match_id}").json()
 
-    assert body["fix_command"] == f"pb-tokei download <url> --match {match_id}"
+    assert body["fix_command"] == f"pb-tokei download <url> --match {match_id} --db {db.resolve()}"
 
 
 def test_unconverted_match_says_to_convert(client: TestClient, db: Path, tmp_path: Path) -> None:
     match_id = add_match(db)
-    footage(tmp_path, converted=False)
+    original = footage(tmp_path, converted=False)
     set_video(db, match_id, Path("footage/abc123.webm"))
 
     body = client.get(f"/api/matches/{match_id}").json()
 
     assert body["video_status"] == "not_converted"
-    assert body["fix_command"] == "pb-tokei convert footage/abc123.webm"
+    assert body["fix_command"] == f"pb-tokei convert {original.resolve()}"
 
 
 def test_match_whose_download_is_gone_says_to_download_again(client: TestClient, db: Path) -> None:
@@ -151,7 +192,9 @@ def test_match_whose_download_is_gone_says_to_download_again(client: TestClient,
 
     assert body["video_status"] == "not_converted"
     # Quoted, since the `?` in a URL is a glob character in the shell.
-    assert body["fix_command"] == f"pb-tokei download '{URL}' --match {match_id} --db {db}"
+    assert (
+        body["fix_command"] == f"pb-tokei download '{URL}' --match {match_id} --db {db.resolve()}"
+    )
 
 
 def test_ready_match_has_no_fix_command(client: TestClient, db: Path, tmp_path: Path) -> None:

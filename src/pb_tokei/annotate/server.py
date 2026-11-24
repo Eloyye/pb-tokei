@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
 import uvicorn
@@ -19,7 +20,14 @@ class FrontEndNotBuiltError(RuntimeError):
     """Raised when the built front end (index.html) is missing from the static directory."""
 
 
-def serve(db_path: Path, *, port: int, open_browser: bool, static_dir: Path | None = None) -> None:
+def serve(
+    db_path: Path,
+    *,
+    port: int,
+    open_browser: bool,
+    static_dir: Path | None = None,
+    on_ready: Callable[[], object] | None = None,
+) -> None:
     """Serves the app until interrupted. Never builds the front end itself."""
     static_dir = STATIC_DIR if static_dir is None else static_dir
     if not (static_dir / "index.html").is_file():
@@ -27,8 +35,10 @@ def serve(db_path: Path, *, port: int, open_browser: bool, static_dir: Path | No
             f"the web front end is not built ({static_dir} has no index.html). "
             f"Run `bun install && bun run build` in {WEB_DIR}"
         )
-    app = create_app(db_path, base_dir=Path.cwd(), static_dir=static_dir)
+    app = create_app(db_path, static_dir=static_dir)
     server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=port, log_level="info"))
+    if on_ready is not None:
+        on_ready()
     if open_browser:
         threading.Thread(
             target=_open_when_started, args=(server, f"http://{HOST}:{port}/"), daemon=True

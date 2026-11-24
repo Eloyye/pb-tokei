@@ -3,8 +3,15 @@ import type { components, paths } from "./schema";
 
 const api = createClient<paths>();
 
+export type RallyLogInfo = Schemas["RallyLogOut"];
 export type Match = Awaited<ReturnType<typeof listMatches>>[number];
 export type MatchDetail = Awaited<ReturnType<typeof getMatch>>;
+
+export async function getRallyLog(): Promise<RallyLogInfo> {
+  const { data, error, response } = await api.GET("/api/rally-log");
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
 
 export async function listMatches() {
   const { data, error, response } = await api.GET("/api/matches");

@@ -61,7 +61,27 @@ from .schema import MATCH_CONTENT_TABLES, STATEMENTS, migrate
 Row = tuple[Any, ...]
 
 DEFAULT_DB_PATH = Path("rally_log.duckdb")
-"""Where the CLI and the annotation app look for the Rally Log when `--db` isn't given."""
+"""Fallback Rally Log filename in the current directory when `--db` and state aren't set."""
+
+
+def stored_video_path(video_path: Path, db_path: Path) -> Path:
+    """Path to record in a Rally Log for `video_path` (ADR 0007).
+
+    Relative to the Rally Log's directory when the video lives inside it; absolute otherwise.
+    """
+    resolved_video = video_path.resolve()
+    rally_log_dir = db_path.resolve().parent
+    try:
+        return resolved_video.relative_to(rally_log_dir)
+    except ValueError:
+        return resolved_video
+
+
+def resolve_video_path(stored_path: Path, db_path: Path) -> Path:
+    """Resolves a recorded `SourceVideo.path` against the Rally Log's directory (ADR 0007)."""
+    if stored_path.is_absolute():
+        return stored_path
+    return (db_path.resolve().parent / stored_path).resolve()
 
 
 class MatchNotFound(KeyError):

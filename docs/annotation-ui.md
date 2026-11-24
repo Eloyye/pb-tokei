@@ -35,7 +35,7 @@ A clickable prototype with sample data and working keys lives in [design/annotat
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Top bar.** Holds the brand, a breadcrumb (`Home › Tournament › Teams`), the workspace tabs in the center, and a `?` button. There is no menu bar. The active workspace is shown in accent blue and underlined.
+- **Top bar.** Holds the brand, a breadcrumb (`Home › Tournament › Teams`), the workspace tabs in the center, and on the right the open Rally Log's filename (full path on hover) and a `?` button. There is no menu bar. The active workspace is shown in accent blue and underlined.
 - **Panels** have a 28 px header with tab labels, and are separated by 4 px gutters. The panel last clicked gets a 1 px accent outline (Premiere's focused panel).
 - **Resizing.** Three splitters: right column width, bottom row height, and Rallies panel width. Sizes are remembered per browser in `localStorage`. There is no drag-docking.
 - **Status bar** (24 px), left to right:
