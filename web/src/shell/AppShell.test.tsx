@@ -63,4 +63,31 @@ describe("AppShell", () => {
     const label = await screen.findByText("demo.duckdb");
     expect(label.getAttribute("title")).toBe(fullPath);
   });
+
+  it("shows unknown Rally Log if /api/rally-log fails", async () => {
+    vi.mocked(getRallyLog).mockRejectedValue(new Error("503 Service Unavailable"));
+
+    const rootRoute = createRootRoute({ component: AppShell });
+    const indexRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "/",
+      component: () => <div>Home content</div>,
+    });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([indexRoute]),
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    const label = await screen.findByText("unknown Rally Log");
+    expect(label.getAttribute("title")).toBe("503 Service Unavailable");
+  });
 });

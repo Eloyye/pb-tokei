@@ -129,6 +129,37 @@ def test_roster_video_path_recording_rules(
         assert loaded.source_video.path == expected
 
 
+def test_match_add_warns_when_roster_video_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "rally_log.duckdb"
+    (tmp_path / "footage").mkdir()
+    present_video = tmp_path / "footage" / "present.mp4"
+    present_video.write_bytes(b"video")
+
+    missing_roster = write(
+        tmp_path,
+        roster_toml(
+            video={"url": "https://youtu.be/m", "video_id": "m", "path": "footage/nope.mp4"}
+        ),
+        "missing.toml",
+    )
+    code, _, err = run(capsys, "match", "add", str(missing_roster), "--db", str(db))
+    assert code == 0
+    assert "warning: source video not found" in err
+
+    present_roster = write(
+        tmp_path,
+        roster_toml(
+            video={"url": "https://youtu.be/p", "video_id": "p", "path": "footage/present.mp4"}
+        ),
+        "present.toml",
+    )
+    code, _, err = run(capsys, "match", "add", str(present_roster), "--db", str(db))
+    assert code == 0
+    assert "warning:" not in err
+
+
 def test_new_refuses_to_overwrite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     existing = write(tmp_path, "keep me")
     code, _, err = run(capsys, "match", "new", str(existing))

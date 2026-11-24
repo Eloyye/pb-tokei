@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
@@ -68,11 +69,26 @@ def stored_video_path(video_path: Path, db_path: Path) -> Path:
     """Path to record in a Rally Log for `video_path` (ADR 0007).
 
     Relative to the Rally Log's directory when the video lives inside it; absolute otherwise.
+    Lexical paths are checked before symlink resolution so a symlinked `footage/` inside the
+    Rally Log's directory still records as `footage/...`.
     """
-    resolved_video = video_path.resolve()
-    rally_log_dir = db_path.resolve().parent
+    lexical_video = Path(os.path.abspath(video_path))
+    lexical_dir = Path(os.path.abspath(db_path)).parent
     try:
-        return resolved_video.relative_to(rally_log_dir)
+        return lexical_video.relative_to(lexical_dir)
+    except ValueError:
+        pass
+
+    # Handle symlinked ancestors (e.g. /tmp -> /private/tmp on macOS) without dereferencing a
+    # symlinked `footage/` subdirectory inside the Rally Log's directory.
+    resolved_dir = db_path.resolve().parent
+    for ancestor in lexical_video.parents:
+        if ancestor.resolve() == resolved_dir:
+            return lexical_video.relative_to(ancestor)
+
+    resolved_video = video_path.resolve()
+    try:
+        return resolved_video.relative_to(resolved_dir)
     except ValueError:
         return resolved_video
 
@@ -81,7 +97,7 @@ def resolve_video_path(stored_path: Path, db_path: Path) -> Path:
     """Resolves a recorded `SourceVideo.path` against the Rally Log's directory (ADR 0007)."""
     if stored_path.is_absolute():
         return stored_path
-    return (db_path.resolve().parent / stored_path).resolve()
+    return Path(os.path.abspath(db_path.resolve().parent / stored_path))
 
 
 class MatchNotFound(KeyError):

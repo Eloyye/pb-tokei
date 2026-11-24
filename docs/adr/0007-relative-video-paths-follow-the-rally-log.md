@@ -15,7 +15,7 @@ Relative `SourceVideo.path` values are therefore defined as **relative to the Ra
 
 ## Consequences
 
-- A Rally Log together with a `footage/` directory beside it is self-contained and works regardless of which directory `pb-tokei` is launched from.
+- A Rally Log together with a `footage/` directory beside it (including a symlinked `footage/` directory) is self-contained and works regardless of which directory `pb-tokei` is launched from.
 - Videos stored outside the Rally Log's directory (for example on an external drive) are stored as absolute paths rather than brittle `../../` traversals.
-- Existing Rally Logs whose `SourceVideo.path` is already absolute need no migration.
+- Existing Rally Logs whose `SourceVideo.path` is already absolute need no migration. Any relative paths recorded under the previous cwd-relative rule (for example a Rally Log kept in a subdirectory while `footage/` lived in the repo root) are now reinterpreted relative to the Rally Log's directory; `match add` warns when a Roster File's `[video] path` does not exist at its resolved location so old cwd-relative Roster Files are not silently misrecorded.
 - Fix commands shown by the annotation app always pass `--db <absolute path>` (and an absolute path for `pb-tokei convert`) so they run from any directory.

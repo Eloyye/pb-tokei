@@ -196,6 +196,7 @@ def test_annotate_remembers_rally_log_and_reopens_from_any_directory(
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
+        self.started = True
         assert isinstance(self.config.app, FastAPI)
         client = TestClient(self.config.app, base_url="http://127.0.0.1")
         opened_dbs.append(Path(client.get("/api/rally-log").json()["path"]))
@@ -236,8 +237,9 @@ def test_annotate_carries_on_when_state_write_fails(
 
     ran = False
 
-    def fake_run(_self: uvicorn.Server) -> None:
+    def fake_run(self: uvicorn.Server) -> None:
         nonlocal ran
+        self.started = True
         ran = True
 
     monkeypatch.setattr(uvicorn.Server, "run", fake_run)
@@ -249,6 +251,29 @@ def test_annotate_carries_on_when_state_write_fails(
     assert ran is True
     assert f"Rally Log: {db.resolve()}" in err
     assert "warning:" in err
+
+
+def test_annotate_does_not_remember_rally_log_when_server_fails_to_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    previous = tmp_path / "previous.duckdb"
+    other = tmp_path / "other.duckdb"
+    _add_match(previous)
+    _add_match(other)
+    write_last_rally_log(previous)
+    monkeypatch.setattr("pb_tokei.annotate.server.STATIC_DIR", _make_static_dir(tmp_path))
+
+    def bind_failed(_self: uvicorn.Server) -> None:
+        # Simulates uvicorn exiting (e.g. port already in use) without setting self.started.
+        raise SystemExit(1)
+
+    monkeypatch.setattr(uvicorn.Server, "run", bind_failed)
+
+    with pytest.raises(SystemExit):
+        main(["annotate", "--no-browser", "--db", str(other)])
+    capsys.readouterr()
+
+    assert read_last_rally_log() == previous.resolve()
 
 
 def test_other_commands_use_remembered_rally_log_without_updating_it(
@@ -356,3 +381,49 @@ def test_stored_and_resolved_video_path_rules(tmp_path: Path) -> None:
     assert stored_video_path(outside, db) == outside.resolve()
     assert resolve_video_path(Path("footage/clip.mp4"), db) == inside.resolve()
     assert resolve_video_path(outside.resolve(), db) == outside.resolve()
+
+
+def test_symlinked_footage_dir_is_recorded_relatively(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    external_footage = tmp_path / "external_drive" / "footage"
+    external_footage.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    (proj / "rosters").mkdir(parents=True)
+    (proj / "footage").symlink_to(external_footage)
+    db = proj / "rally_log.duckdb"
+
+    # Direct helper keeps the symlinked subdirectory relative to the Rally Log's directory.
+    assert stored_video_path(proj / "footage" / "x.mp4", db) == Path("footage/x.mp4")
+
+    # download --match into the default <Rally Log dir>/footage records footage/<id>.<ext>.
+    match_id = _add_match(db)
+    fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mkv")
+    code = main(["download", SAMPLE_URL, "--match", match_id, "--db", str(db)], run=fake)
+    capsys.readouterr()
+    assert code == 0
+    with RallyLog.open(db) as log:
+        downloaded = log.load_match(MatchId(UUID(match_id)))
+    assert downloaded.source_video == SourceVideo(
+        url=SAMPLE_URL, video_id=SAMPLE_ID, path=Path("footage") / f"{SAMPLE_ID}.mkv"
+    )
+
+    # match add with a Roster File pointing into the symlinked footage/ also records relatively.
+    existing = external_footage / "existing.mp4"
+    existing.write_bytes(b"video")
+    roster_mid = uuid4()
+    roster_file = proj / "rosters" / "match.toml"
+    roster_file.write_text(
+        roster_toml(
+            match_id=roster_mid,
+            video={"url": SAMPLE_URL, "video_id": "existing", "path": "../footage/existing.mp4"},
+        )
+    )
+    code = main(["match", "add", str(roster_file), "--db", str(db)])
+    err = capsys.readouterr().err
+    assert code == 0
+    assert "warning:" not in err
+    with RallyLog.open(db) as log:
+        added = log.load_match(MatchId(roster_mid))
+    assert added.source_video is not None
+    assert added.source_video.path == Path("footage/existing.mp4")

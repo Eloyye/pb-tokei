@@ -10,6 +10,7 @@ a Player who is already in a Match from being renamed (its foreign keys reject t
 
 from __future__ import annotations
 
+import os
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -77,8 +78,9 @@ def read_roster(path: Path) -> Roster:
         raise RosterError(f"cannot read Roster File {path}: {exc.strerror}") from exc
     roster = parse_roster(text)
     if roster.video is not None and not roster.video.path.is_absolute():
-        resolved = (path.resolve().parent / roster.video.path).resolve()
-        roster = replace(roster, video=replace(roster.video, path=resolved))
+        roster_dir = Path(os.path.abspath(path)).parent
+        lexical = Path(os.path.abspath(roster_dir / roster.video.path))
+        roster = replace(roster, video=replace(roster.video, path=lexical))
     return roster
 
 

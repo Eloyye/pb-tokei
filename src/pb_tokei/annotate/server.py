@@ -26,7 +26,7 @@ def serve(
     port: int,
     open_browser: bool,
     static_dir: Path | None = None,
-    on_ready: Callable[[], object] | None = None,
+    on_started: Callable[[], object] | None = None,
 ) -> None:
     """Serves the app until interrupted. Never builds the front end itself."""
     static_dir = STATIC_DIR if static_dir is None else static_dir
@@ -37,18 +37,32 @@ def serve(
         )
     app = create_app(db_path, static_dir=static_dir)
     server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=port, log_level="info"))
-    if on_ready is not None:
-        on_ready()
-    if open_browser:
-        threading.Thread(
-            target=_open_when_started, args=(server, f"http://{HOST}:{port}/"), daemon=True
-        ).start()
-    server.run()
+    watcher: threading.Thread | None = None
+    if open_browser or on_started is not None:
+        watcher = threading.Thread(
+            target=_after_start,
+            args=(server, f"http://{HOST}:{port}/" if open_browser else None, on_started),
+            daemon=True,
+        )
+        watcher.start()
+    try:
+        server.run()
+    finally:
+        if watcher is not None:
+            server.should_exit = True
+            watcher.join(timeout=2.0)
 
 
-def _open_when_started(server: uvicorn.Server, url: str) -> None:
+def _after_start(
+    server: uvicorn.Server,
+    url: str | None,
+    on_started: Callable[[], object] | None,
+) -> None:
     while not server.started:
         if server.should_exit:
             return
-        time.sleep(0.05)
-    webbrowser.open(url)
+        time.sleep(0.01)
+    if on_started is not None:
+        on_started()
+    if url is not None:
+        webbrowser.open(url)

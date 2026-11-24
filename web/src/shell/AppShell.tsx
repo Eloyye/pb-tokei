@@ -102,11 +102,15 @@ function TopBar({ onHelp }: { onHelp: () => void }) {
           ))}
       </nav>
       <div className="topbar-right">
-        {rallyLog.data && (
+        {rallyLog.data ? (
           <span className="rally-log-name mono" title={rallyLog.data.path}>
             {rallyLogFileName(rallyLog.data.path)}
           </span>
-        )}
+        ) : rallyLog.isError ? (
+          <span className="rally-log-name" title={rallyLog.error.message}>
+            unknown Rally Log
+          </span>
+        ) : null}
         <button
           type="button"
           className="help-button"

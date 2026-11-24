@@ -303,6 +303,12 @@ def _match_add(args: argparse.Namespace) -> int:
     if db_path is None:
         return 1
     if roster.video is not None:
+        if not roster.video.path.is_file():
+            print(
+                f"warning: source video not found at {roster.video.path} "
+                f"(relative [video] paths are resolved against the Roster File)",
+                file=sys.stderr,
+            )
         roster = replace(
             roster,
             video=replace(roster.video, path=stored_video_path(roster.video.path, db_path)),
@@ -353,7 +359,7 @@ def _run_annotate(args: argparse.Namespace) -> int:
             db_path,
             port=args.port,
             open_browser=not args.no_browser,
-            on_ready=lambda: write_last_rally_log(db_path),
+            on_started=lambda: write_last_rally_log(db_path),
         )
     except FrontEndNotBuiltError as exc:
         print(f"error: {exc}", file=sys.stderr)
