@@ -15,6 +15,7 @@ import {
   nextLandmark,
   placeLandmark,
   project,
+  reuseBlocker,
   reuseCalibration,
   projectLine,
   skipLandmark,
@@ -261,17 +262,35 @@ describe("reuseCalibration", () => {
 
     const edit = reuseCalibration([original, moved, here], original, later, 950);
 
-    expect(edit.calibrations).toEqual([
-      original,
-      moved,
-      { ...here, landmarks: original.landmarks },
-    ]);
+    const replaced = { ...here, reference_frame: 950, landmarks: original.landmarks };
+    expect(edit.calibrations).toEqual([original, moved, replaced]);
+    expect(edit.edited).toBe(edit.calibrations[2]);
+    expect(edit.edited!.landmarks).not.toBe(original.landmarks);
+  });
+
+  it("does nothing the second time, once the segment uses those points", () => {
+    const once = reuseCalibration([original, moved], original, later, 950);
+
+    const twice = reuseCalibration(once.calibrations, original, later, 960);
+
+    expect(twice.calibrations).toBe(once.calibrations);
+    expect(twice.message).toMatch(/already uses these points/);
   });
 
   it("does nothing when that Calibration is already in effect", () => {
     const list = [original];
 
     expect(reuseCalibration(list, original, later, 950).calibrations).toBe(list);
+  });
+
+  it("refuses when another Calibration starts inside the segment", () => {
+    const inside = cal("main", 1000, { far_kitchen_left: { x: 0.6, y: 0.3 } });
+    const list = [original, moved, inside];
+
+    const edit = reuseCalibration(list, original, later, 950);
+
+    expect(edit.calibrations).toBe(list);
+    expect(edit.message).toMatch(/starts inside this Play Segment, at frame 1000/);
   });
 
   it("refuses another view's Calibration", () => {
@@ -281,5 +300,25 @@ describe("reuseCalibration", () => {
 
     expect(edit.calibrations).toBe(list);
     expect(edit.message).toMatch(/Sideline View Calibration/);
+  });
+});
+
+describe("reuseBlocker", () => {
+  const original = cal("main", 26, { near_kitchen_left: { x: 0.1, y: 0.2 } });
+  const moved = cal("main", 600, { near_kitchen_left: { x: 0.4, y: 0.5 } });
+  const later: PlaySegment = { start_frame: 900, end_frame: 1100, camera_view: "main" };
+
+  it("allows an earlier angle on a segment using different points", () => {
+    expect(reuseBlocker([original, moved], original, later)).toBeNull();
+  });
+
+  it("blocks the Calibration in effect, or any with the same points", () => {
+    expect(reuseBlocker([original, moved], moved, later)).not.toBeNull();
+    const copy = cal("main", 700, { ...original.landmarks });
+    expect(reuseBlocker([original, copy], original, later)).not.toBeNull();
+  });
+
+  it("ignores a Calibration starting after the segment", () => {
+    expect(reuseBlocker([original, moved, cal("main", 1101)], original, later)).toBeNull();
   });
 });

@@ -162,10 +162,7 @@ export function newCalibration(
   frame: number,
 ): CalibrationEdit {
   const view = segment.camera_view;
-  const clash = calibrations.find(
-    (c) => c.camera_view === view && c.effective_from_frame === segment.start_frame,
-  );
-  if (clash) {
+  if (calibrationStartingWith(calibrations, segment)) {
     return {
       calibrations,
       message: `A ${VIEW_LABELS[view]} Calibration already starts with this Play Segment`,
@@ -182,10 +179,51 @@ export function newCalibration(
   };
 }
 
+/** The Calibration of a segment's view that starts with the segment, if there is one. */
+export function calibrationStartingWith(
+  calibrations: Calibration[],
+  segment: PlaySegment,
+): Calibration | undefined {
+  return calibrations.find(
+    (c) => c.camera_view === segment.camera_view && c.effective_from_frame === segment.start_frame,
+  );
+}
+
+/**
+ * Why "Use here" can't put `source`'s points in effect on the segment, or null if it can. It
+ * can't for another view's Calibration, when the segment already starts with those points, or
+ * when another Calibration starts inside the segment (it would take over part way through).
+ */
+export function reuseBlocker(
+  calibrations: Calibration[],
+  source: Calibration,
+  segment: PlaySegment,
+): string | null {
+  const view = segment.camera_view;
+  if (source.camera_view !== view) {
+    return `That's a ${VIEW_LABELS[source.camera_view]} Calibration; this Play Segment is ${VIEW_LABELS[view]}`;
+  }
+  const inside = calibrations.find(
+    (c) =>
+      c.camera_view === view &&
+      c.effective_from_frame > segment.start_frame &&
+      c.effective_from_frame <= segment.end_frame,
+  );
+  if (inside) {
+    return `A ${VIEW_LABELS[view]} Calibration starts inside this Play Segment, at frame ${inside.effective_from_frame}: delete it first`;
+  }
+  const atStart = calibrationAt(calibrations, view, segment.start_frame);
+  if (atStart && sameLandmarks(atStart.landmarks, source.landmarks)) {
+    return "This Play Segment already uses these points";
+  }
+  return null;
+}
+
 /**
  * "Use here": puts an earlier Calibration's points in effect from the segment's start, for a
  * camera that has gone back to an angle it had before. If a Calibration of the view already
- * starts with the segment, its points are replaced; otherwise a new one is made.
+ * starts with the segment, its points are replaced; otherwise a new one is made. Either way its
+ * reference frame becomes `frame`, where the operator saw the angle match.
  */
 export function reuseCalibration(
   calibrations: Calibration[],
@@ -193,23 +231,13 @@ export function reuseCalibration(
   segment: PlaySegment,
   frame: number,
 ): CalibrationEdit {
-  const view = segment.camera_view;
-  if (source.camera_view !== view) {
-    return {
-      calibrations,
-      message: `That's a ${VIEW_LABELS[source.camera_view]} Calibration; this Play Segment is ${VIEW_LABELS[view]}`,
-    };
-  }
+  const blocker = reuseBlocker(calibrations, source, segment);
+  if (blocker) return { calibrations, message: blocker };
   const from = `the Calibration from frame ${source.effective_from_frame}`;
-  if (calibrationAt(calibrations, view, frame) === source) {
-    return { calibrations, message: `${from} is already in effect here` };
-  }
   const landmarks = { ...source.landmarks };
-  const existing = calibrations.find(
-    (c) => c.camera_view === view && c.effective_from_frame === segment.start_frame,
-  );
+  const existing = calibrationStartingWith(calibrations, segment);
   if (existing) {
-    const edited = { ...existing, landmarks };
+    const edited = { ...existing, reference_frame: frame, landmarks };
     return {
       calibrations: replace(calibrations, existing, edited),
       edited,
@@ -220,7 +248,7 @@ export function reuseCalibration(
   return {
     calibrations: [...calibrations, created],
     edited: created,
-    message: `New ${VIEW_LABELS[view]} Calibration from frame ${segment.start_frame}, using the points of ${from}`,
+    message: `New ${VIEW_LABELS[segment.camera_view]} Calibration from frame ${segment.start_frame}, using the points of ${from}`,
   };
 }
 
