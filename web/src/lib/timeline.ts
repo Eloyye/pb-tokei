@@ -1,7 +1,6 @@
 /**
  * Timeline view math. A view is the range of frames visible across the Timeline's width,
- * `[start, end)`; it may run past either end of the video so zooming around the playhead stays
- * centred.
+ * `[start, end)`, bounded by the full view.
  */
 
 export interface FrameRange {
@@ -41,12 +40,21 @@ export function rulerTicks(view: FrameRange): { step: number; frames: number[] }
 
 /** The whole video, or a nominal minute when its length isn't known yet. */
 export function fullView(totalFrames: number): FrameRange {
-  return { start: 0, end: Math.max(totalFrames, 3600) };
+  return { start: 0, end: totalFrames > 0 ? totalFrames : 3600 };
+}
+
+/** Shift the view inside the video, keeping its span up to the video's length. */
+export function clampView(view: FrameRange, totalFrames: number): FrameRange {
+  const end = fullView(totalFrames).end;
+  if (view.start >= 0 && view.end <= end) return view;
+  const span = Math.min(view.end - view.start, end);
+  if (view.start < 0) return { start: 0, end: span };
+  return { start: end - span, end };
 }
 
 /**
- * The view scaled by `factor` (below 1 zooms in) around `anchor`, which stays at the same place
- * on screen. The span is kept between `MIN_SPAN` and the whole video.
+ * Scale the view by `factor` (below 1 zooms in), keeping `anchor` at the same place on screen
+ * when the video bounds allow it. The span is at least `MIN_SPAN` when the video is long enough.
  */
 export function zoomView(
   view: FrameRange,
@@ -55,24 +63,25 @@ export function zoomView(
   totalFrames: number,
 ): FrameRange {
   const span = view.end - view.start;
-  const maxSpan = fullView(totalFrames).end;
-  const next = Math.min(maxSpan, Math.max(MIN_SPAN, span * factor));
+  const whole = fullView(totalFrames);
+  const next = Math.max(MIN_SPAN, span * factor);
+  if (next >= whole.end) return whole;
   const rel = span > 0 ? (anchor - view.start) / span : 0.5;
   const at = Math.min(1, Math.max(0, rel));
-  return { start: anchor - next * at, end: anchor + next * (1 - at) };
+  return clampView({ start: anchor - next * at, end: anchor + next * (1 - at) }, totalFrames);
 }
 
-/** The view, paged so `frame` is on screen; unchanged if it already is. */
-export function followFrame(view: FrameRange, frame: number): FrameRange {
-  if (frame >= view.start && frame < view.end) return view;
+/** Page the view to keep `frame` on screen within the video bounds. */
+export function followFrame(view: FrameRange, frame: number, totalFrames: number): FrameRange {
+  if (frame >= view.start && frame < view.end) return clampView(view, totalFrames);
   const span = view.end - view.start;
   // Page forward with the playhead near the left edge, or back with it near the right.
   const start = frame >= view.end ? frame - span * 0.1 : frame - span * 0.9;
-  return { start, end: start + span };
+  return clampView({ start, end: start + span }, totalFrames);
 }
 
-/** The view moved so it is centred on `frame`, keeping its span. */
-export function centreOn(view: FrameRange, frame: number): FrameRange {
+/** Centre the view on `frame` within the video bounds, keeping its span. */
+export function centreOn(view: FrameRange, frame: number, totalFrames: number): FrameRange {
   const span = view.end - view.start;
-  return { start: frame - span / 2, end: frame + span / 2 };
+  return clampView({ start: frame - span / 2, end: frame + span / 2 }, totalFrames);
 }

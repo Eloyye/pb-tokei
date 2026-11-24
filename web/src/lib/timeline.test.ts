@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   centreOn,
+  clampView,
   followFrame,
   frameAt,
   fullView,
@@ -44,10 +45,21 @@ describe("rulerTicks", () => {
 describe("fullView", () => {
   it("covers the whole video", () => {
     expect(fullView(10_000)).toEqual({ start: 0, end: 10_000 });
+    expect(fullView(600)).toEqual({ start: 0, end: 600 });
   });
 
   it("falls back to a minute before the length is known", () => {
     expect(fullView(0)).toEqual({ start: 0, end: 3600 });
+  });
+});
+
+describe("clampView", () => {
+  it("keeps the zoom when the known length gets shorter", () => {
+    expect(clampView({ start: 500, end: 600 }, 580)).toEqual({ start: 480, end: 580 });
+  });
+
+  it("fits the video when the view is wider than the new bounds", () => {
+    expect(clampView({ start: 0, end: 600 }, 580)).toEqual({ start: 0, end: 580 });
   });
 });
 
@@ -63,7 +75,16 @@ describe("zoomView", () => {
     const tiny = zoomView({ start: 0, end: 20 }, 0.1, 10, 10_000);
     expect(tiny.end - tiny.start).toBe(MIN_SPAN);
     const huge = zoomView({ start: 0, end: 8000 }, 4, 4000, 10_000);
-    expect(huge.end - huge.start).toBe(10_000);
+    expect(huge).toEqual(fullView(10_000));
+  });
+
+  it("fits a video shorter than the minimum zoom span", () => {
+    expect(zoomView(fullView(10), 0.5, 0, 10)).toEqual({ start: 0, end: 10 });
+  });
+
+  it("keeps the playhead visible when zooming out at either edge", () => {
+    expect(zoomView({ start: 0, end: 200 }, 2, 1, 600)).toEqual({ start: 0, end: 400 });
+    expect(zoomView({ start: 400, end: 600 }, 2, 599, 600)).toEqual({ start: 200, end: 600 });
   });
 
   it("zooms around the nearest edge when the anchor is off screen", () => {
@@ -76,20 +97,36 @@ describe("followFrame", () => {
   const view = { start: 0, end: 1000 };
 
   it("leaves the view alone while the frame is on screen", () => {
-    expect(followFrame(view, 999)).toBe(view);
+    expect(followFrame(view, 999, 10_000)).toBe(view);
   });
 
   it("pages forward with the frame near the left edge", () => {
-    expect(followFrame(view, 1000)).toEqual({ start: 900, end: 1900 });
+    expect(followFrame(view, 1000, 10_000)).toEqual({ start: 900, end: 1900 });
   });
 
   it("pages back with the frame near the right edge", () => {
-    expect(followFrame({ start: 1000, end: 2000 }, 500)).toEqual({ start: -400, end: 600 });
+    expect(followFrame({ start: 2000, end: 3000 }, 1500, 10_000)).toEqual({
+      start: 600,
+      end: 1600,
+    });
+  });
+
+  it("keeps the span when following the playhead to either end", () => {
+    const middle = { start: 1000, end: 2000 };
+    expect(followFrame(middle, 0, 10_000)).toEqual({ start: 0, end: 1000 });
+    expect(followFrame(middle, 9999, 10_000)).toEqual({ start: 9000, end: 10_000 });
   });
 });
 
 describe("centreOn", () => {
-  it("keeps the span", () => {
-    expect(centreOn({ start: 0, end: 1000 }, 5000)).toEqual({ start: 4500, end: 5500 });
+  const view = { start: 0, end: 1000 };
+
+  it("centres the view and keeps its span", () => {
+    expect(centreOn(view, 5000, 10_000)).toEqual({ start: 4500, end: 5500 });
+  });
+
+  it("keeps the span when centring near either end", () => {
+    expect(centreOn(view, 10, 10_000)).toEqual({ start: 0, end: 1000 });
+    expect(centreOn(view, 9990, 10_000)).toEqual({ start: 9000, end: 10_000 });
   });
 });

@@ -33,7 +33,7 @@ import {
 } from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import { followFrame, type FrameRange, fullView, zoomView } from "../lib/timeline";
+import { clampView, followFrame, type FrameRange, fullView, zoomView } from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
@@ -185,11 +185,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   if (viewFor !== totalFrames) {
     setViewFor(totalFrames);
     // A later correction of the length (at the last frame) keeps the zoom.
-    if (viewFor === 0) nextView = fullView(totalFrames);
+    nextView = viewFor === 0 ? fullView(totalFrames) : clampView(view, totalFrames);
   }
   if (followedFrame !== frame) {
     setFollowedFrame(frame);
-    nextView = followFrame(nextView, frame);
+    nextView = followFrame(nextView, frame, totalFrames);
   }
   if (nextView !== view) setView(nextView);
   useEffect(() => saveSizes(sizes), [sizes]);
