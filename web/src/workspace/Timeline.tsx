@@ -1,5 +1,7 @@
-import type { PointerEvent } from "react";
+import { type PointerEvent, useState } from "react";
+import type { PlaySegment } from "../api/client";
 import { formatTimecode } from "../lib/frames";
+import { moveEdge, type PendingSegment } from "../lib/segments";
 import {
   centreOn,
   type FrameRange,
@@ -30,7 +32,10 @@ export function Timeline({
   onSeek,
   onZoom,
   focused,
+  segments,
+  pending,
   editableSegments,
+  onMoveEdge,
 }: {
   view: FrameRange;
   onViewChange: (view: FrameRange) => void;
@@ -39,12 +44,36 @@ export function Timeline({
   onSeek: (frame: number) => void;
   onZoom: (direction: "in" | "out") => void;
   focused: boolean;
+  /** The Match's Play Segments in frame order; null until loaded. */
+  segments: PlaySegment[] | null;
+  /** A segment begun and not yet ended: drawn from its start to the playhead. */
+  pending: PendingSegment | null;
   /** Calibrate marks Play Segments, so the Segments track is the one being edited there. */
   editableSegments: boolean;
+  onMoveEdge: (segmentStart: number, edge: "start" | "end", frame: number) => void;
 }) {
   const whole = fullView(totalFrames);
   const ticks = rulerTicks(view);
   const hasVideo = totalFrames > 0;
+
+  const lastFrame = Math.max(0, totalFrames - 1);
+  // An edge being dragged: drawn where it is going, committed once on release.
+  const [drag, setDrag] = useState<{
+    segmentStart: number;
+    edge: "start" | "end";
+    frame: number;
+  }>();
+  const shown =
+    segments && drag
+      ? moveEdge(segments, null, drag.segmentStart, drag.edge, drag.frame).segments
+      : segments;
+  const laneFrame = (event: PointerEvent<HTMLElement>) => {
+    const lane = event.currentTarget.closest(".lane");
+    if (!lane) return 0;
+    const rect = lane.getBoundingClientRect();
+    const at = frameAt(view, (event.clientX - rect.left) / rect.width);
+    return Math.min(lastFrame, Math.max(0, at));
+  };
 
   const scrub = (event: PointerEvent<HTMLDivElement>) => {
     if (!hasVideo) return;
@@ -133,7 +162,64 @@ export function Timeline({
               )}
             </div>
             <div className={`lane ${track.id}`} style={{ gridRow: i + 3 }}>
-              {track.empty && <span className="lane-empty">{track.empty}</span>}
+              {track.id === "segments" && shown?.length
+                ? // Keyed by position, which an edge drag never changes (segments can't pass each
+                  // other), so the dragged handle keeps its pointer capture.
+                  shown.map((segment, index) => (
+                    <div
+                      key={index}
+                      className={`seg ${segment.camera_view} ${editableSegments ? "editable" : ""}`}
+                      style={{
+                        left: `${toPercent(view, segment.start_frame)}%`,
+                        width: `${toPercent(view, segment.end_frame + 1) - toPercent(view, segment.start_frame)}%`,
+                      }}
+                      title={`${segment.camera_view === "main" ? "Main" : "Sideline"} View, frames ${segment.start_frame}–${segment.end_frame}`}
+                    >
+                      {segment.camera_view === "main" ? "MAIN" : "SIDELINE"}
+                      {editableSegments &&
+                        (["start", "end"] as const).map((edge) => (
+                          <span
+                            key={edge}
+                            className={`seg-handle ${edge}`}
+                            aria-hidden
+                            onPointerDown={(event) => {
+                              if (!segments) return;
+                              event.stopPropagation();
+                              event.currentTarget.setPointerCapture(event.pointerId);
+                              const original = segments.find(
+                                (s) => s.start_frame === segment.start_frame,
+                              );
+                              if (!original) return;
+                              setDrag({
+                                segmentStart: original.start_frame,
+                                edge,
+                                frame: edge === "start" ? original.start_frame : original.end_frame,
+                              });
+                            }}
+                            onPointerMove={(event) => {
+                              if (!drag || !event.currentTarget.hasPointerCapture(event.pointerId))
+                                return;
+                              setDrag({ ...drag, frame: laneFrame(event) });
+                            }}
+                            onPointerUp={() => {
+                              if (drag) onMoveEdge(drag.segmentStart, drag.edge, drag.frame);
+                              setDrag(undefined);
+                            }}
+                            onPointerCancel={() => setDrag(undefined)}
+                          />
+                        ))}
+                    </div>
+                  ))
+                : track.empty && <span className="lane-empty">{track.empty}</span>}
+              {track.id === "segments" && pending && (
+                <div
+                  className={`seg pending ${pending.camera_view}`}
+                  style={{
+                    left: `${toPercent(view, Math.min(pending.start, frame))}%`,
+                    width: `${toPercent(view, Math.max(pending.start, frame) + 1) - toPercent(view, Math.min(pending.start, frame))}%`,
+                  }}
+                />
+              )}
             </div>
           </div>
         ))}

@@ -53,7 +53,7 @@ The workspace tabs are how the operator switches jobs. All three tabs use the sa
 
 | Workspace | Right column | Timeline | Notes |
 |---|---|---|---|
-| **Calibrate** (#10) | Calibration checklist per Camera View (landmarks done out of total, fit error) | Segments track editable; Rallies, Shots and Issues dimmed | Landmarks are clicked on the Monitor; the fitted court template is drawn over the video. `Shift+I`/`Shift+O` set Play Segment bounds; `1`/`2` set Main or Sideline. |
+| **Calibrate** (#10) | Calibration checklist per Camera View (landmarks done out of total, fit error) | Segments track editable; Rallies, Shots and Issues dimmed | Landmarks are clicked on the Monitor; the fitted court template is drawn over the video. `Shift+I` starts a Play Segment (or moves the start of the one under the playhead), `Shift+O` ends it (or moves its end); `1`/`2` set Main or Sideline; `Backspace` removes the segment under the playhead; `Esc` drops one not yet ended. Segment edges can be dragged on the Segments track. An edit that would overlap a neighbour stops at its edge. |
 | **Annotate** (#12, Gold) | Court + Inspector | All tracks | `Enter` marks the Rally Done. |
 | **Review** (#30, Assisted) | Court + Inspector | All tracks; Shot markers with low-confidence fields get an amber dot | Low-confidence fields get an amber outline and a percentage. `N`/`Shift+N` move between them. `Enter` accepts the Rally. Threshold slider in the status bar. |
 

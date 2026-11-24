@@ -1,5 +1,5 @@
 import { type FormEvent, type RefObject, useEffect, useRef, useState } from "react";
-import type { MatchDetail } from "../api/client";
+import type { CameraView, MatchDetail } from "../api/client";
 import { formatTimecode } from "../lib/frames";
 import { parseGoto } from "../lib/goto";
 import { SPEEDS } from "../lib/keymap";
@@ -7,6 +7,12 @@ import type { PlayerControls, PlayerState } from "../player/usePlayer";
 import { Icon } from "./icons";
 import { Panel, PanelTitle } from "./Panel";
 import { VIDEO_STATUS_LABELS } from "../routes/teams";
+
+const CAMERA_TAGS: Record<CameraView | "none", string> = {
+  main: "MAIN VIEW",
+  sideline: "SIDELINE VIEW",
+  none: "NOT A PLAY SEGMENT",
+};
 
 /**
  * The Program Monitor: the Match's 60 fps video with the frame number and timecode over it, and
@@ -22,6 +28,7 @@ export function Monitor({
   gotoOpen,
   onCloseGoto,
   focused,
+  cameraView,
 }: {
   match: MatchDetail;
   src: string | null;
@@ -32,6 +39,8 @@ export function Monitor({
   gotoOpen: boolean;
   onCloseGoto: () => void;
   focused: boolean;
+  /** The Camera View of the Play Segment on screen, "none" outside one, null until known. */
+  cameraView: CameraView | "none" | null;
 }) {
   const lastFrame = Math.max(0, state.totalFrames - 1);
   return (
@@ -58,6 +67,11 @@ export function Monitor({
               playsInline
               onClick={controls.togglePlay}
             />
+            {cameraView && (
+              <div className={`overlay overlay-camera ${cameraView === "none" ? "off" : ""}`}>
+                {CAMERA_TAGS[cameraView]}
+              </div>
+            )}
             <div className="overlay overlay-frame">
               <span className="frame">
                 <small>FRAME</small>

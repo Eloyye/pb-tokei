@@ -27,6 +27,8 @@
   --court-bc: #203f51;
   --court-line: #d7dee3;
   --surround: #1d2f38;
+  --seg-main: #4b5d73;
+  --seg-side: #6b5a3f;
   --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -521,6 +523,19 @@ button.panel-tab {
   pointer-events: none;
 }
 
+.overlay-camera {
+  top: 8px;
+  left: 10px;
+  color: var(--dim);
+  font-family: var(--ui);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.overlay-camera.off {
+  color: var(--warn);
+}
+
 .overlay-frame {
   left: 10px;
   bottom: 8px;
@@ -888,6 +903,61 @@ fieldset.transport-group {
   height: 20px;
 }
 
+.seg {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  min-width: 1px;
+  padding: 0 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  color: var(--text);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+.seg.main {
+  background: var(--seg-main);
+}
+
+.seg.sideline {
+  background: var(--seg-side);
+}
+
+.seg.editable {
+  overflow: visible;
+  outline: 1px solid var(--accent);
+}
+
+.seg.pending {
+  background: transparent;
+  outline: 1px dashed var(--accent);
+}
+
+.seg-handle {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  z-index: 3;
+  width: 7px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.seg-handle.start {
+  left: -3px;
+}
+
+.seg-handle.end {
+  right: -3px;
+}
+
+.seg-handle:hover {
+  background: var(--accent-soft);
+}
+
 .lane.rallies {
   height: 30px;
 }
@@ -961,6 +1031,11 @@ fieldset.transport-group {
 
 .statusbar > :last-child {
   border-right: 0;
+}
+
+.statusbar .save-state.retrying,
+.statusbar .save-state.refused {
+  color: var(--fail);
 }
 
 .statusbar .message {

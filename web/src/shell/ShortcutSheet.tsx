@@ -21,6 +21,18 @@ const GROUPS: [string, [string[], string][]][] = [
     ],
   ],
   [
+    "Calibrate: Play Segments",
+    [
+      [["⇧I"], "Start a segment, or move its start here"],
+      [["⇧O"], "End the segment, or move its end here"],
+      [["1", "2"], "Main View / Sideline View"],
+      [["⌫"], "Remove the segment under the playhead"],
+      [["Esc"], "Drop a segment not yet ended"],
+      [["Drag"], "Move a segment's edge on the Segments track"],
+      [["⌘Z", "⇧⌘Z"], "Undo / redo"],
+    ],
+  ],
+  [
     "App",
     [
       [["?"], "This sheet"],

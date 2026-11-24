@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { type MatchDetail, matchVideoUrl } from "../api/client";
-import { isTextEntry, keyAction, type PlayerAction, zoomKeyAction } from "../lib/keymap";
+import {
+  historyKeyAction,
+  isTextEntry,
+  keyAction,
+  type PlayerAction,
+  type SegmentAction,
+  segmentKeyAction,
+  zoomKeyAction,
+} from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
+import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
 import { followFrame, type FrameRange, fullView, zoomView } from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
@@ -11,11 +20,13 @@ import { CalibrationPanel, CourtPanel, InspectorPanel, RalliesPanel } from "./Si
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
+import { useRecording } from "./useRecording";
 
 const ZOOM_STEP = 1.5;
 
 const MESSAGES: Record<WorkspaceName, string> = {
-  calibrate: "Calibration and Play Segment marking aren't built yet.",
+  calibrate:
+    "Mark Play Segments: Shift+I and Shift+O at the first and last frame, 1 / 2 for Main or Sideline. Calibration isn't built yet.",
   annotate: "Rally and Shot entry isn't built yet. Playback and the Timeline work.",
   review: "Review needs pre-filled Rally Logs, which don't exist yet.",
 };
@@ -36,6 +47,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [sizes, setSizes] = useState<PanelSizes>(loadSizes);
   const [focused, setFocused] = useState<PanelId>("monitor");
   const gridRef = useRef<HTMLDivElement>(null);
+  const [recordingState, recording] = useRecording(match.id);
+  const calibrating = workspace === "calibrate";
 
   // Show the whole video once its length is first known, then page the view whenever the
   // playhead moves off screen. Paging only when the frame changes leaves the view where the
@@ -77,7 +90,37 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           return setGotoOpen(true);
       }
     };
+    const edit = (action: SegmentAction) => {
+      switch (action.type) {
+        case "markIn":
+          return recording.editSegments((segments, pending) => markIn(segments, pending, frame));
+        case "markOut":
+          return recording.editSegments((segments, pending) => markOut(segments, pending, frame));
+        case "setView":
+          return recording.editSegments((segments, pending) =>
+            setCameraView(segments, pending, frame, action.view),
+          );
+        case "remove":
+          return recording.editSegments((segments, pending) => removeAt(segments, pending, frame));
+        case "cancel":
+          return recording.cancelPending();
+      }
+    };
     if (isTextEntry(event.target)) return;
+    if (calibrating && totalFrames > 0) {
+      const historyAction = historyKeyAction(event);
+      if (historyAction) {
+        event.preventDefault();
+        if (!event.repeat) recording[historyAction]();
+        return;
+      }
+      const segmentAction = segmentKeyAction(event);
+      if (segmentAction) {
+        event.preventDefault();
+        if (!event.repeat) edit(segmentAction);
+        return;
+      }
+    }
     const zoomDirection = zoomKeyAction(event);
     if (zoomDirection) {
       event.preventDefault();
@@ -115,7 +158,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const gridRect = () => gridRef.current?.getBoundingClientRect();
 
   const src = match.video_status === "ready" ? matchVideoUrl(match.id) : null;
-  const calibrating = workspace === "calibrate";
+  const segments = recordingState.recording?.segments ?? null;
+  const segment = segments && segmentAt(segments, frame);
 
   return (
     <div className="match-frame">
@@ -140,6 +184,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           gotoOpen={gotoOpen}
           onCloseGoto={() => setGotoOpen(false)}
           focused={focused === "monitor"}
+          cameraView={segments ? (segment?.camera_view ?? "none") : null}
         />
         <Splitter
           className="splitter-side"
@@ -193,10 +238,21 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           onSeek={controls.seek}
           onZoom={zoom}
           focused={focused === "timeline"}
+          segments={segments}
+          pending={calibrating ? recordingState.pending : null}
           editableSegments={calibrating}
+          onMoveEdge={(segmentStart, edge, to) =>
+            recording.editSegments((current, pending) =>
+              moveEdge(current, pending, segmentStart, edge, to),
+            )
+          }
         />
       </div>
-      <StatusBar message={MESSAGES[workspace]} totalFrames={totalFrames} />
+      <StatusBar
+        message={(calibrating && recordingState.message) || MESSAGES[workspace]}
+        saveStatus={recordingState.saveStatus}
+        totalFrames={totalFrames}
+      />
     </div>
   );
 }
