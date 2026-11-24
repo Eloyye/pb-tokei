@@ -121,11 +121,12 @@ export function historyKeyAction(event: KeyInput): "undo" | "redo" | null {
   return null;
 }
 
-export type CalibrationAction = "new" | "skip" | "clear";
+export type CalibrationAction = "new" | "skip" | "clear" | "notVisible" | "confirm";
 
 /**
  * Calibrate's Landmark keys: `N` starts a new Calibration from the Play Segment under the
- * playhead, `Tab` skips to the next Landmark and `X` clears the selected one.
+ * playhead, `Tab` skips to the next Landmark, `V` marks the selected Landmark not visible,
+ * `C` confirms a carried-over Landmark on the current frame, and `X` clears the selected one.
  */
 export function calibrationKeyAction(event: KeyInput): CalibrationAction | null {
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return null;
@@ -138,6 +139,12 @@ export function calibrationKeyAction(event: KeyInput): CalibrationAction | null 
     case "x":
     case "X":
       return "clear";
+    case "v":
+    case "V":
+      return "notVisible";
+    case "c":
+    case "C":
+      return "confirm";
     default:
       return null;
   }

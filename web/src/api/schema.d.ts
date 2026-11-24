@@ -183,8 +183,10 @@ export interface components {
       effective_from_frame: number;
       /** Landmarks */
       landmarks: {
-        [key: string]: components["schemas"]["ImagePointIO"];
+        [key: string]: components["schemas"]["PlacedLandmarkIO"];
       };
+      /** Not Visible */
+      not_visible?: components["schemas"]["Landmark"][];
       /** Reference Frame */
       reference_frame: number;
     };
@@ -208,12 +210,20 @@ export interface components {
       image_to_court: number[][] | null;
       /** Landmarks */
       landmarks: {
-        [key: string]: components["schemas"]["ImagePointIO"];
+        [key: string]: components["schemas"]["PlacedLandmarkIO"];
       };
       /** Needs Attention */
       needs_attention: boolean;
+      /** Not Visible */
+      not_visible: components["schemas"]["Landmark"][];
       /** Reference Frame */
       reference_frame: number;
+      /** Resolved Landmarks */
+      resolved_landmarks: {
+        [key: string]: components["schemas"]["ImagePointIO"];
+      };
+      /** Unmapped Landmarks */
+      unmapped_landmarks: components["schemas"]["Landmark"][];
       /** Worst Error Ft */
       worst_error_ft: number | null;
     };
@@ -292,7 +302,7 @@ export interface components {
     };
     /**
      * ImagePointIO
-     * @description A point in the video frame, from 0 to 1 across (left to right) and down (top to bottom).
+     * @description A point in normalised image coordinates; mapped clicks may fall outside 0..1.
      */
     ImagePointIO: {
       /** X */
@@ -383,6 +393,18 @@ export interface components {
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
+    };
+    /**
+     * PlacedLandmarkIO
+     * @description A Landmark clicked on a video frame, in normalised coordinates (0 to 1).
+     */
+    PlacedLandmarkIO: {
+      /** Frame */
+      frame: number;
+      /** X */
+      x: number;
+      /** Y */
+      y: number;
     };
     /**
      * PlaySegmentIO

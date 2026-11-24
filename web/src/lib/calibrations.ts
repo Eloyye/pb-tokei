@@ -93,13 +93,31 @@ export function currentFit(
   calibration: Calibration,
 ): CalibrationOut | undefined {
   const fit = fits.get(fitKey(calibration));
-  return fit && sameLandmarks(fit.landmarks, calibration.landmarks) ? fit : undefined;
+  return fit &&
+    fit.reference_frame === calibration.reference_frame &&
+    sameLandmarks(fit.landmarks, calibration.landmarks) &&
+    sameNotVisible(fit.not_visible, calibration.not_visible)
+    ? fit
+    : undefined;
 }
 
 function sameLandmarks(a: Calibration["landmarks"], b: Calibration["landmarks"]): boolean {
   const keys = Object.keys(a) as (keyof typeof a)[];
   if (keys.length !== Object.keys(b).length) return false;
-  return keys.every((k) => a[k]?.x === b[k]?.x && a[k]?.y === b[k]?.y);
+  return keys.every(
+    (k) => a[k]?.x === b[k]?.x && a[k]?.y === b[k]?.y && a[k]?.frame === b[k]?.frame,
+  );
+}
+
+function sameNotVisible(a: readonly Landmark[], b: readonly Landmark[]): boolean {
+  if (a.length !== b.length) return false;
+  const setA = new Set(a);
+  return b.every((lm) => setA.has(lm));
+}
+
+function sortedNotVisible(items: Iterable<Landmark>): Landmark[] {
+  const set = new Set(items);
+  return LANDMARKS.filter((lm) => set.has(lm));
 }
 
 /** A new, empty Calibration of a segment's view, in effect from the segment's start. */
@@ -109,12 +127,63 @@ function startingWith(segment: PlaySegment, frame: number): Calibration {
     effective_from_frame: segment.start_frame,
     reference_frame: frame,
     landmarks: {},
+    not_visible: [],
+  };
+}
+
+export interface LandmarkCounts {
+  placed: number;
+  notVisible: number;
+  remaining: number;
+  confirmedOnRef: number;
+  otherFrame: number;
+}
+
+/** Counts placed, not visible, remaining, confirmed on reference frame, and off-reference Landmarks. */
+export function landmarkCounts(calibration: Calibration | undefined): LandmarkCounts {
+  if (!calibration) {
+    return {
+      placed: 0,
+      notVisible: 0,
+      remaining: LANDMARKS.length,
+      confirmedOnRef: 0,
+      otherFrame: 0,
+    };
+  }
+  const placedEntries = Object.values(calibration.landmarks).filter(Boolean);
+  const placed = placedEntries.length;
+  const notVisible = calibration.not_visible.length;
+  const confirmedOnRef = placedEntries.filter(
+    (p) => p.frame === calibration.reference_frame,
+  ).length;
+  return {
+    placed,
+    notVisible,
+    remaining: Math.max(0, LANDMARKS.length - placed - notVisible),
+    confirmedOnRef,
+    otherFrame: placed - confirmedOnRef,
   };
 }
 
 /**
- * Places a Landmark in the Calibration in effect on the segment. If its view has none yet, the
- * click creates one, in effect from the segment's start.
+ * Whether a placed Landmark came from outside the current Play Segment (carried over from another
+ * Calibration via `N` or "Use here") rather than clicked on another frame of this Play Segment.
+ */
+export function isCarriedOver(
+  landmarkFrame: number,
+  referenceFrame: number,
+  segment: PlaySegment,
+): boolean {
+  return (
+    landmarkFrame !== referenceFrame &&
+    (landmarkFrame < segment.start_frame || landmarkFrame > segment.end_frame)
+  );
+}
+
+/**
+ * Places a Landmark in the Calibration in effect on the segment, recording `frame` on the
+ * Landmark. If its view has no Calibration yet, the click creates one starting with the segment
+ * and anchored at `frame`. Placing a Landmark previously marked not visible clears that mark.
  */
 export function placeLandmark(
   calibrations: Calibration[],
@@ -123,7 +192,7 @@ export function placeLandmark(
   landmark: Landmark,
   point: Point,
 ): CalibrationEdit {
-  const at = { x: clamp01(point.x), y: clamp01(point.y) };
+  const at = { x: clamp01(point.x), y: clamp01(point.y), frame };
   const active = calibrationAt(calibrations, segment.camera_view, frame);
   if (!active) {
     const created: Calibration = { ...startingWith(segment, frame), landmarks: { [landmark]: at } };
@@ -133,15 +202,64 @@ export function placeLandmark(
       message: `New ${VIEW_LABELS[segment.camera_view]} Calibration from frame ${segment.start_frame}: ${landmarkLabel(landmark)} placed`,
     };
   }
-  const edited = { ...active, landmarks: { ...active.landmarks, [landmark]: at } };
+  const not_visible = active.not_visible.filter((lm) => lm !== landmark);
+  const edited: Calibration = {
+    ...active,
+    landmarks: { ...active.landmarks, [landmark]: at },
+    not_visible,
+  };
+  const onRef = frame === active.reference_frame;
   return {
     calibrations: replace(calibrations, active, edited),
     edited,
-    message: `${landmarkLabel(landmark)} placed`,
+    message: onRef
+      ? `${landmarkLabel(landmark)} placed`
+      : `${landmarkLabel(landmark)} placed on frame ${frame} (maps to ref frame ${active.reference_frame})`,
   };
 }
 
-/** `X`: clears a Landmark from the Calibration in effect. */
+/**
+ * `V`: marks a Landmark as not visible in the Calibration in effect on the segment, removing any
+ * placed point for it. Creates a Calibration starting with the segment if none exists yet.
+ */
+export function markNotVisible(
+  calibrations: Calibration[],
+  segment: PlaySegment,
+  frame: number,
+  landmark: Landmark,
+): CalibrationEdit {
+  const active = calibrationAt(calibrations, segment.camera_view, frame);
+  if (!active) {
+    const created: Calibration = {
+      ...startingWith(segment, frame),
+      not_visible: [landmark],
+    };
+    return {
+      calibrations: [...calibrations, created],
+      edited: created,
+      message: `New ${VIEW_LABELS[segment.camera_view]} Calibration from frame ${segment.start_frame}: ${landmarkLabel(landmark)} marked not visible`,
+    };
+  }
+  if (active.not_visible.includes(landmark)) {
+    return {
+      calibrations,
+      message: `${landmarkLabel(landmark)} is already marked not visible`,
+    };
+  }
+  const { [landmark]: _removed, ...landmarks } = active.landmarks;
+  const edited: Calibration = {
+    ...active,
+    landmarks,
+    not_visible: sortedNotVisible([...active.not_visible, landmark]),
+  };
+  return {
+    calibrations: replace(calibrations, active, edited),
+    edited,
+    message: `${landmarkLabel(landmark)} marked not visible`,
+  };
+}
+
+/** `X`: clears a placed or not-visible Landmark from the Calibration in effect, making it remaining. */
 export function clearLandmark(
   calibrations: Calibration[],
   view: CameraView,
@@ -149,19 +267,150 @@ export function clearLandmark(
   landmark: Landmark,
 ): CalibrationEdit {
   const active = calibrationAt(calibrations, view, frame);
-  if (!active?.landmarks[landmark]) {
+  const wasPlaced = Boolean(active?.landmarks[landmark]);
+  const wasNotVisible = Boolean(active?.not_visible.includes(landmark));
+  if (!active || (!wasPlaced && !wasNotVisible)) {
     return { calibrations, message: `${landmarkLabel(landmark)} isn't placed` };
   }
   const { [landmark]: _cleared, ...landmarks } = active.landmarks;
+  const not_visible = active.not_visible.filter((lm) => lm !== landmark);
+  const edited: Calibration = { ...active, landmarks, not_visible };
   return {
-    calibrations: replace(calibrations, active, { ...active, landmarks }),
+    calibrations: replace(calibrations, active, edited),
+    edited,
     message: `${landmarkLabel(landmark)} cleared`,
   };
 }
 
+/** Whether a normalised image point lies inside `[0, 1]^2` (with finite coordinates). */
+export function isInFramePoint(point: Point | null | undefined): point is Point {
+  return (
+    point !== null &&
+    point !== undefined &&
+    Number.isFinite(point.x) &&
+    Number.isFinite(point.y) &&
+    point.x >= 0 &&
+    point.x <= 1 &&
+    point.y >= 0 &&
+    point.y <= 1
+  );
+}
+
 /**
- * `N`: starts a new Calibration in effect from the segment's start, with a copy of the points of
- * the one in effect, so only the Landmarks that drifted need moving.
+ * `C`: confirms an off-reference placed Landmark onto the Calibration's `reference_frame` (e.g.
+ * after `N` or "Use here"). Only allowed on `reference_frame` when Camera Motion has mapped the
+ * Landmark to a valid in-frame `resolvedPoint`; never stamps a stale point from another frame.
+ */
+export function confirmLandmark(
+  calibrations: Calibration[],
+  view: CameraView,
+  frame: number,
+  landmark: Landmark,
+  resolvedPoint?: Point,
+): CalibrationEdit {
+  const active = calibrationAt(calibrations, view, frame);
+  const existing = active?.landmarks[landmark];
+  if (!active || !existing) {
+    return { calibrations, message: `${landmarkLabel(landmark)} isn't placed` };
+  }
+  if (frame !== active.reference_frame) {
+    return {
+      calibrations,
+      message: `Go to reference frame ${active.reference_frame} to confirm ${landmarkLabel(landmark)}`,
+    };
+  }
+  if (existing.frame === frame) {
+    return {
+      calibrations,
+      message: `${landmarkLabel(landmark)} is already confirmed on frame ${frame}`,
+    };
+  }
+  if (!isInFramePoint(resolvedPoint)) {
+    return {
+      calibrations,
+      message: `Can't confirm ${landmarkLabel(landmark)} automatically: re-click it on frame ${frame}`,
+    };
+  }
+  const updated = {
+    x: resolvedPoint.x,
+    y: resolvedPoint.y,
+    frame,
+  };
+  const edited: Calibration = {
+    ...active,
+    landmarks: { ...active.landmarks, [landmark]: updated },
+  };
+  return {
+    calibrations: replace(calibrations, active, edited),
+    edited,
+    message: `${landmarkLabel(landmark)} confirmed on frame ${frame}`,
+  };
+}
+
+/**
+ * Confirms every off-reference placed Landmark of the active Calibration that has a valid
+ * in-frame mapped position on `reference_frame`. Unmapped or out-of-frame Landmarks are left
+ * untouched so they can be re-clicked rather than stamped at stale coordinates.
+ */
+export function confirmAllLandmarks(
+  calibrations: Calibration[],
+  view: CameraView,
+  frame: number,
+  resolvedLandmarks?: Partial<Record<Landmark, Point>>,
+): CalibrationEdit {
+  const active = calibrationAt(calibrations, view, frame);
+  if (!active) return { calibrations, message: "No Calibration in effect" };
+  if (frame !== active.reference_frame) {
+    return {
+      calibrations,
+      message: `Go to reference frame ${active.reference_frame} to confirm Landmarks`,
+    };
+  }
+  let changed = 0;
+  let skipped = 0;
+  const landmarks: Calibration["landmarks"] = {};
+  for (const [key, placed] of Object.entries(active.landmarks)) {
+    const lm = key as Landmark;
+    if (!placed) continue;
+    if (placed.frame === frame) {
+      landmarks[lm] = placed;
+      continue;
+    }
+    const resolved = resolvedLandmarks?.[lm];
+    if (!isInFramePoint(resolved)) {
+      skipped += 1;
+      landmarks[lm] = placed;
+      continue;
+    }
+    changed += 1;
+    landmarks[lm] = {
+      x: resolved.x,
+      y: resolved.y,
+      frame,
+    };
+  }
+  if (changed === 0) {
+    return {
+      calibrations,
+      message:
+        skipped > 0
+          ? `No off-reference Landmarks can be confirmed automatically: re-click them on frame ${frame}`
+          : `All placed Landmarks are already confirmed on frame ${frame}`,
+    };
+  }
+  const edited: Calibration = { ...active, landmarks };
+  const suffix = skipped > 0 ? ` (${skipped} still need re-clicking)` : "";
+  return {
+    calibrations: replace(calibrations, active, edited),
+    edited,
+    message: `Confirmed ${changed} ${changed === 1 ? "Landmark" : "Landmarks"} on frame ${frame}${suffix}`,
+  };
+}
+
+/**
+ * `N`: starts a new Calibration in effect from the segment's start, with a copy of the Landmarks
+ * of the one in effect (preserving each Landmark's original click frame so carried-over points
+ * stay visibly distinct from points confirmed on the new reference frame).
  */
 export function newCalibration(
   calibrations: Calibration[],
@@ -178,11 +427,13 @@ export function newCalibration(
   const active = calibrationAt(calibrations, view, frame);
   const created: Calibration = {
     ...startingWith(segment, frame),
-    landmarks: { ...active?.landmarks },
+    landmarks: active ? cloneLandmarks(active.landmarks) : {},
+    not_visible: active ? [...active.not_visible] : [],
   };
   return {
     calibrations: [...calibrations, created],
-    message: `New ${VIEW_LABELS[view]} Calibration from frame ${segment.start_frame}${active ? ", copied from the one before: move the Landmarks that drifted" : ""}`,
+    edited: created,
+    message: `New ${VIEW_LABELS[view]} Calibration from frame ${segment.start_frame}${active ? ", carried over from the one before: move or confirm Landmarks on this frame" : ""}`,
   };
 }
 
@@ -207,6 +458,7 @@ export function reanchorCalibration(
     effective_from_frame: frame,
     reference_frame: frame,
     landmarks: {},
+    not_visible: [],
   };
   return {
     calibrations: [...calibrations, created],
@@ -257,7 +509,11 @@ export function reuseBlocker(
     return `A ${VIEW_LABELS[view]} Calibration starts inside this Play Segment, at frame ${inside.effective_from_frame}: delete it first`;
   }
   const atStart = calibrationAt(calibrations, view, segment.start_frame);
-  if (atStart && sameLandmarks(atStart.landmarks, source.landmarks)) {
+  if (
+    atStart &&
+    sameLandmarks(atStart.landmarks, source.landmarks) &&
+    sameNotVisible(atStart.not_visible, source.not_visible)
+  ) {
     return "This Play Segment already uses these points";
   }
   return null;
@@ -265,9 +521,10 @@ export function reuseBlocker(
 
 /**
  * "Use here": puts an earlier Calibration's points in effect from the segment's start, for a
- * camera that has gone back to an angle it had before. If a Calibration of the view already
- * starts with the segment, its points are replaced; otherwise a new one is made. Either way its
- * reference frame becomes `frame`, where the operator saw the angle match.
+ * camera that has gone back to an angle it had before. Preserves each copied Landmark's original
+ * click frame so carried-over points remain clearly marked until confirmed on the new reference
+ * frame. If a Calibration of the view already starts with the segment, its points are replaced;
+ * otherwise a new one is made.
  */
 export function reuseCalibration(
   calibrations: Calibration[],
@@ -278,17 +535,18 @@ export function reuseCalibration(
   const blocker = reuseBlocker(calibrations, source, segment);
   if (blocker) return { calibrations, message: blocker };
   const from = `the Calibration from frame ${source.effective_from_frame}`;
-  const landmarks = { ...source.landmarks };
+  const landmarks = cloneLandmarks(source.landmarks);
+  const not_visible = [...source.not_visible];
   const existing = calibrationStartingWith(calibrations, segment);
   if (existing) {
-    const edited = { ...existing, reference_frame: frame, landmarks };
+    const edited: Calibration = { ...existing, reference_frame: frame, landmarks, not_visible };
     return {
       calibrations: replace(calibrations, existing, edited),
       edited,
       message: `This Play Segment's Calibration now uses the points of ${from}`,
     };
   }
-  const created: Calibration = { ...startingWith(segment, frame), landmarks };
+  const created: Calibration = { ...startingWith(segment, frame), landmarks, not_visible };
   return {
     calibrations: [...calibrations, created],
     edited: created,
@@ -310,19 +568,29 @@ export function deleteCalibration(
 }
 
 /**
- * The Landmark to place after `current`: the next unplaced one in clicking order, wrapping
- * round, or null once all are placed.
+ * The Landmark to place after `current`: the next remaining one (neither placed nor marked not
+ * visible) in clicking order, wrapping round, or null once none remain.
  */
 export function nextLandmark(
   placed: Partial<Record<Landmark, unknown>>,
   current: Landmark | null,
+  notVisible: readonly Landmark[] = [],
 ): Landmark | null {
+  const skipped = new Set(notVisible);
   const start = current ? LANDMARKS.indexOf(current) + 1 : 0;
   for (let i = 0; i < LANDMARKS.length; i++) {
     const landmark = LANDMARKS[(start + i) % LANDMARKS.length]!;
-    if (!placed[landmark]) return landmark;
+    if (!placed[landmark] && !skipped.has(landmark)) return landmark;
   }
   return null;
+}
+
+function cloneLandmarks(landmarks: Calibration["landmarks"]): Calibration["landmarks"] {
+  const copy: Calibration["landmarks"] = {};
+  for (const [key, value] of Object.entries(landmarks)) {
+    if (value) copy[key as Landmark] = { ...value };
+  }
+  return copy;
 }
 
 /** `Tab`: the Landmark after `current` in clicking order, placed or not, wrapping round. */
