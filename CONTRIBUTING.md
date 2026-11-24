@@ -15,12 +15,11 @@ There is no CLA and no sign-off. Under section 5 of the [Apache License 2.0](LIC
 You need everything in the README's [Prerequisites](README.md#prerequisites). Then:
 
 ```bash
-uv sync
+uv run pb-tokei dev update
 uv run pre-commit install
-cd web && bun install && cd ..
 ```
 
-The pre-commit hook runs the checks below, using the locked tool versions, except `bun run build`, which runs only in CI. Each check runs only when the files it covers are staged: the Python checks on Python changes, the front-end checks on changes under `web/`. `ruff check` runs with `--fix`. The hook also checks that the generated API types are up to date when `web/` or `src/pb_tokei/annotate/` changes.
+The pre-commit hook runs the Python and front-end checks using the locked tool versions. CI also builds the front end and checks its stamp. The Python checks run on staged Python changes, and the front-end checks run on staged changes under `web/`. `ruff check` runs with `--fix`. The hook also checks that the generated API types are up to date when `web/` or `src/pb_tokei/annotate/` changes.
 
 ## Checks
 
@@ -57,7 +56,7 @@ uv run pb-tokei annotate --no-browser
 cd web && bun run dev
 ```
 
-Then open <http://localhost:5173>. The UI's layout, keys and interaction model are specified in [docs/annotation-ui.md](docs/annotation-ui.md).
+Then open <http://localhost:5173>. A stale-bundle warning from `annotate` is expected while Vite serves the current front end. The UI's layout, keys and interaction model are specified in [docs/annotation-ui.md](docs/annotation-ui.md).
 
 ## Changing the API
 

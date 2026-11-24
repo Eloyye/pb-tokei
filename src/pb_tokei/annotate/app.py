@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from pb_tokei.annotate.frontend import STATIC_DIR
 from pb_tokei.annotate.motion import (
     CameraMotionFramesOut,
     CameraMotionOut,
@@ -41,8 +42,6 @@ from pb_tokei.rally_log import (
     RallyLog,
     SourceVideo,
 )
-
-STATIC_DIR = Path(__file__).parent / "static"
 
 # The server binds 127.0.0.1 only. Checking the Host header as well stops DNS rebinding: a page
 # whose domain re-resolves to 127.0.0.1 would otherwise be same-origin with the app.

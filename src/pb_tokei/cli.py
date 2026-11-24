@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import subprocess
 import sys
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from uuid import UUID
 
@@ -119,6 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument(
         "--no-browser", action="store_true", help="Don't open the app in a browser."
     )
+
+    dev = subparsers.add_parser("dev", help="Maintain this development checkout.")
+    dev_commands = dev.add_subparsers(dest="dev_command", required=True)
+    update = dev_commands.add_parser(
+        "update", help="Install web dependencies and rebuild a stale front end."
+    )
+    update.set_defaults(handler=_run_dev_update)
     return parser
 
 
@@ -147,6 +156,8 @@ def main(
         return args.handler(args)
     if args.command == "annotate":
         return _run_annotate(args)
+    if args.command == "dev":
+        return args.handler(run=run)
 
     parser.error(f"Unknown command: {args.command}")
 
@@ -307,6 +318,37 @@ def _run_annotate(args: argparse.Namespace) -> int:
     try:
         serve(args.db, port=args.port, open_browser=not args.no_browser)
     except FrontEndNotBuiltError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_dev_update(*, run: CommandRunner | None) -> int:
+    from pb_tokei.annotate.frontend import STATIC_DIR, WEB_DIR, bundle_is_current
+
+    if not WEB_DIR.is_dir():
+        print(f"error: dev update requires a source checkout with {WEB_DIR}", file=sys.stderr)
+        return 1
+    runner = run
+    if runner is None:
+        runner = partial(subprocess.run, cwd=WEB_DIR, capture_output=True, text=True, check=False)
+
+    print("python deps: synced (uv run)")
+    try:
+        runner(["bun", "install", "--frozen-lockfile"]).check_returncode()
+        print("web deps:    bun install --frozen-lockfile succeeded")
+        if bundle_is_current(WEB_DIR, STATIC_DIR):
+            print("front end:   up to date, skipped build")
+        else:
+            runner(["bun", "run", "build"]).check_returncode()
+            print("front end:   rebuilt")
+    except subprocess.CalledProcessError as exc:
+        print(f"error: {shlex.join(exc.cmd)} exited with status {exc.returncode}", file=sys.stderr)
+        for output in (exc.stdout, exc.stderr):
+            if output:
+                print(output.rstrip(), file=sys.stderr)
+        return 1
+    except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

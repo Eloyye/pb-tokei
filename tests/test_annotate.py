@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 from test_calibration import MAIN, SIDELINE
 
 from pb_tokei import main
+from pb_tokei.annotate import server
 from pb_tokei.annotate.app import CalibrationOut, create_app
+from pb_tokei.annotate.frontend import stamp_bundle
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
@@ -818,4 +820,46 @@ def test_annotate_refuses_to_start_without_a_built_front_end(
     code = main(["annotate", "--no-browser", "--db", str(db)])
 
     assert code == 1
-    assert "bun install && bun run build" in capsys.readouterr().err
+    assert "uv run pb-tokei dev update" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("state", "warns"),
+    [("fresh", False), ("stale", True), ("unstamped", True), ("no-web-dir", False)],
+)
+def test_annotate_checks_the_bundle_and_serves(
+    db: Path,
+    tmp_path: Path,
+    static_dir: Path,
+    state: str,
+    warns: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    web_dir = tmp_path / "web"
+    source = web_dir / "index.html"
+    if state != "no-web-dir":
+        web_dir.mkdir()
+        source.write_text("<title>app</title>")
+    if state in {"fresh", "stale"}:
+        stamp_bundle(web_dir, static_dir)
+    if state == "stale":
+        source.write_text("<title>updated app</title>")
+
+    served = False
+
+    def run(_server: object) -> None:
+        nonlocal served
+        served = True
+
+    monkeypatch.setattr(server.uvicorn.Server, "run", run)
+    server.serve(db, port=8000, open_browser=False, static_dir=static_dir, web_dir=web_dir)
+
+    assert served
+    error = capsys.readouterr().err
+    if warns:
+        assert len(error.splitlines()) == 1
+        assert error.startswith("warning: ")
+        assert "uv run pb-tokei dev update" in error
+    else:
+        assert error == ""
