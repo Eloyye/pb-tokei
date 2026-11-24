@@ -225,21 +225,21 @@ This is the Annotate and Review keymap. **Today** marks the keys that work in th
 | Previous / next Shot (seek to contact) | `↑` / `↓` | planned |
 | Previous / next Rally | `PgUp` / `PgDn` | planned |
 | Zoom timeline | `-` / `=` | ✓ |
-| Move field cursor | `Tab` / `Shift+Tab` | planned |
-| Rally start / end at playhead | `Shift+I` / `Shift+O` | planned |
+| Move field cursor | `Tab` / `Shift+Tab` | planned (in Calibrate, `Tab` skips to the next Landmark) |
+| Rally start / end at playhead | `Shift+I` / `Shift+O` | planned (in Calibrate: Play Segment start / end) |
 | Add Shot at playhead | `M` | planned |
 | Shot Class: Soft / Hard / Lob / Overhead | `S` `H` `L` `O` | planned |
 | Contact Kind: Volley / Bounce | `V` `B` | planned |
-| Swap hitter to partner | `X` | planned |
+| Swap hitter to partner | `X` | planned (in Calibrate: clear the selected Landmark) |
 | Toggle Erne / ATP | `E` / `T` | planned |
-| Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear | `1`–`5` / `0` | planned |
+| Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear | `1`–`5` / `0` | planned (in Calibrate, `1` / `2` set Main / Sideline View) |
 | Observation Gap after current Shot: odd / even | `G` / `Shift+G` | planned |
-| Delete Shot | `Backspace` | planned |
+| Delete Shot | `Backspace` | planned (in Calibrate: remove the Play Segment) |
 | Cycle certainty of focused field | `C` | planned |
 | Referee Call: point / second server / side out | `Shift+P` / `Shift+2` / `Shift+X` | planned |
 | Record a Challenge | `Shift+C` | planned |
 | Mark Rally Done (Review: accept), go to next | `Enter` | planned |
-| Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned |
+| Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
 | Undo / redo | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate |
 | Shortcut sheet | `?` | ✓ |
 

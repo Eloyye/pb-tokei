@@ -6,7 +6,7 @@ There is no CLA and no sign-off. Under section 5 of the [Apache License 2.0](LIC
 
 ## Language and decisions
 
-- Use the [Glossary](GLOSSARY.md)'s terms in code, issues and pull requests: a Rally, not a "point"; a Team, not a "pair". Each entry lists the words to avoid.
+- Use the [Glossary](GLOSSARY.md)'s terms in code, issues and pull requests: a Rally, not an "exchange"; a Team, not a "pair". Each entry lists the words to avoid.
 - Record decisions that should outlast one pull request as an ADR in [docs/adr/](docs/adr/).
 - Coding agents start from [AGENTS.md](AGENTS.md), which links the issue-tracker and triage conventions.
 
@@ -20,7 +20,7 @@ uv run pre-commit install
 cd web && bun install && cd ..
 ```
 
-The pre-commit hook runs the checks below on every commit, using the locked tool versions. Front-end checks run only when files under `web/` change.
+The pre-commit hook runs the checks below, using the locked tool versions, except `bun run build`, which runs only in CI. Each check runs only when the files it covers are staged: the Python checks on Python changes, the front-end checks on changes under `web/`. `ruff check` runs with `--fix`. The hook also checks that the generated API types are up to date when `web/` or `src/pb_tokei/annotate/` changes.
 
 ## Checks
 
