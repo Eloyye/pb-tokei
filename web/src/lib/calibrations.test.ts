@@ -15,10 +15,12 @@ import {
   nextLandmark,
   placeLandmark,
   project,
+  reanchorCalibration,
   reuseBlocker,
   reuseCalibration,
   projectLine,
   skipLandmark,
+  unmappedRangeAt,
 } from "./calibrations";
 
 function cal(
@@ -320,5 +322,46 @@ describe("reuseBlocker", () => {
 
   it("ignores a Calibration starting after the segment", () => {
     expect(reuseBlocker([original, moved, cal("main", 1101)], original, later)).toBeNull();
+  });
+});
+
+describe("reanchorCalibration", () => {
+  it("starts a fresh empty Calibration at the playhead inside a Play Segment", () => {
+    const existing = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.5 } });
+
+    const edit = reanchorCalibration([existing], SEGMENT, 1450);
+
+    expect(edit.calibrations).toHaveLength(2);
+    expect(edit.edited).toEqual({
+      camera_view: "main",
+      effective_from_frame: 1450,
+      reference_frame: 1450,
+      landmarks: {},
+    });
+    expect(calibrationAt(edit.calibrations, "main", 1450)).toBe(edit.edited);
+  });
+
+  it("refuses when a Calibration of the same view already starts at that frame", () => {
+    const existing = cal("main", 1450);
+
+    const edit = reanchorCalibration([existing], SEGMENT, 1450);
+
+    expect(edit.calibrations).toEqual([existing]);
+    expect(edit.message).toMatch(/already starts at frame 1450/);
+  });
+});
+
+describe("unmappedRangeAt", () => {
+  const ranges = [
+    { start_frame: 200, end_frame: 250, camera_view: "sideline" as const },
+    { start_frame: 400, end_frame: 400, camera_view: "main" as const },
+  ];
+
+  it("finds the inclusive range containing the frame", () => {
+    expect(unmappedRangeAt(ranges, 200)).toBe(ranges[0]);
+    expect(unmappedRangeAt(ranges, 250)).toBe(ranges[0]);
+    expect(unmappedRangeAt(ranges, 400)).toBe(ranges[1]);
+    expect(unmappedRangeAt(ranges, 199)).toBeUndefined();
+    expect(unmappedRangeAt(ranges, 251)).toBeUndefined();
   });
 });

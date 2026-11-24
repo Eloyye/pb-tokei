@@ -1,10 +1,12 @@
 import type {
   Calibration,
   CalibrationOut,
+  CameraMotionOut,
   CameraView,
   Landmark,
   LandmarkErrorOut,
   PlaySegment,
+  UnmappedRangeOut,
 } from "../api/client";
 import {
   courtPoint,
@@ -22,29 +24,42 @@ import { Panel, PanelTitle } from "./Panel";
  */
 export function CalibrationPanel({
   focused,
+  frame,
   segment,
   calibration,
   calibrations,
   fits,
+  motion,
+  unmappedRange,
   selected,
   onSelect,
   onSeek,
   onDelete,
   onReuse,
+  onReanchor,
+  onRetrack,
 }: {
   focused: boolean;
+  frame: number;
   /** The Play Segment under the playhead. */
   segment: PlaySegment | undefined;
   /** The Calibration in effect there. */
   calibration: Calibration | undefined;
   calibrations: Calibration[];
   fits: Map<string, CalibrationOut>;
+  motion: CameraMotionOut | null;
+  /** The unmapped Camera Motion range at the playhead, if any. */
+  unmappedRange: UnmappedRangeOut | undefined;
   selected: Landmark | null;
   onSelect: (landmark: Landmark) => void;
   onSeek: (frame: number) => void;
   onDelete: (view: CameraView, effectiveFrom: number) => void;
   /** Puts an earlier Calibration's points in effect from the current Play Segment's start. */
   onReuse: (source: Calibration) => void;
+  /** Creates a new Calibration starting at the playhead frame to re-anchor Camera Motion. */
+  onReanchor: () => void;
+  /** Retries Camera Motion tracking after an error. */
+  onRetrack: () => void;
 }) {
   const fit = calibration && currentFit(fits, calibration);
   const placed = calibration ? Object.keys(calibration.landmarks).length : 0;
@@ -90,12 +105,24 @@ export function CalibrationPanel({
             <p className={`fit-summary ${fit?.needs_attention ? "flagged" : ""}`}>
               {fitSummary(placed, fit)}
             </p>
+            {unmappedRange && (
+              <div className="motion-unmapped-callout">
+                <span>
+                  Tracking lost on frames {unmappedRange.start_frame}–{unmappedRange.end_frame}.
+                  Positions here are Unknown.
+                </span>
+                <button type="button" className="button" onClick={onReanchor}>
+                  New Calibration at frame {frame}
+                </button>
+              </div>
+            )}
           </section>
         ) : (
           <p className="empty">
             Go to a Play Segment to calibrate its Camera View. Mark one with Shift+I and Shift+O.
           </p>
         )}
+        <CameraMotionSection motion={motion} onSeek={onSeek} onRetrack={onRetrack} />
         {(["main", "sideline"] as const).map((view) => (
           <CalibrationList
             key={view}
@@ -216,6 +243,67 @@ function CalibrationList({
                 </li>
               );
             })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function CameraMotionSection({
+  motion,
+  onSeek,
+  onRetrack,
+}: {
+  motion: CameraMotionOut | null;
+  onSeek: (frame: number) => void;
+  onRetrack: () => void;
+}) {
+  if (!motion || motion.status === "no_video" || motion.total_spans === 0) return null;
+  const unmappedCount = motion.unmapped_ranges.reduce(
+    (sum, r) => sum + (r.end_frame - r.start_frame + 1),
+    0,
+  );
+  return (
+    <section className="cal-view cal-motion">
+      <h3>
+        Camera Motion
+        <span className={unmappedCount > 0 || motion.status === "error" ? "flagged" : ""}>
+          {motion.status === "tracking"
+            ? `tracking ${motion.tracked_spans}/${motion.total_spans}…`
+            : motion.status === "error"
+              ? "failed"
+              : unmappedCount > 0
+                ? `${unmappedCount} unmapped`
+                : "all mapped"}
+        </span>
+      </h3>
+      {motion.status === "error" && (
+        <p className="fit-summary flagged">
+          {motion.error ?? "Camera Motion tracking failed."}{" "}
+          <button type="button" className="icon-button" onClick={onRetrack}>
+            Retry
+          </button>
+        </p>
+      )}
+      {motion.unmapped_ranges.length > 0 && (
+        <ul>
+          {motion.unmapped_ranges.map((range) => {
+            const count = range.end_frame - range.start_frame + 1;
+            return (
+              <li key={`${range.camera_view}:${range.start_frame}-${range.end_frame}`}>
+                <button
+                  type="button"
+                  title={`Go to unmapped ${VIEW_LABELS[range.camera_view]} frames ${range.start_frame}–${range.end_frame}`}
+                  onClick={() => onSeek(range.start_frame)}
+                >
+                  <span>
+                    {VIEW_LABELS[range.camera_view]} · {range.start_frame}–{range.end_frame}
+                  </span>
+                  <span className="flagged">{count}f</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>

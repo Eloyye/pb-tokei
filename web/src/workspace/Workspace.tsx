@@ -12,8 +12,10 @@ import {
   nextLandmark,
   placeLandmark,
   type Point,
+  reanchorCalibration,
   reuseCalibration,
   skipLandmark,
+  unmappedRangeAt,
 } from "../lib/calibrations";
 import {
   type CalibrationAction,
@@ -39,6 +41,7 @@ import { CourtPanel, InspectorPanel, RalliesPanel } from "./SidePanels";
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
+import { useCameraMotion } from "./useCameraMotion";
 import { useRecording } from "./useRecording";
 
 const ZOOM_STEP = 1.5;
@@ -74,6 +77,16 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   // Calibration at the playhead: the one in effect for its Play Segment's Camera View, and the
   // Landmark to place next. The selection belongs to one Calibration; on another, it restarts.
   const calibrations = recordingState.recording?.calibrations ?? [];
+  const cameraMotion = useCameraMotion(
+    match.id,
+    calibrating && match.video_status === "ready",
+    recordingState.saveStatus,
+    segments,
+    calibrations,
+    frame,
+  );
+  const unmappedRanges = cameraMotion.motion?.unmapped_ranges ?? [];
+  const unmappedHere = unmappedRangeAt(unmappedRanges, frame);
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
   const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
@@ -261,9 +274,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
             segments && (
               <CalibrationOverlay
                 videoRef={videoRef}
+                frame={frame}
                 calibration={calibration}
                 fit={calibration && currentFit(recordingState.fits, calibration)}
                 lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
+                frameMatrix={cameraMotion.frameMatrix}
+                unmapped={cameraMotion.frameUnmapped}
                 selected={selected}
                 editable={Boolean(segment)}
                 onPlace={place}
@@ -288,10 +304,13 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           {calibrating ? (
             <CalibrationPanel
               focused={focused === "calibration"}
+              frame={frame}
               segment={segment}
               calibration={calibration}
               calibrations={calibrations}
               fits={recordingState.fits}
+              motion={cameraMotion.motion}
+              unmappedRange={unmappedHere}
               selected={selected}
               onSelect={select}
               onSeek={controls.seek}
@@ -304,6 +323,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   reuseCalibration(list, source, segment, frame),
                 );
               }}
+              onReanchor={() => {
+                if (!segment) return;
+                recording.editCalibrations((list) => reanchorCalibration(list, segment, frame));
+              }}
+              onRetrack={cameraMotion.retrack}
             />
           ) : (
             <>
@@ -344,6 +368,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           onZoom={zoom}
           focused={focused === "timeline"}
           segments={segments}
+          unmappedRanges={calibrating ? unmappedRanges : undefined}
           pending={calibrating ? recordingState.pending : null}
           editableSegments={calibrating}
           onMoveEdge={(segmentStart, edge, to) =>

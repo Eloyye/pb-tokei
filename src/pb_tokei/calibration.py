@@ -16,6 +16,7 @@ import itertools
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -28,6 +29,9 @@ from pb_tokei.rally_log import (
     PlaySegment,
 )
 
+if TYPE_CHECKING:
+    from pb_tokei.camera_motion import CameraMotion
+
 MIN_LANDMARKS = 4
 """A homography needs four points, no three of them on one line."""
 
@@ -35,6 +39,10 @@ ERROR_WARNING_FT = 0.5
 """A Landmark error above this many feet is flagged: Zone boundaries need about this accuracy."""
 
 _MAX_CONDITION = 1e12
+
+_ALL_LANDMARK_COURT_POINTS = np.array(
+    [[lm.court_point.x, lm.court_point.y] for lm in Landmark], dtype=np.float64
+)
 
 type Matrix = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 
@@ -63,6 +71,38 @@ class Homography:
         """Whether a court point is in shot: in front of the camera and inside the frame."""
         image = self.to_image(point)
         return image is not None and 0 <= image.x <= 1 and 0 <= image.y <= 1
+
+    def compose(
+        self, frame_to_ref: Matrix, *, court_points: np.ndarray | None = None
+    ) -> Homography | None:
+        """Composes this reference-frame mapping with a frame's Camera Motion (`frame -> ref`).
+
+        Returns a Homography for that frame, or None if `frame_to_ref` is singular or degenerate.
+        """
+        if not np.all(np.isfinite(frame_to_ref)) or np.linalg.cond(frame_to_ref) > _MAX_CONDITION:
+            return None
+        try:
+            ref_to_frame = np.linalg.inv(frame_to_ref)
+        except np.linalg.LinAlgError:
+            return None
+        image_to_court = self.image_to_court @ frame_to_ref
+        court_to_image = ref_to_frame @ self.court_to_image
+        if (
+            not np.all(np.isfinite(image_to_court))
+            or not np.all(np.isfinite(court_to_image))
+            or np.linalg.cond(image_to_court) > _MAX_CONDITION
+        ):
+            return None
+        ref_court = _ALL_LANDMARK_COURT_POINTS if court_points is None else court_points
+        court_to_image = _facing_forward(court_to_image, ref_court)
+        projected = (court_to_image @ np.column_stack([ref_court, np.ones(len(ref_court))]).T).T
+        front = projected[:, 2] > 1e-9
+        if np.any(front):
+            img_pts = projected[front, :2] / projected[front, 2:3]
+            image_to_court = _facing_forward(image_to_court, img_pts)
+        else:
+            image_to_court = _facing_forward(image_to_court, np.array([[0.5, 0.5]]))
+        return Homography(image_to_court=image_to_court, court_to_image=court_to_image)
 
 
 @dataclass(frozen=True)
@@ -168,15 +208,22 @@ def calibration_at(
 
 
 class CourtMapping:
-    """The court mapping at any frame of a Match, from its Play Segments and Calibrations."""
+    """The court mapping at any frame of a Match, from Play Segments, Calibrations and motion."""
 
-    def __init__(self, segments: Sequence[PlaySegment], calibrations: Sequence[Calibration]):
+    def __init__(
+        self,
+        segments: Sequence[PlaySegment],
+        calibrations: Sequence[Calibration],
+        camera_motion: CameraMotion | None = None,
+    ):
         self._segments = sorted(segments, key=lambda s: s.start_frame)
         self._calibrations = tuple(calibrations)
+        self._camera_motion = camera_motion
         self._fits: dict[tuple[CameraView, int], Homography | None] = {}
+        self._landmark_courts: dict[tuple[CameraView, int], np.ndarray] = {}
 
     def at(self, frame: int) -> Homography | None:
-        """The homography for a frame, or None outside Play Segments or without a complete fit."""
+        """The homography for a frame, or None outside Play Segments, unmapped, or incomplete."""
         segment = next((s for s in self._segments if s.contains(frame)), None)
         if segment is None:
             return None
@@ -186,7 +233,20 @@ class CourtMapping:
         key = (calibration.camera_view, calibration.effective_from_frame)
         if key not in self._fits:
             self._fits[key] = fit_landmarks(calibration.landmarks)
-        return self._fits[key]
+            if calibration.landmarks:
+                self._landmark_courts[key] = np.array(
+                    [[lm.court_point.x, lm.court_point.y] for lm in calibration.landmarks],
+                    dtype=np.float64,
+                )
+        base = self._fits[key]
+        if base is None:
+            return None
+        if self._camera_motion is None or not self._camera_motion.covers(frame):
+            return base
+        frame_to_ref = self._camera_motion.at(frame)
+        if frame_to_ref is None:
+            return None
+        return base.compose(frame_to_ref, court_points=self._landmark_courts.get(key))
 
 
 # --- Fitting ------------------------------------------------------------------------------

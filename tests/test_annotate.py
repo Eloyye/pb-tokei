@@ -480,6 +480,201 @@ def test_segments_and_calibrations_of_a_missing_match_are_404(
     assert response.status_code == 404
 
 
+# --- Camera Motion ------------------------------------------------------------------------
+
+
+def test_camera_motion_reports_no_video_without_converted_footage(
+    client: TestClient, db: Path
+) -> None:
+    match_id = add_match(db)
+
+    body = client.get(f"/api/matches/{match_id}/camera-motion").json()
+
+    assert body == {
+        "status": "no_video",
+        "error": None,
+        "tracked_spans": 0,
+        "total_spans": 0,
+        "unmapped_ranges": [],
+        "spans": [],
+    }
+
+
+def test_camera_motion_tracks_caches_and_serves_frames_with_unmapped_cuts(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    from test_camera_motion import _panning_camera, write_synthetic_video
+
+    match_id = add_match(db)
+    (tmp_path / "footage").mkdir(exist_ok=True)
+    original = tmp_path / "footage" / "abc123.webm"
+    original.write_bytes(b"original")
+    converted = tmp_path / "footage" / "abc123.60fps.mp4"
+
+    # 20 frames: live play 0..11, hard cut 12..15, live play 16..19.
+    cameras = [None if 12 <= f <= 15 else _panning_camera((f - 5) / 20.0) for f in range(20)]
+    write_synthetic_video(converted, cameras)
+    set_video(db, match_id, Path("footage/abc123.webm"))
+
+    ref_cam = cameras[5]
+    assert ref_cam is not None
+    landmarks = {lm.value: {"x": p.x, "y": p.y} for lm, p in ref_cam.clicks().items()}
+    client.put(
+        f"/api/matches/{match_id}/play-segments",
+        json=[{"start_frame": 0, "end_frame": 19, "camera_view": "sideline"}],
+    )
+    client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[{"effective_from_frame": 0, "reference_frame": 5, "landmarks": landmarks}],
+    )
+
+    before = client.get(f"/api/matches/{match_id}/camera-motion").json()
+    assert before["status"] == "idle"
+    assert before["tracked_spans"] == 0
+    assert before["total_spans"] == 1
+
+    tracked = client.post(f"/api/matches/{match_id}/camera-motion/track?wait=true").json()
+    assert tracked["status"] == "ready"
+    assert tracked["tracked_spans"] == 1
+    assert tracked["total_spans"] == 1
+    assert tracked["unmapped_ranges"] == [
+        {"start_frame": 12, "end_frame": 15, "camera_view": "sideline"}
+    ]
+
+    frames = client.get(
+        f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=19"
+    ).json()
+    assert len(frames["court_to_image"]) == 20
+    assert len(frames["unmapped"]) == 20
+    # Reference frame and live-play frames are mapped; cut frames are unmapped (null).
+    assert frames["court_to_image"][5] is not None and frames["unmapped"][5] is False
+    assert frames["court_to_image"][0] is not None and frames["unmapped"][0] is False
+    for cut_f in range(12, 16):
+        assert frames["court_to_image"][cut_f] is None
+        assert frames["unmapped"][cut_f] is True
+
+
+def test_camera_motion_rejects_invalid_frame_windows_and_missing_matches(
+    client: TestClient, db: Path
+) -> None:
+    match_id = add_match(db)
+
+    assert (
+        client.get(
+            f"/api/matches/{match_id}/camera-motion/frames?start_frame=20&end_frame=10"
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=20000"
+        ).status_code
+        == 422
+    )
+    assert client.get(f"/api/matches/{uuid4()}/camera-motion").status_code == 404
+    assert client.post(f"/api/matches/{uuid4()}/camera-motion/track").status_code == 404
+
+
+def test_camera_motion_service_background_jobs_dedupe_supersede_and_report_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from pb_tokei.annotate.motion import CameraMotionService, CameraMotionStatus
+    from pb_tokei.camera_motion import CameraMotion
+    from pb_tokei.rally_log import PlaySegment
+
+    video = tmp_path / "match.60fps.mp4"
+    video.write_bytes(b"video")
+    service = CameraMotionService(tmp_path / "cache")
+    match_id = MatchId(uuid4())
+    segments = [PlaySegment(0, 10, CameraView.MAIN)]
+    cal_a = [Calibration(CameraView.MAIN, 0, 0, MAIN.clicks())]
+    moved = dict(MAIN.clicks())
+    moved[Landmark.NEAR_BASELINE_LEFT] = ImagePoint(
+        min(1.0, moved[Landmark.NEAR_BASELINE_LEFT].x + 0.01),
+        moved[Landmark.NEAR_BASELINE_LEFT].y,
+    )
+    cal_b = [Calibration(CameraView.MAIN, 0, 0, moved)]
+
+    started_events: list[threading.Event] = []
+    release_events: list[threading.Event] = []
+    cancel_events: list[threading.Event | None] = []
+    calls = 0
+
+    def blocking_track_match(
+        _video: Path,
+        _segments: object,
+        _cals: object,
+        *,
+        on_span_done: object = None,
+        cancel: threading.Event | None = None,
+    ) -> CameraMotion:
+        nonlocal calls
+        idx = calls
+        calls += 1
+        started_events[idx].set()
+        cancel_events.append(cancel)
+        release_events[idx].wait(timeout=5.0)
+        return CameraMotion()
+
+    monkeypatch.setattr(service.cache, "track_match", blocking_track_match)
+
+    # 1. Triggering twice with the same signature starts only one job, and wait=True joins it.
+    started_events.append(threading.Event())
+    release_events.append(threading.Event())
+    first = service.trigger(match_id, video, segments, cal_a)
+    assert first.status is CameraMotionStatus.TRACKING
+    assert started_events[0].wait(timeout=2.0)
+
+    second = service.trigger(match_id, video, segments, cal_a)
+    assert second.status is CameraMotionStatus.TRACKING
+    assert calls == 1
+
+    # 2. Editing Calibrations while job A runs: status for B is IDLE (not TRACKING for A).
+    assert service.status(match_id, video, segments, cal_b).status is CameraMotionStatus.IDLE
+
+    # Triggering B cancels job A and runs a new job for B.
+    started_events.append(threading.Event())
+    release_events.append(threading.Event())
+    third = service.trigger(match_id, video, segments, cal_b)
+    assert third.status is CameraMotionStatus.TRACKING
+    assert cancel_events[0] is not None and cancel_events[0].is_set()
+    assert started_events[1].wait(timeout=2.0)
+    assert calls == 2
+
+    # Stale job A finishing must not clobber job B's TRACKING state.
+    release_events[0].set()
+    assert service.status(match_id, video, segments, cal_b).status is CameraMotionStatus.TRACKING
+
+    # wait=True on B joins the in-flight job B instead of starting a third run.
+    joiner_entered = threading.Event()
+    joiner_done = threading.Event()
+
+    def join_b() -> None:
+        joiner_entered.set()
+        service.trigger(match_id, video, segments, cal_b, wait=True)
+        joiner_done.set()
+
+    joiner = threading.Thread(target=join_b, daemon=True)
+    joiner.start()
+    assert joiner_entered.wait(timeout=2.0)
+    # Wait briefly to verify wait=True blocks while job B is still running.
+    assert not joiner_done.wait(timeout=0.05)
+    release_events[1].set()
+    assert joiner_done.wait(timeout=2.0)
+    assert calls == 2
+
+    # 3. Errors from track_match are surfaced as ERROR status.
+    def failing_track_match(*_args: object, **_kwargs: object) -> CameraMotion:
+        raise RuntimeError("corrupt stream")
+
+    monkeypatch.setattr(service.cache, "track_match", failing_track_match)
+    errored = service.trigger(match_id, video, segments, cal_b, wait=True)
+    assert errored.status is CameraMotionStatus.ERROR
+    assert errored.error == "corrupt stream"
+
+
 # --- CLI ----------------------------------------------------------------------------------
 
 

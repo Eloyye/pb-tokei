@@ -15,3 +15,6 @@ src/pb_tokei/annotate/static/
 
 # Front-end dependencies.
 web/node_modules/
+
+# Rebuildable derived caches (e.g. per-frame Camera Motion).
+.pb-tokei-cache/

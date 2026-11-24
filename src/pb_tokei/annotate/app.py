@@ -15,12 +15,18 @@ from pathlib import Path
 from uuid import UUID
 
 import duckdb
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from pb_tokei.annotate.motion import (
+    CameraMotionFramesOut,
+    CameraMotionOut,
+    CameraMotionService,
+)
 from pb_tokei.calibration import Matrix, assess
+from pb_tokei.camera_motion import default_cache_dir
 from pb_tokei.convert import FootageConversionError, converted_path_for
 from pb_tokei.rally_log import (
     DEFAULT_DB_PATH,
@@ -219,13 +225,22 @@ class _VideoState:
         return f"pb-tokei convert {shlex.quote(str(self.source_video.path))}"
 
 
-def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) -> FastAPI:
+def create_app(
+    db_path: Path,
+    *,
+    base_dir: Path,
+    static_dir: Path = STATIC_DIR,
+    cache_dir: Path | None = None,
+) -> FastAPI:
     """Builds the app for the Rally Log at `db_path`.
 
     Relative paths (`db_path`, each `SourceVideo.path`) are resolved against `base_dir`, the
     directory the server was started from, just as the CLI resolves them.
     """
     db_file = db_path if db_path.is_absolute() else base_dir / db_path
+    motion_service = CameraMotionService(
+        default_cache_dir(db_file) if cache_dir is None else cache_dir
+    )
     app = FastAPI(title="pb-tokei annotate")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
 
@@ -238,6 +253,23 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
                     status_code=404, detail=f"Match not found: {match_id}"
                 ) from None
         return summary, _VideoState(summary.source_video, base_dir)
+
+    def lookup_motion_inputs(
+        match_id: UUID,
+    ) -> tuple[MatchId, Path | None, tuple[PlaySegment, ...], tuple[Calibration, ...]]:
+        mid = MatchId(match_id)
+        with RallyLog.open(db_file) as log:
+            try:
+                summary = log.get_match_summary(mid)
+            except KeyError:
+                raise HTTPException(
+                    status_code=404, detail=f"Match not found: {match_id}"
+                ) from None
+            segments = log.get_play_segments(mid)
+            calibrations = log.get_calibrations(mid)
+        video = _VideoState(summary.source_video, base_dir)
+        video_path = video.converted_path if video.status is VideoStatus.READY else None
+        return mid, video_path, segments, calibrations
 
     def with_log[T](action: Callable[[RallyLog], T]) -> T:
         """Runs an action on the Rally Log: 404 for a missing Match, 422 for invalid data."""
@@ -320,6 +352,32 @@ def create_app(db_path: Path, *, base_dir: Path, static_dir: Path = STATIC_DIR) 
             return [c for c in saved if c.camera_view is camera_view]
 
         return [CalibrationOut.from_domain(c) for c in with_log(change)]
+
+    # --- Camera Motion -------------------------------------------------------------------
+
+    @app.get("/api/matches/{match_id}/camera-motion", operation_id="getCameraMotion")
+    def get_camera_motion(match_id: UUID) -> CameraMotionOut:
+        mid, video_path, segments, calibrations = lookup_motion_inputs(match_id)
+        return motion_service.status(mid, video_path, segments, calibrations)
+
+    @app.post("/api/matches/{match_id}/camera-motion/track", operation_id="trackCameraMotion")
+    def track_camera_motion(match_id: UUID, wait: bool = False) -> CameraMotionOut:
+        """Tracks and caches Camera Motion for any uncached Calibration spans of the Match."""
+        mid, video_path, segments, calibrations = lookup_motion_inputs(match_id)
+        return motion_service.trigger(mid, video_path, segments, calibrations, wait=wait)
+
+    @app.get("/api/matches/{match_id}/camera-motion/frames", operation_id="getCameraMotionFrames")
+    def get_camera_motion_frames(
+        match_id: UUID,
+        start_frame: int = Query(ge=0),
+        end_frame: int = Query(ge=0),
+    ) -> CameraMotionFramesOut:
+        """Per-frame court-to-image matrices across an inclusive frame window."""
+        _mid, video_path, segments, calibrations = lookup_motion_inputs(match_id)
+        try:
+            return motion_service.frames(video_path, segments, calibrations, start_frame, end_frame)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @app.get("/api/{rest:path}", include_in_schema=False)
     def unknown_api(rest: str) -> None:

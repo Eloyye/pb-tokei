@@ -75,6 +75,63 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/camera-motion": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Camera Motion */
+    get: operations["getCameraMotion"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/camera-motion/frames": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Camera Motion Frames
+     * @description Per-frame court-to-image matrices across an inclusive frame window.
+     */
+    get: operations["getCameraMotionFrames"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/camera-motion/track": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Track Camera Motion
+     * @description Tracks and caches Camera Motion for any uncached Calibration spans of the Match.
+     */
+    post: operations["trackCameraMotion"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/play-segments": {
     parameters: {
       query?: never;
@@ -160,6 +217,69 @@ export interface components {
       /** Worst Error Ft */
       worst_error_ft: number | null;
     };
+    /**
+     * CameraMotionFramesOut
+     * @description Per-frame court-to-image matrices across an inclusive frame window.
+     *
+     *     Entry `i` corresponds to `start_frame + i`: `court_to_image[i]` is the 3×3 matrix when mapped,
+     *     or null otherwise; `unmapped[i]` is True specifically when the frame is inside a tracked Play
+     *     Segment span whose registration failed (so its positions are Unknown).
+     */
+    CameraMotionFramesOut: {
+      /** Court To Image */
+      court_to_image: (number[][] | null)[];
+      /** End Frame */
+      end_frame: number;
+      /** Start Frame */
+      start_frame: number;
+      /** Unmapped */
+      unmapped: boolean[];
+    };
+    /**
+     * CameraMotionOut
+     * @description Camera Motion tracking status and unmapped ranges across a Match.
+     */
+    CameraMotionOut: {
+      /** Error */
+      error: string | null;
+      /** Spans */
+      spans: components["schemas"]["CameraMotionSpanOut"][];
+      status: components["schemas"]["CameraMotionStatus"];
+      /** Total Spans */
+      total_spans: number;
+      /** Tracked Spans */
+      tracked_spans: number;
+      /** Unmapped Ranges */
+      unmapped_ranges: components["schemas"]["UnmappedRangeOut"][];
+    };
+    /**
+     * CameraMotionSpanOut
+     * @description Tracking summary for one Calibration span inside a Play Segment.
+     */
+    CameraMotionSpanOut: {
+      /** Calibration Effective From */
+      calibration_effective_from: number;
+      /** Calibration Reference Frame */
+      calibration_reference_frame: number;
+      camera_view: components["schemas"]["CameraView"];
+      /** End Frame */
+      end_frame: number;
+      /** Mapped Frames */
+      mapped_frames: number;
+      /** Start Frame */
+      start_frame: number;
+      /** Tracked */
+      tracked: boolean;
+      /** Unmapped Frames */
+      unmapped_frames: number;
+      /** Unmapped Ranges */
+      unmapped_ranges: components["schemas"]["UnmappedRangeOut"][];
+    };
+    /**
+     * CameraMotionStatus
+     * @enum {string}
+     */
+    CameraMotionStatus: "no_video" | "idle" | "tracking" | "ready" | "error";
     /**
      * CameraView
      * @enum {string}
@@ -269,6 +389,17 @@ export interface components {
      * @description Live play from one Camera View, from `start_frame` to `end_frame` inclusive.
      */
     PlaySegmentIO: {
+      camera_view: components["schemas"]["CameraView"];
+      /** End Frame */
+      end_frame: number;
+      /** Start Frame */
+      start_frame: number;
+    };
+    /**
+     * UnmappedRangeOut
+     * @description An inclusive stretch of frames in a Play Segment that could not be registered.
+     */
+    UnmappedRangeOut: {
       camera_view: components["schemas"]["CameraView"];
       /** End Frame */
       end_frame: number;
@@ -407,6 +538,104 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CalibrationOut"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getCameraMotion: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CameraMotionOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getCameraMotionFrames: {
+    parameters: {
+      query: {
+        start_frame: number;
+        end_frame: number;
+      };
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CameraMotionFramesOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  trackCameraMotion: {
+    parameters: {
+      query?: {
+        wait?: boolean;
+      };
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CameraMotionOut"];
         };
       };
       /** @description Validation Error */

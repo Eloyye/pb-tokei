@@ -942,6 +942,38 @@ fieldset.transport-group {
   font-size: 11px;
 }
 
+.motion-unmapped-callout {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  background: rgb(232 163 61 / 10%);
+  color: var(--warn);
+  font-size: 11px;
+}
+
+.motion-unmapped-callout .button {
+  justify-self: start;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.unmapped-banner {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--warn);
+  border-radius: 2px;
+  background: rgb(0 0 0 / 70%);
+  color: var(--warn);
+  font: 600 10px var(--ui);
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
 .cal-keys {
   padding: 8px 10px;
   color: var(--faint);
@@ -1211,6 +1243,40 @@ fieldset.transport-group {
 .seg.pending {
   background: transparent;
   outline: 1px dashed var(--accent);
+}
+
+.seg-unmapped {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  min-width: 3px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(232 163 61 / 55%),
+    rgb(232 163 61 / 55%) 3px,
+    rgb(232 163 61 / 20%) 3px,
+    rgb(232 163 61 / 20%) 6px
+  );
+  outline: 1px solid var(--warn);
+  pointer-events: none;
+}
+
+.issue-unmapped {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  min-width: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--warn);
+  opacity: 0.85;
+  cursor: pointer;
+}
+
+.issue-unmapped:hover {
+  opacity: 1;
 }
 
 .seg-handle {
