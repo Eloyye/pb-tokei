@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import { clearLandmark, currentFit, fitKey, placeLandmark } from "../lib/calibrations";
 import { markIn, markOut } from "../lib/segments";
+import { tabSaveStatus, waitUntilSaved } from "../lib/unsavedChanges";
 import { useRecording } from "./useRecording";
 
 type Client = typeof import("../api/client");
@@ -73,6 +74,52 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
+});
+
+/** Holds the next Play Segments save in flight; the returned function lets it land. */
+function holdNextSegmentsSave(): () => void {
+  let land: (() => void) | undefined;
+  vi.mocked(replacePlaySegments).mockImplementationOnce(
+    (_id, segments) =>
+      new Promise((resolve) => {
+        land = () => resolve(segments);
+      }),
+  );
+  return () => land?.();
+}
+
+describe("useRecording with a Rally Log switch", () => {
+  it("holds a switch until its queued save has landed", async () => {
+    const { result } = await loaded();
+    const finishSave = holdNextSegmentsSave();
+    let switched = false;
+
+    act(() => result.current[1].editSegments((s, p) => markIn(s, p, 500)));
+    act(() => result.current[1].editSegments((s, p) => markOut(s, p, 600)));
+    const waiting = waitUntilSaved().then(() => {
+      switched = true;
+    });
+    await flush();
+    expect(switched).toBe(false);
+
+    await act(async () => finishSave());
+    await waiting;
+    expect(switched).toBe(true);
+  });
+
+  it("keeps the tab unsaved after the editor closes until its last save lands", async () => {
+    const { result, unmount } = await loaded();
+    const finishSave = holdNextSegmentsSave();
+
+    act(() => result.current[1].editSegments((s, p) => markIn(s, p, 500)));
+    act(() => result.current[1].editSegments((s, p) => markOut(s, p, 600)));
+    unmount();
+    expect(tabSaveStatus().state).toBe("saving");
+
+    finishSave();
+    await flush();
+    expect(tabSaveStatus().state).toBe("saved");
+  });
 });
 
 describe("useRecording", () => {

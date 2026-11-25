@@ -1,13 +1,35 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { listMatches } from "../api/client";
+import { ApiError, isRetryable, listMatches } from "../api/client";
+import { useOpenRallyLogPicker } from "../shell/rallyLog";
 import { franchisesLabel, VIDEO_STATUS_LABELS } from "./teams";
 
 export function MatchList() {
-  const matches = useQuery({ queryKey: ["matches"], queryFn: listMatches });
+  const openPicker = useOpenRallyLogPicker();
+  const matches = useQuery({
+    queryKey: ["matches"],
+    queryFn: listMatches,
+    retry: (failures, error) => failures < 3 && isRetryable(error),
+  });
 
   if (matches.isPending) return <p className="notice">Loading Matches…</p>;
-  if (matches.isError) return <p className="notice error">{matches.error.message}</p>;
+  if (matches.isError) {
+    // 409: no Rally Log is open yet, or another tab has switched it.
+    const conflict = matches.error instanceof ApiError && matches.error.status === 409;
+    return (
+      <p className="notice error">
+        {matches.error.message}
+        {conflict && (
+          <>
+            {" "}
+            <button type="button" className="button" onClick={openPicker}>
+              Choose a Rally Log
+            </button>
+          </>
+        )}
+      </p>
+    );
+  }
 
   return (
     <main className="home">

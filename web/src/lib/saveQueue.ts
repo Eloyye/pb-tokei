@@ -20,6 +20,8 @@ export interface SaveQueue<T> {
    * edit made just before the editor closed isn't lost. Values pushed afterwards are ignored.
    */
   close(): void;
+  /** Resolves once nothing is waiting to be sent or in flight; at once if the queue is idle. */
+  settled(): Promise<void>;
 }
 
 export interface SaveQueueOptions {
@@ -51,6 +53,14 @@ export function createSaveQueue<T>(
   let current: SaveStatus = { state: "saved" };
   // Cuts a retry wait short when the queue closes.
   let wakeUp: (() => void) | null = null;
+  let settledWaiters: (() => void)[] = [];
+
+  const stop = () => {
+    running = false;
+    const waiters = settledWaiters;
+    settledWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
 
   const setStatus = (status: SaveStatus) => {
     current = status;
@@ -82,7 +92,7 @@ export function createSaveQueue<T>(
           // Keep any newer value: it may well be valid, and it supersedes this one.
           if (!next) {
             setStatus({ state: "refused", error: message });
-            running = false;
+            stop();
             return;
           }
           continue;
@@ -99,8 +109,8 @@ export function createSaveQueue<T>(
         wakeUp = null;
       }
     }
-    running = false;
     setStatus({ state: "saved" });
+    stop();
   };
 
   return {
@@ -113,6 +123,10 @@ export function createSaveQueue<T>(
     close() {
       closed = true;
       wakeUp?.();
+    },
+    settled() {
+      if (!running) return Promise.resolve();
+      return new Promise((resolve) => settledWaiters.push(resolve));
     },
   };
 }

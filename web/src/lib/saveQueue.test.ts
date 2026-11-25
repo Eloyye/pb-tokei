@@ -136,6 +136,47 @@ describe("createSaveQueue", () => {
   });
 });
 
+describe("settled", () => {
+  it("resolves at once when idle, and after the save in flight lands otherwise", async () => {
+    const { calls, save } = controlledSave();
+    const { queue } = queueFor(save);
+    let settled = false;
+
+    await queue.settled();
+    queue.push(1);
+    void queue.settled().then(() => {
+      settled = true;
+    });
+    await settle();
+    expect(settled).toBe(false);
+
+    calls[0]!.resolve();
+    await settle();
+    expect(settled).toBe(true);
+  });
+
+  it("waits for the last value a closing queue still sends", async () => {
+    const { calls, save } = controlledSave();
+    const { queue } = queueFor(save);
+    let settled = false;
+
+    queue.push(1);
+    queue.push(2);
+    queue.close();
+    void queue.settled().then(() => {
+      settled = true;
+    });
+    calls[0]!.resolve();
+    await settle();
+    expect(calls.map((c) => c.value)).toEqual([1, 2]);
+    expect(settled).toBe(false);
+
+    calls[1]!.resolve();
+    await settle();
+    expect(settled).toBe(true);
+  });
+});
+
 describe("combineStatus", () => {
   it("reports the worst status", () => {
     expect(combineStatus([{ state: "saved" }, { state: "saving" }]).state).toBe("saving");

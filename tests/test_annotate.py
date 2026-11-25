@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import duckdb
@@ -11,16 +12,20 @@ from pb_tokei import main
 from pb_tokei.annotate import server
 from pb_tokei.annotate.app import CalibrationOut, create_app
 from pb_tokei.annotate.frontend import source_hash, stamp_bundle
+from pb_tokei.annotate.motion import CameraMotionStatus
+from pb_tokei.camera_motion import default_cache_dir
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
     Landmark,
     MatchId,
     PlacedLandmark,
+    PlaySegment,
     RallyLog,
     SourceVideo,
 )
 from pb_tokei.roster import parse_roster, set_up_match
+from pb_tokei.state import read_last_rally_log
 
 URL = "https://www.youtube.com/watch?v=abc123"
 VIDEO_BYTES = bytes(range(256)) * 40
@@ -126,7 +131,7 @@ def test_rally_log_endpoint_returns_absolute_path(
     response = app_client.get("/api/rally-log")
 
     assert response.status_code == 200
-    assert response.json() == {"path": str(db.resolve())}
+    assert response.json() == {"path": str(db.resolve()), "recent": []}
 
 
 def test_relative_video_resolves_against_rally_log_dir_not_cwd(
@@ -839,6 +844,273 @@ def test_camera_motion_service_background_jobs_dedupe_supersede_and_report_error
     errored = service.trigger(match_id, video, segments, cal_b, wait=True)
     assert errored.status is CameraMotionStatus.ERROR
     assert errored.error == "corrupt stream"
+
+
+# --- Switching Rally Log ----------------------------------------------------------------
+
+
+def _open(client: TestClient, path: Path | str, *, create: bool = False) -> dict[str, object]:
+    response = client.post("/api/rally-log", json={"path": str(path), "create": create})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_switches_to_another_rally_log_and_remembers_it(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    add_match(db, tournament="In the first")
+    other = tmp_path / "other.duckdb"
+    add_match(other, tournament="In the other")
+
+    switched = _open(client, other)
+
+    assert switched["path"] == str(other.resolve())
+    assert [m["tournament"] for m in client.get("/api/matches").json()] == ["In the other"]
+    assert read_last_rally_log() == other.resolve()
+    recent = client.get("/api/rally-log").json()["recent"]
+    assert recent == [{"path": str(other.resolve()), "exists": True}]
+
+
+def test_open_takes_a_relative_path_from_the_open_rally_logs_folder(
+    client: TestClient, db: Path
+) -> None:
+    add_match(db)
+    (db.parent / "sub").mkdir()
+    other = db.parent / "sub" / "other.duckdb"
+    add_match(other)
+
+    assert _open(client, "sub/other.duckdb")["path"] == str(other.resolve())
+
+
+def test_open_refuses_a_missing_file_or_one_that_is_not_a_rally_log(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    add_match(db)
+    text = tmp_path / "notes.duckdb"
+    text.write_text("not a database")
+    foreign = tmp_path / "foreign.duckdb"
+    with duckdb.connect(str(foreign)) as con:
+        con.execute("CREATE TABLE things (x INTEGER)")
+
+    missing = client.post("/api/rally-log", json={"path": str(tmp_path / "nope.duckdb")})
+    not_db = client.post("/api/rally-log", json={"path": str(text)})
+    not_log = client.post("/api/rally-log", json={"path": str(foreign)})
+
+    assert missing.status_code == 404
+    assert not_db.status_code == 422
+    assert not_log.status_code == 422
+    # Checking a foreign DuckDB file leaves it as it was, without the Rally Log schema.
+    with duckdb.connect(str(foreign), read_only=True) as con:
+        tables = con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
+    assert tables == [("things",)]
+    assert client.get("/api/rally-log").json()["path"] == str(db.resolve())
+
+
+def test_creates_an_empty_rally_log_and_switches_to_it(client: TestClient, db: Path) -> None:
+    add_match(db)
+
+    created = _open(client, "fresh", create=True)
+
+    fresh = db.parent / "fresh.duckdb"
+    assert created["path"] == str(fresh.resolve())
+    assert RallyLog.is_rally_log(fresh)
+    assert client.get("/api/matches").json() == []
+    assert read_last_rally_log() == fresh.resolve()
+
+
+def test_create_refuses_an_existing_file_or_a_missing_folder(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    add_match(db)
+
+    exists = client.post("/api/rally-log", json={"path": str(db), "create": True})
+    no_folder = client.post(
+        "/api/rally-log", json={"path": str(tmp_path / "no" / "such.duckdb"), "create": True}
+    )
+
+    assert exists.status_code == 409
+    assert no_folder.status_code == 422
+    assert not (tmp_path / "no").exists()
+
+
+def test_requests_naming_a_rally_log_the_app_has_left_are_refused(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    """A tab still on the old Rally Log can't save into the new one, nor read from it."""
+    match_id = add_match(db)
+    old = {"X-Rally-Log": quote(str(db.resolve()))}
+    segments = [{"start_frame": 0, "end_frame": 9, "camera_view": "main"}]
+    # A save sent before the switch lands in the Rally Log it was meant for.
+    saved = client.put(f"/api/matches/{match_id}/play-segments", json=segments, headers=old)
+    assert saved.status_code == 200
+    other = tmp_path / "other.duckdb"
+    other_match = add_match(other)
+    _open(client, other)
+
+    late = client.put(f"/api/matches/{other_match}/play-segments", json=[], headers=old)
+    read = client.get("/api/matches", headers=old)
+
+    assert late.status_code == 409
+    assert read.status_code == 409
+    assert str(other.resolve()) in late.json()["detail"]
+    with RallyLog.open(db) as log:
+        assert len(log.get_play_segments(match_id)) == 1
+    current = {"X-Rally-Log": quote(str(other.resolve()))}
+    assert client.get("/api/matches", headers=current).status_code == 200
+
+
+def test_open_answers_503_for_a_rally_log_that_is_only_busy(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    """The CLI writing to a Rally Log makes it busy, not invalid: the operator should retry."""
+    import subprocess
+    import sys
+
+    add_match(db)
+    other = tmp_path / "other.duckdb"
+    add_match(other)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import duckdb, sys; c = duckdb.connect(sys.argv[1]); print('held', flush=True); "
+            "sys.stdin.read()",
+            str(other),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        busy = client.post("/api/rally-log", json={"path": str(other)})
+    finally:
+        holder.communicate("", timeout=10)
+
+    assert busy.status_code == 503
+    assert client.get("/api/rally-log").json()["path"] == str(db.resolve())
+    assert _open(client, other)["path"] == str(other.resolve())
+
+
+def test_video_names_its_rally_log_in_the_query(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    match_id = add_match(db)
+    footage(tmp_path, converted=True)
+    set_video(db, match_id, Path("footage/abc123.webm"))
+    url = f"/api/matches/{match_id}/video"
+
+    current = client.get(url, params={"rally_log": str(db.resolve())})
+    _open(client, "other", create=True)
+    stale = client.get(url, params={"rally_log": str(db.resolve())})
+
+    assert current.status_code == 200
+    assert stale.status_code == 409
+
+
+def test_rally_log_header_is_percent_encoded(tmp_path: Path, static_dir: Path) -> None:
+    folder = tmp_path / "Pickleball ピックル"
+    folder.mkdir()
+    db = folder / "log.duckdb"
+    add_match(db)
+    client = TestClient(create_app(db, static_dir=static_dir), base_url=LOCAL)
+
+    response = client.get("/api/matches", headers={"X-Rally-Log": quote(str(db.resolve()))})
+
+    assert response.status_code == 200
+
+
+def test_starts_with_no_rally_log_until_one_is_chosen(tmp_path: Path, static_dir: Path) -> None:
+    client = TestClient(create_app(None, static_dir=static_dir), base_url=LOCAL)
+    db = tmp_path / "log.duckdb"
+    add_match(db)
+
+    assert client.get("/api/rally-log").json() == {"path": None, "recent": []}
+    assert client.get("/api/matches").status_code == 409
+
+    _open(client, db)
+
+    assert len(client.get("/api/matches").json()) == 1
+
+
+class _BlockingTrack:
+    """A Camera Motion job for a fresh Match, held running until `release` is set."""
+
+    def __init__(
+        self, client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        from pb_tokei.camera_motion import CameraMotion
+
+        self.match_id = add_match(db)
+        footage(tmp_path, converted=True)
+        set_video(db, self.match_id, Path("footage/abc123.webm"))
+        client.put(
+            f"/api/matches/{self.match_id}/play-segments",
+            json=[{"start_frame": 0, "end_frame": 10, "camera_view": "main"}],
+        )
+        landmarks = {lm.value: {"x": p.x, "y": p.y, "frame": 0} for lm, p in MAIN.placed(0).items()}
+        calibration = {"effective_from_frame": 0, "reference_frame": 0, "landmarks": landmarks}
+        response = client.put(f"/api/matches/{self.match_id}/calibrations/main", json=[calibration])
+        assert response.is_success
+
+        self.service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.cancels: list[threading.Event] = []
+
+        def blocking_track_match(
+            *_args: object, cancel: threading.Event | None = None, **_kwargs: object
+        ) -> CameraMotion:
+            assert cancel is not None
+            self.cancels.append(cancel)
+            self.started.set()
+            self.release.wait(timeout=5.0)
+            return CameraMotion()
+
+        monkeypatch.setattr(self.service.cache, "track_match", blocking_track_match)
+        tracking = client.post(f"/api/matches/{self.match_id}/camera-motion/track").json()
+        assert tracking["status"] == "tracking"
+        assert self.started.wait(timeout=2.0)
+
+
+def test_reopening_the_open_rally_log_keeps_its_camera_motion_jobs(
+    client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = _BlockingTrack(client, db, tmp_path, monkeypatch)
+
+    _open(client, db)
+    job.release.set()
+
+    assert client.app.state.rally_logs.current.motion is job.service  # type: ignore[attr-defined]
+    assert not job.cancels[0].is_set()
+
+
+def test_switching_cancels_camera_motion_jobs_of_the_old_rally_log(
+    client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = _BlockingTrack(client, db, tmp_path, monkeypatch)
+    old_service = job.service
+    match_id = job.match_id
+
+    other = tmp_path / "elsewhere" / "other.duckdb"
+    other.parent.mkdir()
+    add_match(other)
+    _open(client, other)
+    job.release.set()
+
+    assert job.cancels[0].is_set()
+    new_service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
+    assert new_service is not old_service
+    assert new_service.cache.cache_dir == default_cache_dir(other.resolve())
+    # The old service starts nothing more, even for a request that got it before the switch.
+    old_segments = [PlaySegment(0, 10, CameraView.MAIN)]
+    old_calibrations = [Calibration(CameraView.MAIN, 0, 0, MAIN.placed(0))]
+    video = tmp_path / "footage" / "abc123.60fps.mp4"
+    after = old_service.trigger(match_id, video, old_segments, old_calibrations)
+    assert after.status is not CameraMotionStatus.TRACKING
+    assert len(job.cancels) == 1
 
 
 # --- CLI ----------------------------------------------------------------------------------

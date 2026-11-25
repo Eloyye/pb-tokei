@@ -1,4 +1,4 @@
-"""Per-user CLI state (last-opened Rally Log) and Rally Log path resolution."""
+"""Per-user state (the last-opened and recent Rally Logs) and Rally Log path resolution."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from pb_tokei.rally_log import DEFAULT_DB_PATH
 STATE_DIR_ENV = "PB_TOKEI_STATE_DIR"
 STATE_FILENAME = "state.json"
 APP_NAME = "pb-tokei"
+RECENT_LIMIT = 10
+"""How many Rally Logs the recent list keeps, most recent first."""
 
 
 class RallyLogNotFoundError(FileNotFoundError):
@@ -43,27 +45,48 @@ def _read_state_dict(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def read_last_rally_log() -> Path | None:
-    """Returns the remembered Rally Log absolute path, or None if missing/corrupt."""
-    data = _read_state_dict(state_file())
-    value = data.get("last_rally_log")
+def _absolute_path(value: object) -> Path | None:
+    """A remembered path, or None unless it is a usable absolute path string."""
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         return None
     candidate = Path(value)
-    if not candidate.is_absolute():
-        return None
-    return candidate
+    return candidate if candidate.is_absolute() else None
+
+
+def read_last_rally_log() -> Path | None:
+    """Returns the remembered Rally Log absolute path, or None if missing/corrupt."""
+    return _absolute_path(_read_state_dict(state_file()).get("last_rally_log"))
+
+
+def read_recent_rally_logs() -> list[Path]:
+    """The Rally Logs opened in `annotate`, most recent first, whether or not they still exist.
+
+    Entries that aren't usable absolute paths are skipped. A state file written before the
+    recent list existed yields just its last Rally Log.
+    """
+    data = _read_state_dict(state_file())
+    raw = data.get("recent_rally_logs")
+    entries = [data.get("last_rally_log"), *(raw if isinstance(raw, list) else [])]
+    recent: list[Path] = []
+    for entry in entries:
+        path = _absolute_path(entry)
+        if path is not None and path not in recent:
+            recent.append(path)
+    return recent[:RECENT_LIMIT]
 
 
 def write_last_rally_log(db_path: Path) -> bool:
-    """Atomically records `db_path` (as an absolute path) in the per-user state file.
+    """Atomically records `db_path` (as an absolute path) as the last Rally Log in the per-user
+    state file, and moves it to the front of the recent list.
 
     Returns True on success. On failure, prints a warning to stderr and returns False.
     """
     target = state_file()
     resolved = db_path.resolve()
+    recent = [resolved, *(p for p in read_recent_rally_logs() if p != resolved)]
     payload = _read_state_dict(target)
     payload["last_rally_log"] = str(resolved)
+    payload["recent_rally_logs"] = [str(p) for p in recent[:RECENT_LIMIT]]
     encoded = json.dumps(payload, indent=2) + "\n"
 
     tmp_path: Path | None = None

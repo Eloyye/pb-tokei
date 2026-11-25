@@ -125,6 +125,17 @@ class RallyLog:
     def open(cls, path: Path | str) -> Self:
         return cls(duckdb.connect(str(path)))
 
+    @staticmethod
+    def is_rally_log(path: Path | str) -> bool:
+        """Whether the DuckDB file at `path` holds a Rally Log, checked without changing it
+        (opening it would add the schema to any DuckDB file). Raises `duckdb.Error` if it can't
+        be read as a DuckDB file."""
+        with duckdb.connect(str(path), read_only=True) as db:
+            found = db.execute(
+                "SELECT 1 FROM duckdb_tables() WHERE table_name = 'matches'"
+            ).fetchone()
+        return found is not None
+
     def close(self) -> None:
         self._db.close()
 

@@ -9,7 +9,8 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AppShell, rallyLogFileName } from "./AppShell";
+import { AppShell } from "./AppShell";
+import { rallyLogFileName } from "./rallyLog";
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
@@ -38,7 +39,7 @@ describe("rallyLogFileName", () => {
 describe("AppShell", () => {
   it("shows the open Rally Log filename with the full path on hover", async () => {
     const fullPath = "/Users/eloy/projects/pb-tokei/demo.duckdb";
-    vi.mocked(getRallyLog).mockResolvedValue({ path: fullPath });
+    vi.mocked(getRallyLog).mockResolvedValue({ path: fullPath, recent: [] });
 
     const rootRoute = createRootRoute({ component: AppShell });
     const indexRoute = createRoute({

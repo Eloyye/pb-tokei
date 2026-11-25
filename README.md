@@ -112,6 +112,10 @@ uv run pb-tokei annotate [--db <path>] [--port 8000] [--no-browser]
 
 The app serves on `127.0.0.1` only, opens your browser, and shows the open Rally Log's filename in the header (full path on hover). `annotate` remembers the Rally Log it opens, and relative video paths are resolved relative to the Rally Log's directory ([ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)), so `uv run pb-tokei annotate` reopens it from any directory with its videos playing. If a Match has no playable video, the app shows the command that fixes it; it never downloads or converts anything itself.
 
+Click the Rally Log's name in the header to switch Rally Log without restarting: pick one of the last 10 opened (missing files are listed but greyed out), type a path and **Open**, or type a path and **New Rally Log** to make an empty one there (`.duckdb` is added if missing; add Matches with `match add --db <path>`). A relative path starts from the open Rally Log's folder. Unsaved edits are saved before the switch, which is refused while a save is failing. The app then goes Home on the new Rally Log and remembers it as the last one. When `annotate` finds no Rally Log at all (no `--db`, nothing remembered, no `./rally_log.duckdb`), it starts anyway and opens this picker. A `--db` path that doesn't exist is still an error.
+
+The server has one Rally Log open at a time ([ADR 0008](docs/adr/0008-one-rally-log-per-annotation-server.md)). Other tabs still on the old Rally Log can't save to it any more. Their header shows **Rally Log switched elsewhere: reload**.
+
 Press `?` in the app for every key that works. The full layout and keymap, including planned keys, are in [docs/annotation-ui.md](docs/annotation-ui.md).
 
 ## Project layout
