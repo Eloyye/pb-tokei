@@ -58,16 +58,10 @@ mkdir -p rosters
 uv run pb-tokei match new rosters/example.toml
 ```
 
-Fill in the Tournament and the four Players in `rosters/example.toml`, then create the Match in a new Rally Log and save its id.
+Fill in the Tournament and the four Players in `rosters/example.toml`, then create the Match in a new Rally Log and open the annotation app. Click the Match, paste the broadcast URL and click **Fetch** to download and convert it to 60 fps.
 
 ```bash
-match_id=$(uv run pb-tokei match add rosters/example.toml --db rally_log.duckdb)
-```
-
-Replace the example URL with the broadcast URL. Download the broadcast, attach it to the Match, and open the annotation app.
-
-```bash
-uv run pb-tokei download 'https://www.youtube.com/watch?v=VIDEO_ID' --match "$match_id" --db rally_log.duckdb
+uv run pb-tokei match add rosters/example.toml --db rally_log.duckdb
 uv run pb-tokei annotate --db rally_log.duckdb
 ```
 
@@ -79,7 +73,7 @@ Commands that read or write the Rally Log (`annotate`, `match add`, `match list`
 
 ### Footage
 
-`download` saves a broadcast and converts it to a constant 60 fps MP4. `convert` re-runs the conversion on a file already on disk:
+For scripting or terminal use, `download` saves a broadcast and converts it to a constant 60 fps MP4, and `convert` re-runs the conversion on a file already on disk (the annotation app runs the same code):
 
 ```bash
 uv run pb-tokei download <url>
@@ -110,7 +104,7 @@ A local web app for Chrome. It lists Matches and opens each in a Premiere-style 
 uv run pb-tokei annotate [--db <path>] [--port 8000] [--no-browser]
 ```
 
-The app serves on `127.0.0.1` only, opens your browser, and shows the open Rally Log's filename in the header (full path on hover). `annotate` remembers the Rally Log it opens, and relative video paths are resolved relative to the Rally Log's directory ([ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)), so `uv run pb-tokei annotate` reopens it from any directory with its videos playing. If a Match has no playable video, the app shows the command that fixes it; it never downloads or converts anything itself.
+The app serves on `127.0.0.1` only, opens your browser, and shows the open Rally Log's filename in the header (full path on hover). `annotate` remembers the Rally Log it opens, and relative video paths are resolved relative to the Rally Log's directory ([ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)), so `uv run pb-tokei annotate` reopens it from any directory with its videos playing. If a Match has no playable video, you can fetch and convert it from the app — or run the equivalent terminal command shown underneath ([ADR 0009](docs/adr/0009-the-annotation-app-may-fetch-footage.md)).
 
 Click the Rally Log's name in the header to switch Rally Log without restarting: pick one of the last 10 opened (missing files are listed but greyed out), type a path and **Open**, or type a path and **New Rally Log** to make an empty one there (`.duckdb` is added if missing; add Matches with `match add --db <path>`). A relative path starts from the open Rally Log's folder. Unsaved edits are saved before the switch, which is refused while a save is failing. The app then goes Home on the new Rally Log and remembers it as the last one. When `annotate` finds no Rally Log at all (no `--db`, nothing remembered, no `./rally_log.duckdb`), it starts anyway and opens this picker. A `--db` path that doesn't exist is still an error.
 

@@ -67,7 +67,11 @@ def static_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def client(db: Path, static_dir: Path) -> TestClient:
-    return TestClient(create_app(db, static_dir=static_dir), base_url=LOCAL)
+    return TestClient(
+        create_app(db, static_dir=static_dir),
+        base_url=LOCAL,
+        headers={"Origin": LOCAL},
+    )
 
 
 def footage(tmp_path: Path, *, converted: bool) -> Path:
@@ -104,6 +108,7 @@ def test_lists_matches_with_roster_and_video_status(
             "franchise_a": None,
             "franchise_b": None,
             "video_status": "none",
+            "footage_job": None,
         },
         {
             "id": str(ready),
@@ -113,6 +118,7 @@ def test_lists_matches_with_roster_and_video_status(
             "franchise_a": None,
             "franchise_b": None,
             "video_status": "ready",
+            "footage_job": None,
         },
     ]
 
@@ -1021,7 +1027,11 @@ def test_rally_log_header_is_percent_encoded(tmp_path: Path, static_dir: Path) -
 
 
 def test_starts_with_no_rally_log_until_one_is_chosen(tmp_path: Path, static_dir: Path) -> None:
-    client = TestClient(create_app(None, static_dir=static_dir), base_url=LOCAL)
+    client = TestClient(
+        create_app(None, static_dir=static_dir),
+        base_url=LOCAL,
+        headers={"Origin": LOCAL},
+    )
     db = tmp_path / "log.duckdb"
     add_match(db)
 

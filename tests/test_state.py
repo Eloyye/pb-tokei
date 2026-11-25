@@ -20,11 +20,13 @@ from pb_tokei.state import (
     STATE_DIR_ENV,
     STATE_FILENAME,
     RallyLogNotFoundError,
+    read_cookies_from_browser,
     read_last_rally_log,
     read_recent_rally_logs,
     resolve_rally_log,
     state_dir,
     state_file,
+    write_cookies_from_browser,
     write_last_rally_log,
 )
 
@@ -508,3 +510,34 @@ def test_symlinked_footage_dir_is_recorded_relatively(
         added = log.load_match(MatchId(roster_mid))
     assert added.source_video is not None
     assert added.source_video.path == Path("footage/existing.mp4")
+
+
+def test_cookies_from_browser_round_trips_and_preserves_rally_log_state(tmp_path: Path) -> None:
+    db = tmp_path / "rally_log.duckdb"
+    db.write_bytes(b"placeholder")
+    assert read_cookies_from_browser() is None
+
+    assert write_last_rally_log(db) is True
+    assert write_cookies_from_browser("chrome:Profile 1") is True
+
+    assert read_cookies_from_browser() == "chrome:Profile 1"
+    assert read_last_rally_log() == db.resolve()
+
+    # Writing last_rally_log preserves cookies_from_browser.
+    db2 = tmp_path / "other.duckdb"
+    db2.write_bytes(b"placeholder")
+    assert write_last_rally_log(db2) is True
+    assert read_cookies_from_browser() == "chrome:Profile 1"
+
+    # Clearing to None writes null and preserves Rally Log entries.
+    assert write_cookies_from_browser(None) is True
+    assert read_cookies_from_browser() is None
+    assert json.loads(state_file().read_text())["cookies_from_browser"] is None
+    assert read_last_rally_log() == db2.resolve()
+
+    with pytest.raises(ValueError, match="Invalid cookies_from_browser"):
+        write_cookies_from_browser("--exec=bad")
+
+    # Corrupt state values are ignored.
+    state_file().write_text(json.dumps({"cookies_from_browser": "-bad"}))
+    assert read_cookies_from_browser() is None

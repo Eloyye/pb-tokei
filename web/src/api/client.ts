@@ -81,6 +81,10 @@ export type CameraMotionSpanOut = Schemas["CameraMotionSpanOut"];
 export type CameraMotionStatus = Schemas["CameraMotionStatus"];
 export type CameraMotionFramesOut = Schemas["CameraMotionFramesOut"];
 export type UnmappedRangeOut = Schemas["UnmappedRangeOut"];
+export type FootageJobOut = Schemas["FootageJobOut"];
+export type FootageJobState = Schemas["FootageJobState"];
+export type FootageJobSummaryOut = Schemas["FootageJobSummaryOut"];
+export type FetchFootageIn = Schemas["FetchFootageIn"];
 /** A Calibration's own fields, without its fit: what is edited and saved. */
 export type Calibration = Pick<
   CalibrationOut,
@@ -148,6 +152,34 @@ export async function replaceCalibrations(
 export function matchVideoUrl(matchId: string): string {
   const url = `/api/matches/${encodeURIComponent(matchId)}/video`;
   return tabRallyLog === null ? url : `${url}?rally_log=${encodeURIComponent(tabRallyLog)}`;
+}
+
+export async function getMatchFootage(matchId: string): Promise<FootageJobOut> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/footage", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function fetchMatchFootage(
+  matchId: string,
+  body: FetchFootageIn,
+): Promise<FootageJobOut> {
+  const { data, error, response } = await api.POST("/api/matches/{match_id}/footage/fetch", {
+    params: { path: { match_id: matchId } },
+    body,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function cancelMatchFootage(matchId: string): Promise<FootageJobOut> {
+  const { data, error, response } = await api.POST("/api/matches/{match_id}/footage/cancel", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
 }
 
 export async function getCameraMotion(matchId: string): Promise<CameraMotionOut> {

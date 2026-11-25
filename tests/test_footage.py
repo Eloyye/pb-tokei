@@ -294,10 +294,10 @@ def test_rejects_unexpected_filepath_output_from_download(
 def test_raises_clear_error_when_yt_dlp_binary_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def missing_binary(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def missing_binary(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
         raise FileNotFoundError("No such file or directory: 'yt-dlp'")
 
-    monkeypatch.setattr(subprocess, "run", missing_binary)
+    monkeypatch.setattr(subprocess, "Popen", missing_binary)
 
     with pytest.raises(FootageDownloadError, match="yt-dlp is not installed"):
         download_footage(SAMPLE_URL, tmp_path / "footage")

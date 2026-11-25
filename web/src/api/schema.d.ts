@@ -132,6 +132,63 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/footage": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Match Footage */
+    get: operations["getMatchFootage"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/footage/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Cancel Match Footage
+     * @description Cancels an active footage job or removes a queued one.
+     */
+    post: operations["cancelMatchFootage"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/footage/fetch": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Fetch Match Footage
+     * @description Queues a background download and/or 60 fps conversion for a Match (ADR 0009).
+     */
+    post: operations["fetchMatchFootage"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/play-segments": {
     parameters: {
       query?: never;
@@ -319,6 +376,55 @@ export interface components {
      * @enum {string}
      */
     CameraView: "main" | "sideline";
+    /**
+     * FetchFootageIn
+     * @description Parameters to start fetching or converting footage for a Match.
+     */
+    FetchFootageIn: {
+      /** Cookies From Browser */
+      cookies_from_browser?: string | null;
+      /** Url */
+      url?: string | null;
+    };
+    /**
+     * FootageJobOut
+     * @description Full footage job state for one Match, plus the remembered browser cookie setting.
+     */
+    FootageJobOut: {
+      /** Cookies From Browser */
+      cookies_from_browser: string | null;
+      /** Error */
+      error: string | null;
+      /** Eta */
+      eta: string | null;
+      /** Hint */
+      hint: string | null;
+      /** Percent */
+      percent: number | null;
+      /** Queue Position */
+      queue_position: number | null;
+      /** Speed */
+      speed: string | null;
+      state: components["schemas"]["FootageJobState"];
+      /** Stderr Tail */
+      stderr_tail: string | null;
+    };
+    /**
+     * FootageJobState
+     * @enum {string}
+     */
+    FootageJobState: "idle" | "queued" | "downloading" | "converting" | "error";
+    /**
+     * FootageJobSummaryOut
+     * @description Short footage job summary attached to each row in the Match list.
+     */
+    FootageJobSummaryOut: {
+      /** Percent */
+      percent: number | null;
+      /** Queue Position */
+      queue_position: number | null;
+      state: components["schemas"]["FootageJobState"];
+    };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -374,11 +480,12 @@ export interface components {
     };
     /**
      * MatchDetailOut
-     * @description A Match, plus the CLI command that makes its video playable when it isn't yet.
+     * @description A Match, plus its recorded video metadata and the CLI command that makes it playable.
      */
     MatchDetailOut: {
       /** Fix Command */
       fix_command: string | null;
+      footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
       /** Franchise A */
       franchise_a: string | null;
       /** Franchise B */
@@ -388,6 +495,10 @@ export interface components {
        * Format: uuid
        */
       id: string;
+      /** Original Present */
+      original_present: boolean;
+      /** Source Url */
+      source_url: string | null;
       /** Team A */
       team_a: [string, string];
       /** Team B */
@@ -401,6 +512,7 @@ export interface components {
      * @description A Match's roster by name and whether its 60 fps video can be played.
      */
     MatchOut: {
+      footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
       /** Franchise A */
       franchise_a: string | null;
       /** Franchise B */
@@ -720,6 +832,103 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CameraMotionOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getMatchFootage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FootageJobOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cancelMatchFootage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FootageJobOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  fetchMatchFootage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["FetchFootageIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FootageJobOut"];
         };
       };
       /** @description Validation Error */
