@@ -16,10 +16,12 @@ from pb_tokei import main
 from pb_tokei.rally_log import MatchId, RallyLog, SourceVideo, resolve_video_path, stored_video_path
 from pb_tokei.roster import parse_roster, set_up_match
 from pb_tokei.state import (
+    RECENT_LIMIT,
     STATE_DIR_ENV,
     STATE_FILENAME,
     RallyLogNotFoundError,
     read_last_rally_log,
+    read_recent_rally_logs,
     resolve_rally_log,
     state_dir,
     state_file,
@@ -68,7 +70,7 @@ def test_write_and_read_last_rally_log_is_atomic_and_stores_absolute_path(
     assert read_last_rally_log() == db.resolve()
 
     raw = json.loads(state_file().read_text(encoding="utf-8"))
-    assert raw == {"last_rally_log": str(db.resolve())}
+    assert raw == {"last_rally_log": str(db.resolve()), "recent_rally_logs": [str(db.resolve())]}
     # Atomic write leaves only state.json, no leftover temp files.
     assert [p.name for p in state_dir().iterdir()] == [STATE_FILENAME]
 
@@ -344,8 +346,8 @@ def test_commands_error_naming_both_paths_when_remembered_and_default_are_missin
     roster_file = work / "match.toml"
     roster_file.write_text(roster_toml())
 
+    # `annotate` starts anyway and shows the picker (see the test below).
     commands = [
-        ["annotate", "--no-browser"],
         ["match", "list"],
         ["match", "add", str(roster_file)],
         ["download", SAMPLE_URL, "--match", str(uuid4())],
@@ -356,6 +358,85 @@ def test_commands_error_naming_both_paths_when_remembered_and_default_are_missin
         assert code == 1, argv
         assert str(gone) in err, argv
         assert str(local_default) in err, argv
+
+
+def test_annotate_with_no_rally_log_starts_with_picker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("pb_tokei.annotate.server.STATIC_DIR", _make_static_dir(tmp_path))
+    served: list[object] = []
+
+    def fake_run(self: uvicorn.Server) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        self.started = True
+        assert isinstance(self.config.app, FastAPI)
+        client = TestClient(self.config.app, base_url="http://127.0.0.1")
+        served.append(client.get("/api/rally-log").json()["path"])
+
+    monkeypatch.setattr(uvicorn.Server, "run", fake_run)
+
+    code = main(["annotate", "--no-browser"])
+
+    assert code == 0
+    assert served == [None]
+    assert "choose or create one in the app" in capsys.readouterr().err
+    # Nothing was opened, so nothing is remembered.
+    assert read_last_rally_log() is None
+
+
+def test_annotate_with_a_missing_db_flag_still_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["annotate", "--no-browser", "--db", str(tmp_path / "typo.duckdb")])
+
+    assert code == 1
+    assert "Rally Log database not found" in capsys.readouterr().err
+
+
+# --- Recent Rally Logs --------------------------------------------------------------------
+
+
+def test_recent_rally_logs_are_most_recent_first_without_duplicates(tmp_path: Path) -> None:
+    a, b, c = (tmp_path / f"{name}.duckdb" for name in "abc")
+
+    for path in (a, b, c, a):
+        write_last_rally_log(path)
+
+    assert read_recent_rally_logs() == [a.resolve(), c.resolve(), b.resolve()]
+    assert read_last_rally_log() == a.resolve()
+
+
+def test_recent_rally_logs_keep_missing_files_and_are_capped(tmp_path: Path) -> None:
+    paths = [tmp_path / f"log{i}.duckdb" for i in range(RECENT_LIMIT + 2)]
+    for path in paths:
+        write_last_rally_log(path)
+
+    recent = read_recent_rally_logs()
+
+    assert len(recent) == RECENT_LIMIT
+    assert recent[0] == paths[-1].resolve()
+    assert not recent[0].exists()
+
+
+def test_recent_rally_logs_read_an_older_state_file_and_skip_bad_entries(tmp_path: Path) -> None:
+    last = (tmp_path / "last.duckdb").resolve()
+    other = (tmp_path / "other.duckdb").resolve()
+    state_dir().mkdir(parents=True, exist_ok=True)
+    state_file().write_text(json.dumps({"last_rally_log": str(last)}))
+    assert read_recent_rally_logs() == [last]
+
+    state_file().write_text(
+        json.dumps(
+            {"last_rally_log": str(last), "recent_rally_logs": [str(other), 3, "rel.duckdb"]}
+        )
+    )
+    assert read_recent_rally_logs() == [last, other]
+
+    state_file().write_text(json.dumps({"recent_rally_logs": "not a list"}))
+    assert read_recent_rally_logs() == []
 
 
 def test_bare_cli_still_prints_help_and_exits_with_error(

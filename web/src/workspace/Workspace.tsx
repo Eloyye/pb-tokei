@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { type Landmark, type MatchDetail, matchVideoUrl } from "../api/client";
 import {
   calibrationAt,
@@ -282,7 +282,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     setSizes((s) => ({ ...s, [key]: clampSize(key, value) }));
   const gridRect = () => gridRef.current?.getBoundingClientRect();
 
-  const src = match.video_status === "ready" ? matchVideoUrl(match.id) : null;
+  // Fixed per Match: a URL that changed on a later render would reload the video.
+  const src = useMemo(
+    () => (match.video_status === "ready" ? matchVideoUrl(match.id) : null),
+    [match.id, match.video_status],
+  );
 
   return (
     <div className="match-frame">
