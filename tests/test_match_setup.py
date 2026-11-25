@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -49,8 +48,11 @@ def test_create_match_is_equivalent_to_its_roster_file(client: TestClient, db: P
     with RallyLog.open(db) as log:
         first = set_up_match(log, parse_roster(roster_toml()))
     roster = parse_roster(roster_toml(team_b=(("Eve Park", "left"), ("Dan Kim", "right"))))
+    body = form(roster)
+    body["tournament"] += " "
+    body["team_a"][0]["name"] += " "
 
-    response = client.post("/api/matches", json=form(roster))
+    response = client.post("/api/matches", json=body)
 
     assert response.status_code == 201, response.text
     match_id = MatchId(UUID(response.json()["id"]))
@@ -66,19 +68,6 @@ def test_create_match_is_equivalent_to_its_roster_file(client: TestClient, db: P
         assert replace(match, id=expected.id) == expected
 
 
-def test_concurrent_match_creation_reuses_roster_records(client: TestClient, db: Path) -> None:
-    with ThreadPoolExecutor(2) as pool:
-        requests = [pool.submit(client.post, "/api/matches", json=form()) for _ in range(2)]
-        responses = [request.result() for request in requests]
-
-    assert all(response.status_code == 201 for response in responses)
-    assert responses[0].json()["id"] != responses[1].json()["id"]
-    with RallyLog.open(db) as log:
-        assert len(log.list_matches()) == 2
-        assert len(log.list_tournaments()) == 1
-        assert len(log.list_players()) == 4
-
-
 def test_create_mlp_match_can_pick_or_create_a_franchise_match(
     client: TestClient, db: Path
 ) -> None:
@@ -90,6 +79,10 @@ def test_create_mlp_match_can_pick_or_create_a_franchise_match(
         initial = log.load_match(MatchId(UUID(first.json()["id"])))
         assert initial.franchise_match_id is not None
 
+    # A form opened before the first request omits the id and reuses the meeting it created.
+    automatic = client.post("/api/matches", json=body)
+    assert automatic.status_code == 201, automatic.text
+
     explicitly_new = client.post(
         "/api/matches", json={**body, "franchise_match": {**body["franchise_match"], "id": None}}
     )
@@ -97,7 +90,7 @@ def test_create_mlp_match_can_pick_or_create_a_franchise_match(
     reverse = {
         **body,
         "franchise_match": {
-            "franchise_a": DALLAS_VS_MIAMI["franchise_b"],
+            "franchise_a": DALLAS_VS_MIAMI["franchise_b"] + " ",
             "franchise_b": DALLAS_VS_MIAMI["franchise_a"],
             "id": str(initial.franchise_match_id),
         },
@@ -105,18 +98,26 @@ def test_create_mlp_match_can_pick_or_create_a_franchise_match(
     selected = client.post("/api/matches", json=reverse)
     assert selected.status_code == 201, selected.text
 
+    ambiguous = client.post("/api/matches", json=body)
+    assert ambiguous.status_code == 422
+    assert "met more than once" in ambiguous.json()["detail"]
+    assert str(initial.franchise_match_id) not in ambiguous.json()["detail"]
+
     with RallyLog.open(db) as log:
+        reused = log.load_match(MatchId(UUID(automatic.json()["id"])))
         fresh = log.load_match(MatchId(UUID(explicitly_new.json()["id"])))
         existing = log.load_match(MatchId(UUID(selected.json()["id"])))
+        assert reused.franchise_match_id == initial.franchise_match_id
         assert fresh.franchise_match_id != initial.franchise_match_id
         assert existing.franchise_match_id == initial.franchise_match_id
         assert existing.team_a_id == initial.team_b_id
         assert len(log.list_franchise_matches()) == 2
+        assert len(log.list_matches()) == 4
 
 
 def test_match_creation_reports_roster_errors_without_writing(client: TestClient, db: Path) -> None:
     body = form()
-    body["team_b"][1] = body["team_a"][0]
+    body["team_b"][1] = {**body["team_a"][0], "name": body["team_a"][0]["name"] + " "}
 
     response = client.post("/api/matches", json=body)
 

@@ -55,7 +55,7 @@ export function NewMatchPage() {
     );
   }
   if (path === null || roster.isPending) return <p className="notice">Loading roster…</p>;
-  if (roster.isError) {
+  if (roster.isError && roster.data === undefined) {
     const stale = roster.error instanceof ApiError && roster.error.status === 409;
     return (
       <p className="notice error" role="alert">
@@ -91,9 +91,18 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["matches"], exact: true });
     },
+    onError: (error) => {
+      // A meeting or a Player may have been added since this form opened.
+      if (error instanceof ApiError && error.status === 422) {
+        void queryClient.invalidateQueries({ queryKey: ["roster", path], exact: true });
+      }
+    },
   });
 
-  const namedTournaments = roster.tournaments.filter(({ name }) => name === tournamentName);
+  const tournamentText = tournamentName.trim();
+  const franchiseAText = franchiseA.trim();
+  const franchiseBText = franchiseB.trim();
+  const namedTournaments = roster.tournaments.filter(({ name }) => name === tournamentText);
   const firstTournament = namedTournaments[0];
   const tournament =
     namedTournaments.find(({ tour }) => tour === tourChoice) ??
@@ -101,8 +110,8 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
       ? firstTournament
       : undefined);
   const tour = tournament?.tour ?? tourChoice;
-  const aId = roster.franchises.find(({ name }) => name === franchiseA)?.id;
-  const bId = roster.franchises.find(({ name }) => name === franchiseB)?.id;
+  const aId = roster.franchises.find(({ name }) => name === franchiseAText)?.id;
+  const bId = roster.franchises.find(({ name }) => name === franchiseBText)?.id;
   const meetings = roster.franchise_matches.filter(
     (item) =>
       item.tournament_id === tournament?.id &&
@@ -131,19 +140,19 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
     event.preventDefault();
     if (create.isPending) return;
     create.reset();
-    const names = [...teamA, ...teamB].map((player) => player.name);
+    const names = [...teamA, ...teamB].map((player) => player.name.trim());
     const team_a = completeTeam(teamA, roster.players);
     const team_b = completeTeam(teamB, roster.players);
     let error: string | null = null;
-    if (!tournamentName.trim()) error = "Enter a Tournament name.";
+    if (!tournamentText) error = "Enter a Tournament name.";
     else if (!tour) error = "Choose a Tour.";
-    else if (names.some((name) => !name.trim())) error = "Enter all four Player names.";
+    else if (names.some((name) => !name)) error = "Enter all four Player names.";
     else if (new Set(names).size !== names.length)
       error = "A Player can't appear twice in a Match.";
     else if (!team_a || !team_b) error = "Choose handedness for each new Player.";
     else if (tour === "mlp") {
-      if (!franchiseA.trim() || !franchiseB.trim()) error = "Enter both Franchise names.";
-      else if (franchiseA === franchiseB) error = "A Franchise can't play itself.";
+      if (!franchiseAText || !franchiseBText) error = "Enter both Franchise names.";
+      else if (franchiseAText === franchiseBText) error = "A Franchise can't play itself.";
       else if (meetings.length > 1 && !meetingId) error = "Choose a Franchise Match.";
     }
     setValidationError(error);
@@ -151,16 +160,16 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
 
     create.mutate(
       {
-        tournament: tournamentName,
+        tournament: tournamentText,
         tour,
         team_a,
         team_b,
         franchise_match:
           tour === "mlp"
             ? {
-                franchise_a: franchiseA,
-                franchise_b: franchiseB,
-                id: meetingId && meetingId !== "new" ? meetingId : null,
+                franchise_a: franchiseAText,
+                franchise_b: franchiseBText,
+                ...(meetingId === undefined ? {} : { id: meetingId === "new" ? null : meetingId }),
               }
             : undefined,
         footage_url: footage.trim() || undefined,
@@ -297,8 +306,9 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
 }
 
 function completeTeam(team: TeamDraft, players: Roster["players"]): RosterTeam | null {
-  const [first, second] = team.map(({ name, handedness }) => {
-    const hand = players.find((player) => player.name === name)?.handedness ?? handedness;
+  const [first, second] = team.map((draft) => {
+    const name = draft.name.trim();
+    const hand = players.find((player) => player.name === name)?.handedness ?? draft.handedness;
     return hand ? { name, handedness: hand } : null;
   });
   return first && second ? [first, second] : null;
@@ -327,7 +337,7 @@ function TeamFields({
         <span className={`swatch team-${side.toLowerCase()}`} aria-hidden="true" /> Team {side}
       </legend>
       {team.map((player, index) => {
-        const known = players.find(({ name }) => name === player.name);
+        const known = players.find(({ name }) => name === player.name.trim());
         const label = `Player ${index + 1}`;
         const rename = (name: string) =>
           update(index, { name, handedness: known ? "" : player.handedness });

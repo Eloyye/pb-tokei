@@ -73,7 +73,9 @@ export function NameField<T extends { name: string }>({
   const visible = open && options.length > 0;
   const suggestion = useMemo(
     () =>
-      choices.some((choice) => choice.name === name) ? undefined : suggestName(search, indexed),
+      choices.some((choice) => choice.name === name.trim())
+        ? undefined
+        : suggestName(search, indexed),
     [choices, name, search, indexed],
   );
 

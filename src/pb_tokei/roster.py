@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -45,10 +45,23 @@ class RosterError(ValueError):
     """A Roster that is malformed, or that disagrees with the Rally Log."""
 
 
+class AmbiguousFranchiseMatchError(RosterError):
+    """More than one existing Franchise Match fits an unpinned Roster."""
+
+    def __init__(self, message: str, choices: tuple[FranchiseMatchId, ...]) -> None:
+        super().__init__(message)
+        self.choices = choices
+
+
 @dataclass(frozen=True)
 class RosterPlayer:
     name: str
     handedness: Handedness
+
+
+def _trim_team(team: tuple[RosterPlayer, RosterPlayer]) -> tuple[RosterPlayer, RosterPlayer]:
+    a, b = team
+    return replace(a, name=a.name.strip()), replace(b, name=b.name.strip())
 
 
 @dataclass(frozen=True)
@@ -69,24 +82,32 @@ class Roster:
     video: SourceVideo | None = None
 
     def __post_init__(self) -> None:
-        names = [p.name for p in (*self.team_a, *self.team_b)]
-        if any(not name.strip() for name in names):
+        team_a, team_b = _trim_team(self.team_a), _trim_team(self.team_b)
+        names = [p.name for p in (*team_a, *team_b)]
+        if not all(names):
             raise RosterError("each Player needs a name")
         if len(set(names)) != len(names):
             raise RosterError("a Player can't appear twice in a Match")
-        if not self.tournament.strip():
+        tournament = self.tournament.strip()
+        if not tournament:
             raise RosterError("Tournament name must be non-empty text")
+        object.__setattr__(self, "team_a", team_a)
+        object.__setattr__(self, "team_b", team_b)
+        object.__setattr__(self, "tournament", tournament)
+
         fm = self.franchise_match
         if fm is None:
             if self.tour is Tour.MLP:
-                raise RosterError("an MLP Match needs a [franchise_match] section")
+                raise RosterError("an MLP Match needs a Franchise Match")
             return
         if self.tour is not Tour.MLP:
-            raise RosterError('[franchise_match] is only for MLP (tour = "mlp")')
-        if not fm.franchise_a.strip() or not fm.franchise_b.strip():
+            raise RosterError("only MLP Matches have a Franchise Match")
+        a, b = fm.franchise_a.strip(), fm.franchise_b.strip()
+        if not a or not b:
             raise RosterError("each Franchise needs a name")
-        if fm.franchise_a == fm.franchise_b:
+        if a == b:
             raise RosterError("a Franchise can't play itself")
+        object.__setattr__(self, "franchise_match", replace(fm, franchise_a=a, franchise_b=b))
 
 
 # --- Reading ------------------------------------------------------------------------------
@@ -143,7 +164,7 @@ def parse_roster(text: str) -> Roster:
 
     return Roster(
         match_id=MatchId(_uuid(data, "id", "the Roster File")),
-        tournament=_text(tournament, "name", "[tournament]", strip=False),
+        tournament=_text(tournament, "name", "[tournament]"),
         tour=tour,
         team_a=team_a,
         team_b=team_b,
@@ -166,7 +187,7 @@ def _team(data: dict[str, Any], key: str) -> tuple[RosterPlayer, RosterPlayer]:
         _only_keys(player, where, {"name", "handedness"})
         result.append(
             RosterPlayer(
-                _text(player, "name", where, strip=False),
+                _text(player, "name", where),
                 _choice(player, "handedness", Handedness, where),
             )
         )
@@ -176,8 +197,8 @@ def _team(data: dict[str, Any], key: str) -> tuple[RosterPlayer, RosterPlayer]:
 def _franchise_match(table: dict[str, Any]) -> RosterFranchiseMatch:
     where = "[franchise_match]"
     _only_keys(table, where, {"franchise_a", "franchise_b"}, {"id"})
-    a = _text(table, "franchise_a", where, strip=False)
-    b = _text(table, "franchise_b", where, strip=False)
+    a = _text(table, "franchise_a", where)
+    b = _text(table, "franchise_b", where)
     pinned = FranchiseMatchId(_uuid(table, "id", where)) if "id" in table else None
     return RosterFranchiseMatch(a, b, pinned)
 
@@ -203,11 +224,11 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def _text(table: dict[str, Any], key: str, where: str, *, strip: bool = True) -> str:
+def _text(table: dict[str, Any], key: str, where: str) -> str:
     value = table.get(key)
     if not isinstance(value, str) or not value.strip():
         raise RosterError(f"{where} {key} must be non-empty text")
-    return value.strip() if strip else value
+    return value.strip()
 
 
 def _choice[E: (Tour, Handedness)](table: dict[str, Any], key: str, enum: type[E], where: str) -> E:
@@ -235,7 +256,7 @@ def roster_template(match_id: MatchId | None = None) -> str:
     match_id = match_id or MatchId(new_id())
     return f'''# Roster File: sets up one Match. Load it with `pb-tokei match add <this file>`.
 # Use the exact stored names for existing Players, Franchises and Tournaments (across all Tours).
-# A name that matches after folding case and whitespace is rejected with the stored spelling.
+# Outer spaces are trimmed. If a name differs only in case or internal spacing, use the suggestion.
 id = "{match_id}"
 
 [tournament]
@@ -282,9 +303,9 @@ _setup_lock = Lock()
 def set_up_match(log: RallyLog, roster: Roster) -> Match:
     """Creates the Match a Roster describes in one transaction.
 
-    An exact name reuses the stored Player, Franchise or Tournament on its Tour. A name that
-    only matches after folding case and whitespace raises RosterError. Tournament names are
-    checked across Tours. Only new records are written.
+    After trimming outer whitespace, an exact name reuses the stored Player, Franchise or
+    Tournament on its Tour. A name that only matches after folding case and internal whitespace
+    raises RosterError. Tournament names are checked across Tours. Only new records are written.
     """
     with _setup_lock, log.transaction():
         return _set_up_match(log, roster)
@@ -295,23 +316,25 @@ def _set_up_match(log: RallyLog, roster: Roster) -> Match:
         raise RosterError(f"Match {roster.match_id} already exists")
     new: list[Callable[[], None]] = []
 
-    tournaments = log.list_tournaments()
-    tournament = next(
-        (t for t in tournaments if t.name == roster.tournament and t.tour is roster.tour), None
-    )
+    tournament = log.find_tournament(roster.tournament, roster.tour)
     if tournament is None:
-        other = _find_name(tournaments, roster.tournament, "Tournament")
+        tournaments = log.list_tournaments()
+        other = next((t for t in tournaments if t.name == roster.tournament), None)
         if other is not None:
             raise RosterError(f"Tournament {other.name!r} is on the {other.tour.upper()} Tour")
-        tournament = Tournament(TournamentId(new_id()), roster.tournament.strip(), roster.tour)
+        _reject_normalized_name(tournaments, roster.tournament, "Tournament")
+        tournament = Tournament(TournamentId(new_id()), roster.tournament, roster.tour)
         new.append(partial(log.save_tournament, tournament))
 
-    available_players = log.list_players()
+    available_players: list[Player] | None = None
     player_ids: dict[str, PlayerId] = {}
     for entry in (*roster.team_a, *roster.team_b):
-        player = _find_name(available_players, entry.name, "Player")
+        player = log.find_player(entry.name)
         if player is None:
-            player = Player(PlayerId(new_id()), entry.name.strip(), entry.handedness)
+            if available_players is None:
+                available_players = log.list_players()
+            _reject_normalized_name(available_players, entry.name, "Player")
+            player = Player(PlayerId(new_id()), entry.name, entry.handedness)
             new.append(partial(log.save_player, player))
             available_players.append(player)
         elif player.handedness is not entry.handedness:
@@ -320,8 +343,6 @@ def _set_up_match(log: RallyLog, roster: Roster) -> Match:
                 f" but the Roster says {entry.handedness.value}"
             )
         player_ids[entry.name] = player.id
-    if len(set(player_ids.values())) != 4:
-        raise RosterError("a Player can't appear twice in a Match")
 
     teams = []
     for entries in (roster.team_a, roster.team_b):
@@ -336,18 +357,19 @@ def _set_up_match(log: RallyLog, roster: Roster) -> Match:
     franchise_match = None
     if roster.franchise_match is not None:
         fm = roster.franchise_match
-        available_franchises = log.list_franchises()
+        available_franchises: list[Franchise] | None = None
         franchises = []
         for name in (fm.franchise_a, fm.franchise_b):
-            franchise = _find_name(available_franchises, name, "Franchise")
+            franchise = log.find_franchise(name)
             if franchise is None:
-                franchise = Franchise(FranchiseId(new_id()), name.strip())
+                if available_franchises is None:
+                    available_franchises = log.list_franchises()
+                _reject_normalized_name(available_franchises, name, "Franchise")
+                franchise = Franchise(FranchiseId(new_id()), name)
                 new.append(partial(log.save_franchise, franchise))
                 available_franchises.append(franchise)
             franchises.append(franchise)
         a, b = franchises
-        if a.id == b.id:
-            raise RosterError("a Franchise can't play itself")
         franchise_match, is_new = _franchise_match_for(log, tournament, a, b, fm.id)
         if is_new:
             new.append(partial(log.save_franchise_match, franchise_match))
@@ -370,19 +392,15 @@ def _set_up_match(log: RallyLog, roster: Roster) -> Match:
     return match
 
 
-def _find_name[T: (Player, Franchise, Tournament)](
-    records: Sequence[T], name: str, kind: str
-) -> T | None:
-    for record in records:
-        if record.name == name:
-            return record
+def _reject_normalized_name(
+    records: Iterable[Player | Franchise | Tournament], name: str, kind: str
+) -> None:
     normalized = " ".join(name.split()).casefold()
     for record in records:
         if " ".join(record.name.split()).casefold() == normalized:
             raise RosterError(
                 f"{kind} {name!r} matches an existing name (did you mean {record.name!r}?)"
             )
-    return None
 
 
 def _franchise_match_for(
@@ -408,10 +426,9 @@ def _franchise_match_for(
 
     found = log.find_franchise_matches(tournament.id, franchise_a.id, franchise_b.id)
     if len(found) > 1:
-        ids = ", ".join(str(fm.id) for fm in found)
-        raise RosterError(
-            f"{franchise_a.name} and {franchise_b.name} met more than once at {tournament.name}"
-            f" ({ids}); give [franchise_match] id to pick one"
+        raise AmbiguousFranchiseMatchError(
+            f"{franchise_a.name} and {franchise_b.name} met more than once at {tournament.name}",
+            tuple(fm.id for fm in found),
         )
     if found:
         return found[0], False

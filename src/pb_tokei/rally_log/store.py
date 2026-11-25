@@ -252,16 +252,21 @@ class RallyLog:
 
     def find_tournament(self, name: str, tour: Tour) -> Tournament | None:
         row = self._db.execute(
-            "SELECT * FROM tournaments WHERE name = ? AND tour = ?", [name, tour.value]
+            "SELECT * FROM tournaments WHERE name = ? AND tour = ? ORDER BY id LIMIT 1",
+            [name, tour.value],
         ).fetchone()
         return None if row is None else Tournament(TournamentId(row[0]), row[1], Tour(row[2]))
 
     def find_player(self, name: str) -> Player | None:
-        row = self._db.execute("SELECT * FROM players WHERE name = ?", [name]).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM players WHERE name = ? ORDER BY id LIMIT 1", [name]
+        ).fetchone()
         return None if row is None else Player(PlayerId(row[0]), row[1], Handedness(row[2]))
 
     def find_franchise(self, name: str) -> Franchise | None:
-        row = self._db.execute("SELECT * FROM franchises WHERE name = ?", [name]).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM franchises WHERE name = ? ORDER BY id LIMIT 1", [name]
+        ).fetchone()
         return None if row is None else Franchise(FranchiseId(row[0]), row[1])
 
     def find_franchise_matches(

@@ -30,7 +30,13 @@ from pb_tokei.rally_log import (
     RallyLog,
     stored_video_path,
 )
-from pb_tokei.roster import RosterError, read_roster, roster_template, set_up_match
+from pb_tokei.roster import (
+    AmbiguousFranchiseMatchError,
+    RosterError,
+    read_roster,
+    roster_template,
+    set_up_match,
+)
 from pb_tokei.state import RallyLogNotFoundError, resolve_rally_log, write_last_rally_log
 
 DEFAULT_ANNOTATE_PORT = 8000
@@ -421,6 +427,10 @@ def _match_add(args: argparse.Namespace) -> int:
     try:
         with RallyLog.open(db_path) as log:
             match = set_up_match(log, roster)
+    except AmbiguousFranchiseMatchError as exc:
+        ids = ", ".join(str(id_) for id_ in exc.choices)
+        print(f"error: {exc} ({ids}). Give [franchise_match] id to pick one.", file=sys.stderr)
+        return 1
     except (RosterError, duckdb.Error, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
