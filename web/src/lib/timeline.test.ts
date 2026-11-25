@@ -9,6 +9,7 @@ import {
   reconcileView,
   rulerTicks,
   toPercent,
+  type WheelAxisLock,
   wheelToView,
   ZOOM_STEP,
   zoomView,
@@ -97,11 +98,21 @@ describe("wheelToView", () => {
     totalFrames: 3000,
     overview: false,
   };
-  const wheel = { deltaMode: 0, deltaX: 0, deltaY: 0, shiftKey: false, ctrlKey: false };
+  const wheel = {
+    deltaMode: 0,
+    deltaX: 0,
+    deltaY: 0,
+    shiftKey: false,
+    ctrlKey: false,
+    timeStamp: 10,
+  };
+  const horizontalLock: WheelAxisLock = { axis: "x", timeStamp: 0 };
+  const verticalLock: WheelAxisLock = { axis: "y", timeStamp: 0 };
   const apply = (
     input: Partial<typeof wheel>,
     options?: Partial<Parameters<typeof wheelToView>[2]>,
-  ) => wheelToView(view, { ...wheel, ...input }, { ...context, ...options });
+    lock?: WheelAxisLock,
+  ) => wheelToView(view, { ...wheel, ...input }, { ...context, ...options }, lock).view;
 
   it.each([
     { deltaMode: 1, deltaX: 2, deltaY: 0, pixelsX: 32, pixelsY: 0 },
@@ -123,7 +134,7 @@ describe("wheelToView", () => {
   });
 
   it("uses an exponential factor for pinches, even during a horizontal scroll lock", () => {
-    const pinched = apply({ deltaY: 20, ctrlKey: true }, { axis: "x" });
+    const pinched = apply({ deltaY: 20, ctrlKey: true }, undefined, horizontalLock);
     expect(pinched.end - pinched.start).toBeCloseTo(600 * Math.exp(0.2));
   });
 
@@ -158,18 +169,24 @@ describe("wheelToView", () => {
   });
 
   it("ignores deltas on the other axis during a locked scroll", () => {
-    expect(apply({ deltaX: 15, deltaY: 100 }, { axis: "x" })).toEqual({
+    expect(apply({ deltaX: 15, deltaY: 100 }, undefined, horizontalLock)).toEqual({
       start: 415,
       end: 1015,
     });
-    expect(apply({ deltaX: 100, deltaY: 10 }, { axis: "y" })).toEqual(apply({ deltaY: 10 }));
-    expect(apply({ deltaY: 100 }, { axis: "x" })).toBe(view);
+    expect(apply({ deltaX: 100, deltaY: 10 }, undefined, verticalLock)).toEqual(
+      apply({ deltaY: 10 }),
+    );
+    expect(apply({ deltaY: 100 }, undefined, horizontalLock)).toBe(view);
   });
 
   it("keeps pans inside the video and respects the zoom bounds", () => {
     expect(apply({ deltaX: -500 })).toEqual({ start: 0, end: 600 });
     expect(apply({ deltaX: 2500 })).toEqual({ start: 2400, end: 3000 });
-    const zoomIn = wheelToView({ start: 500, end: 518 }, { ...wheel, deltaY: -100 }, context);
+    const { view: zoomIn } = wheelToView(
+      { start: 500, end: 518 },
+      { ...wheel, deltaY: -100 },
+      context,
+    );
     expect(zoomIn.end - zoomIn.start).toBe(MIN_SPAN);
     expect(apply({ deltaY: 100 }, { totalFrames: 1000 })).toEqual({ start: 100, end: 1000 });
     expect(apply({ deltaY: 100 }, { totalFrames: 800 })).toEqual(fullView(800));
@@ -177,42 +194,24 @@ describe("wheelToView", () => {
 });
 
 describe("lockWheelAxis", () => {
-  const dimensions = { laneWidth: 600, pageHeight: 200 };
-
   it("locks to the first dominant axis until 150 ms after the last event", () => {
-    const first = lockWheelAxis(
-      undefined,
-      { deltaMode: 0, deltaX: 20, deltaY: 4, timeStamp: 0 },
-      dimensions,
-    );
+    const first = lockWheelAxis(undefined, { x: 20, y: 4, timeStamp: 0 });
     expect(first).toEqual({ axis: "x", timeStamp: 0 });
 
-    const second = lockWheelAxis(
-      first,
-      { deltaMode: 0, deltaX: 0, deltaY: 20, timeStamp: 100 },
-      dimensions,
-    );
+    const second = lockWheelAxis(first, { x: 0, y: 20, timeStamp: 100 });
     expect(second).toEqual({ axis: "x", timeStamp: 100 });
 
-    const third = lockWheelAxis(
-      second,
-      { deltaMode: 0, deltaX: 0, deltaY: 20, timeStamp: 200 },
-      dimensions,
-    );
+    const third = lockWheelAxis(second, { x: 0, y: 20, timeStamp: 200 });
     expect(third).toEqual({ axis: "x", timeStamp: 200 });
 
-    expect(
-      lockWheelAxis(third, { deltaMode: 0, deltaX: 4, deltaY: 20, timeStamp: 350 }, dimensions),
-    ).toEqual({
+    expect(lockWheelAxis(third, { x: 4, y: 20, timeStamp: 350 })).toEqual({
       axis: "y",
       timeStamp: 350,
     });
   });
 
   it("waits for a nonzero delta to pick an axis", () => {
-    expect(
-      lockWheelAxis(undefined, { deltaMode: 0, deltaX: 0, deltaY: 0, timeStamp: 0 }, dimensions),
-    ).toBeUndefined();
+    expect(lockWheelAxis(undefined, { x: 0, y: 0, timeStamp: 0 })).toBeUndefined();
   });
 });
 

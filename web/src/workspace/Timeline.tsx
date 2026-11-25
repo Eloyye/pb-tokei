@@ -7,7 +7,6 @@ import {
   type FrameRange,
   frameAt,
   fullView,
-  lockWheelAxis,
   rulerTicks,
   toPercent,
   type WheelAxisLock,
@@ -77,7 +76,7 @@ export function Timeline({
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
-  const wheelAxis = useRef<WheelAxisLock | undefined>(undefined);
+  const wheelLock = useRef<WheelAxisLock | undefined>(undefined);
   const queuedWheelView = useRef<{ from: FrameRange; to: FrameRange } | null>(null);
   const activeDrag = useRef<TimelineDrag | null>(null);
   const [edgePreview, setEdgePreview] = useState<EdgeDrag>();
@@ -102,6 +101,7 @@ export function Timeline({
     if (next.kind === "edge") {
       if (target !== drag.frame) setEdgePreview(next);
     } else if (target !== drag.frame || (playing && target !== frame)) {
+      // Playback can advance while the scrub still points to the same frame.
       onSeek(target);
     }
   };
@@ -128,32 +128,30 @@ export function Timeline({
     const rect = rulerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
 
-    const { deltaMode, deltaX, deltaY, timeStamp, shiftKey, ctrlKey, clientX } = event;
-    const wheel = { deltaMode, deltaX, deltaY, timeStamp, shiftKey, ctrlKey };
+    const { clientX } = event;
     const target = event.target instanceof Element ? event.target : null;
     const overview = Boolean(target?.closest(".overview"));
     const overHeader = target?.closest(".track-head, .timeline-timecode");
-    const dimensions = { laneWidth: rect.width, pageHeight: bodyRef.current?.clientHeight ?? 0 };
-    const lock =
-      overview || shiftKey || ctrlKey
-        ? undefined
-        : lockWheelAxis(wheelAxis.current, wheel, dimensions);
-    wheelAxis.current = lock;
-
     const previous = currentView();
     const pointerFraction =
       overHeader || clientX < rect.left
         ? undefined
         : Math.min(1, (clientX - rect.left) / rect.width);
-    const next = wheelToView(previous, wheel, {
-      ...dimensions,
-      pointerFraction,
-      playing,
-      frame,
-      totalFrames,
-      overview,
-      axis: lock?.axis,
-    });
+    const { view: next, lock } = wheelToView(
+      previous,
+      event,
+      {
+        laneWidth: rect.width,
+        pageHeight: bodyRef.current?.clientHeight ?? 0,
+        pointerFraction,
+        playing,
+        frame,
+        totalFrames,
+        overview,
+      },
+      wheelLock.current,
+    );
+    wheelLock.current = lock;
     if (next.start === previous.start && next.end === previous.end) return;
 
     queuedWheelView.current = { from: view, to: next };

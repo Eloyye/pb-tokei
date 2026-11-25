@@ -14,7 +14,11 @@ export const MIN_SPAN = 15;
 /** The zoom factor for one keypress, button click, or wheel notch. */
 export const ZOOM_STEP = 1.5;
 
+// Use a fixed 16 CSS px approximation for browsers that report deltas in lines.
 const WHEEL_LINE_PIXELS = 16;
+// A typical mouse wheel notch reports about 100 CSS pixels.
+const WHEEL_NOTCH_PIXELS = 100;
+// Keep momentum events in the same gesture until wheel input pauses.
 const WHEEL_GESTURE_GAP_MS = 150;
 
 /** Tick spacings the ruler may use, in frames: from 1 frame to 10 minutes. */
@@ -119,14 +123,11 @@ function dominantAxis(x: number, y: number): WheelAxis {
 /** Keep a scroll on its first dominant axis through any remaining diagonal deltas. */
 export function lockWheelAxis(
   previous: WheelAxisLock | undefined,
-  wheel: WheelDeltas & { timeStamp: number },
-  dimensions: WheelDimensions,
+  { x, y, timeStamp }: { x: number; y: number; timeStamp: number },
 ): WheelAxisLock | undefined {
-  const { timeStamp } = wheel;
   if (previous && timeStamp - previous.timeStamp < WHEEL_GESTURE_GAP_MS) {
     return { axis: previous.axis, timeStamp };
   }
-  const { x, y } = wheelPixels(wheel, dimensions);
   if (x === 0 && y === 0) return undefined;
   return { axis: dominantAxis(x, y), timeStamp };
 }
@@ -137,35 +138,43 @@ interface WheelViewContext extends WheelDimensions {
   frame: number;
   totalFrames: number;
   overview: boolean;
-  axis?: WheelAxis;
 }
 
-/** Zoom or pan the visible frame range for a Timeline wheel event. */
+/** Apply a Timeline wheel event and return the view and lock for the next event. */
 export function wheelToView(
   view: FrameRange,
-  wheel: WheelDeltas & { shiftKey: boolean; ctrlKey: boolean },
+  wheel: WheelDeltas & { shiftKey: boolean; ctrlKey: boolean; timeStamp: number },
   context: WheelViewContext,
-): FrameRange {
-  const { laneWidth, pointerFraction, playing, frame, totalFrames, overview, axis } = context;
-  if (laneWidth <= 0) return view;
+  previousLock?: WheelAxisLock,
+): { view: FrameRange; lock: WheelAxisLock | undefined } {
+  const { laneWidth, pointerFraction, playing, frame, totalFrames, overview } = context;
+  if (laneWidth <= 0) return { view, lock: previousLock };
 
   const { x, y } = wheelPixels(wheel, context);
+  const { ctrlKey, shiftKey, timeStamp } = wheel;
+  const eitherAxisPans = overview || (shiftKey && !ctrlKey);
+  const lock =
+    eitherAxisPans || ctrlKey ? undefined : lockWheelAxis(previousLock, { x, y, timeStamp });
   const span = view.end - view.start;
-  const eitherAxisPans = overview || wheel.shiftKey;
-  const scrollAxis = eitherAxisPans ? dominantAxis(x, y) : (axis ?? dominantAxis(x, y));
-  if (overview || (!wheel.ctrlKey && (eitherAxisPans || scrollAxis === "x"))) {
-    const delta = scrollAxis === "x" ? x : y;
+  if (eitherAxisPans || lock?.axis === "x") {
+    const axis = lock?.axis ?? dominantAxis(x, y);
+    const delta = axis === "x" ? x : y;
     const shift = (delta / laneWidth) * span;
-    if (shift === 0) return view;
-    return clampView({ start: view.start + shift, end: view.end + shift }, totalFrames);
+    if (shift === 0) return { view, lock };
+    return {
+      view: clampView({ start: view.start + shift, end: view.end + shift }, totalFrames),
+      lock,
+    };
   }
-  if (y === 0) return view;
+  if (y === 0) return { view, lock };
 
-  const factor = wheel.ctrlKey ? Math.exp(y / 100) : ZOOM_STEP ** (y / 100);
+  const notches = y / WHEEL_NOTCH_PIXELS;
+  const factor = ctrlKey ? Math.exp(notches) : ZOOM_STEP ** notches;
+  // Cap each event at one zoom step so large deltas cannot overshoot.
   const limitedFactor = Math.max(1 / ZOOM_STEP, Math.min(ZOOM_STEP, factor));
   const anchor =
     playing || pointerFraction === undefined ? frame : view.start + span * pointerFraction;
-  return zoomView(view, limitedFactor, anchor, totalFrames);
+  return { view: zoomView(view, limitedFactor, anchor, totalFrames), lock };
 }
 
 /**

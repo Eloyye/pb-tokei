@@ -22,7 +22,7 @@ const GROUPS: [string, [string[], string][]][] = [
         "Zoom at the pointer when paused, or at the playhead while playing or over track headers",
       ],
       [["⇧Scroll", "Swipe ↔"], "Pan the Timeline"],
-      [["Scroll"], "Pan over the Overview bar"],
+      [["Scroll on Overview"], "Move the visible window"],
       [["Drag"], "Scrub on the ruler or tracks"],
     ],
   ],
