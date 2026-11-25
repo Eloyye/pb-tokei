@@ -600,6 +600,66 @@ export function skipLandmark(current: Landmark | null): Landmark {
 }
 
 /**
+ * How the Monitor highlights the currently selected Landmark:
+ * - `marker`: glow behind the Landmark's existing `.landmark-marker` on this frame
+ * - `ghost`: glow at its projected court intersection when it has no marker on this frame
+ * - `none`: no highlight (nothing selected, no matrix, or projection outside the picture)
+ */
+export type LandmarkHighlight =
+  | { kind: "none" }
+  | { kind: "marker" }
+  | { kind: "ghost"; at: Point };
+
+export interface LandmarkHighlightInput {
+  selected: Landmark | null;
+  calibration: Calibration | undefined;
+  frame: number;
+  /** Resolved reference-frame positions from the current fit, if any. */
+  resolvedLandmarks?: Partial<Record<Landmark, Point>>;
+  /** Whether the selected Landmark is currently being dragged on this frame. */
+  dragging?: boolean;
+  /** The court-to-image matrix the court template uses, or null/undefined if unavailable. */
+  matrix: number[][] | null | undefined;
+}
+
+/** Whether `landmark` has a visible marker on `frame` in `CalibrationOverlay`. */
+function hasLandmarkMarker(
+  calibration: Calibration | undefined,
+  frame: number,
+  landmark: Landmark,
+  resolvedLandmarks: Partial<Record<Landmark, Point>> | undefined,
+  dragging: boolean,
+): boolean {
+  if (!calibration) return false;
+  if (dragging) return true;
+  const placed = calibration.landmarks[landmark];
+  if (!placed) return false;
+  if (placed.frame === frame) return true;
+  if (frame !== calibration.reference_frame) return false;
+  const resolved = resolvedLandmarks?.[landmark];
+  return resolved ? isInFramePoint(resolved) : true;
+}
+
+/** Computes the Monitor highlight for the selected Landmark on `frame`. */
+export function landmarkHighlight({
+  selected,
+  calibration,
+  frame,
+  resolvedLandmarks,
+  dragging = false,
+  matrix,
+}: LandmarkHighlightInput): LandmarkHighlight {
+  if (!selected) return { kind: "none" };
+  if (hasLandmarkMarker(calibration, frame, selected, resolvedLandmarks, dragging)) {
+    return { kind: "marker" };
+  }
+  if (!matrix) return { kind: "none" };
+  const projected = project(matrix, courtPoint(selected));
+  if (!isInFramePoint(projected)) return { kind: "none" };
+  return { kind: "ghost", at: projected };
+}
+
+/**
  * A court point through a 3×3 homography into normalised image coordinates, or null if it is
  * behind the camera (`w` not positive, as the server orients its matrices).
  */

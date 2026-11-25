@@ -9,6 +9,8 @@ import {
 import type { Calibration, CalibrationOut, Landmark } from "../api/client";
 import {
   COURT_LINES,
+  isInFramePoint,
+  landmarkHighlight,
   LANDMARKS,
   landmarkLabel,
   type Point,
@@ -158,7 +160,7 @@ export function CalibrationOverlay({
       if (!onRef) return;
       const resolved = fit?.resolved_landmarks[landmark];
       if (resolved) {
-        if (resolved.x < 0 || resolved.x > 1 || resolved.y < 0 || resolved.y > 1) return;
+        if (!isInFramePoint(resolved)) return;
         markers.push({
           landmark,
           index,
@@ -187,6 +189,20 @@ export function CalibrationOverlay({
       : (fit ?? lastFit)?.court_to_image;
   const staticOffRef = offRef && frameMatrix === undefined && !unmapped;
   const templateStale = !fit || staticOffRef;
+  const highlight = landmarkHighlight({
+    selected,
+    calibration,
+    frame,
+    resolvedLandmarks: fit?.resolved_landmarks,
+    dragging: selected !== null && drag?.landmark === selected,
+    matrix,
+  });
+  const highlightAt =
+    highlight.kind === "ghost"
+      ? highlight.at
+      : highlight.kind === "marker"
+        ? markers.find((m) => m.landmark === selected)?.at
+        : undefined;
 
   return (
     <div
@@ -234,6 +250,14 @@ export function CalibrationOverlay({
             )),
           )}
         </svg>
+      )}
+      {highlightAt && (
+        <div
+          className={`landmark-highlight ${highlight.kind === "ghost" && templateStale ? "stale" : ""}`}
+          data-highlight={highlight.kind}
+          style={{ left: `${highlightAt.x * 100}%`, top: `${highlightAt.y * 100}%` }}
+          aria-hidden
+        />
       )}
       {unmapped ? (
         <output className="unmapped-banner">
