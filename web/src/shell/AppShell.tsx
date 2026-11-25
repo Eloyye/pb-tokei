@@ -27,7 +27,12 @@ export function AppShell() {
   const [pickerChoice, setPickerChoice] = useState<boolean | null>(null);
   const openPicker = useCallback(() => setPickerChoice(true), []);
   const queryClient = useQueryClient();
-  const rallyLog = useQuery({ queryKey: ["rally-log"], queryFn: getRallyLog });
+  // Refetched on every focus so a tab notices another tab's switch (ADR 0008).
+  const rallyLog = useQuery({
+    queryKey: ["rally-log"],
+    queryFn: getRallyLog,
+    refetchOnWindowFocus: "always",
+  });
   const noRallyLog = rallyLog.data !== undefined && rallyLog.data.path === null;
   const pickerOpen = pickerChoice ?? noRallyLog;
 

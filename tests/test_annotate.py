@@ -957,6 +957,55 @@ def test_requests_naming_a_rally_log_the_app_has_left_are_refused(
     assert client.get("/api/matches", headers=current).status_code == 200
 
 
+def test_open_answers_503_for_a_rally_log_that_is_only_busy(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    """The CLI writing to a Rally Log makes it busy, not invalid: the operator should retry."""
+    import subprocess
+    import sys
+
+    add_match(db)
+    other = tmp_path / "other.duckdb"
+    add_match(other)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import duckdb, sys; c = duckdb.connect(sys.argv[1]); print('held', flush=True); "
+            "sys.stdin.read()",
+            str(other),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
+        busy = client.post("/api/rally-log", json={"path": str(other)})
+    finally:
+        holder.communicate("", timeout=10)
+
+    assert busy.status_code == 503
+    assert client.get("/api/rally-log").json()["path"] == str(db.resolve())
+    assert _open(client, other)["path"] == str(other.resolve())
+
+
+def test_video_names_its_rally_log_in_the_query(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    match_id = add_match(db)
+    footage(tmp_path, converted=True)
+    set_video(db, match_id, Path("footage/abc123.webm"))
+    url = f"/api/matches/{match_id}/video"
+
+    current = client.get(url, params={"rally_log": str(db.resolve())})
+    _open(client, "other", create=True)
+    stale = client.get(url, params={"rally_log": str(db.resolve())})
+
+    assert current.status_code == 200
+    assert stale.status_code == 409
+
+
 def test_rally_log_header_is_percent_encoded(tmp_path: Path, static_dir: Path) -> None:
     folder = tmp_path / "Pickleball ピックル"
     folder.mkdir()
@@ -982,50 +1031,74 @@ def test_starts_with_no_rally_log_until_one_is_chosen(tmp_path: Path, static_dir
     assert len(client.get("/api/matches").json()) == 1
 
 
+class _BlockingTrack:
+    """A Camera Motion job for a fresh Match, held running until `release` is set."""
+
+    def __init__(
+        self, client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        from pb_tokei.camera_motion import CameraMotion
+
+        self.match_id = add_match(db)
+        footage(tmp_path, converted=True)
+        set_video(db, self.match_id, Path("footage/abc123.webm"))
+        client.put(
+            f"/api/matches/{self.match_id}/play-segments",
+            json=[{"start_frame": 0, "end_frame": 10, "camera_view": "main"}],
+        )
+        landmarks = {lm.value: {"x": p.x, "y": p.y, "frame": 0} for lm, p in MAIN.placed(0).items()}
+        calibration = {"effective_from_frame": 0, "reference_frame": 0, "landmarks": landmarks}
+        response = client.put(f"/api/matches/{self.match_id}/calibrations/main", json=[calibration])
+        assert response.is_success
+
+        self.service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.cancels: list[threading.Event] = []
+
+        def blocking_track_match(
+            *_args: object, cancel: threading.Event | None = None, **_kwargs: object
+        ) -> CameraMotion:
+            assert cancel is not None
+            self.cancels.append(cancel)
+            self.started.set()
+            self.release.wait(timeout=5.0)
+            return CameraMotion()
+
+        monkeypatch.setattr(self.service.cache, "track_match", blocking_track_match)
+        tracking = client.post(f"/api/matches/{self.match_id}/camera-motion/track").json()
+        assert tracking["status"] == "tracking"
+        assert self.started.wait(timeout=2.0)
+
+
+def test_reopening_the_open_rally_log_keeps_its_camera_motion_jobs(
+    client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = _BlockingTrack(client, db, tmp_path, monkeypatch)
+
+    _open(client, db)
+    job.release.set()
+
+    assert client.app.state.rally_logs.current.motion is job.service  # type: ignore[attr-defined]
+    assert not job.cancels[0].is_set()
+
+
 def test_switching_cancels_camera_motion_jobs_of_the_old_rally_log(
     client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import threading
-
-    from pb_tokei.camera_motion import CameraMotion
-
-    match_id = add_match(db)
-    footage(tmp_path, converted=True)
-    set_video(db, match_id, Path("footage/abc123.webm"))
-    client.put(
-        f"/api/matches/{match_id}/play-segments",
-        json=[{"start_frame": 0, "end_frame": 10, "camera_view": "main"}],
-    )
-    landmarks = {lm.value: {"x": p.x, "y": p.y, "frame": 0} for lm, p in MAIN.placed(0).items()}
-    calibration = {"effective_from_frame": 0, "reference_frame": 0, "landmarks": landmarks}
-    assert client.put(f"/api/matches/{match_id}/calibrations/main", json=[calibration]).is_success
-
-    old_service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
-    started = threading.Event()
-    release = threading.Event()
-    cancels: list[threading.Event] = []
-
-    def blocking_track_match(
-        *_args: object, cancel: threading.Event | None = None, **_kwargs: object
-    ) -> CameraMotion:
-        assert cancel is not None
-        cancels.append(cancel)
-        started.set()
-        release.wait(timeout=5.0)
-        return CameraMotion()
-
-    monkeypatch.setattr(old_service.cache, "track_match", blocking_track_match)
-    tracking = client.post(f"/api/matches/{match_id}/camera-motion/track").json()
-    assert tracking["status"] == "tracking"
-    assert started.wait(timeout=2.0)
+    job = _BlockingTrack(client, db, tmp_path, monkeypatch)
+    old_service = job.service
+    match_id = job.match_id
 
     other = tmp_path / "elsewhere" / "other.duckdb"
     other.parent.mkdir()
     add_match(other)
     _open(client, other)
-    release.set()
+    job.release.set()
 
-    assert cancels[0].is_set()
+    assert job.cancels[0].is_set()
     new_service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
     assert new_service is not old_service
     assert new_service.cache.cache_dir == default_cache_dir(other.resolve())
@@ -1035,7 +1108,7 @@ def test_switching_cancels_camera_motion_jobs_of_the_old_rally_log(
     video = tmp_path / "footage" / "abc123.60fps.mp4"
     after = old_service.trigger(match_id, video, old_segments, old_calibrations)
     assert after.status is not CameraMotionStatus.TRACKING
-    assert len(cancels) == 1
+    assert len(job.cancels) == 1
 
 
 # --- CLI ----------------------------------------------------------------------------------

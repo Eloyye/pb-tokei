@@ -144,8 +144,10 @@ export async function replaceCalibrations(
   return data;
 }
 
+/** The video's URL, naming this tab's Rally Log as a `<video>` element can't send headers. */
 export function matchVideoUrl(matchId: string): string {
-  return `/api/matches/${encodeURIComponent(matchId)}/video`;
+  const url = `/api/matches/${encodeURIComponent(matchId)}/video`;
+  return tabRallyLog === null ? url : `${url}?rally_log=${encodeURIComponent(tabRallyLog)}`;
 }
 
 export async function getCameraMotion(matchId: string): Promise<CameraMotionOut> {

@@ -382,16 +382,18 @@ def _open_rally_log(request: Request) -> _OpenRallyLog:
     """The open Rally Log, provided it is the one the request means.
 
     The front end names the Rally Log it loaded its data from in `X-Rally-Log` (percent-encoded),
-    so a tab left on a Rally Log another tab has switched away from gets a 409 rather than
-    reading or saving the wrong file. Requests without the header (curl, scripts) take whichever
-    is open.
+    or in a `rally_log` query parameter where it can't set headers (video). So a tab left on a
+    Rally Log another tab has switched away from gets a 409 rather than reading or saving the
+    wrong file. Requests naming none (curl, scripts) take whichever is open.
     """
     rally_logs: _RallyLogs = request.app.state.rally_logs
     current = rally_logs.current
     if current is None:
         raise HTTPException(status_code=409, detail="No Rally Log is open: open or create one")
-    wanted = request.headers.get(RALLY_LOG_HEADER)
-    if wanted is not None and unquote(wanted) != str(current.db_file):
+    header = request.headers.get(RALLY_LOG_HEADER)
+    # A <video> element can't send headers, so its URL carries the path as a query parameter.
+    wanted = unquote(header) if header is not None else request.query_params.get("rally_log")
+    if wanted is not None and wanted != str(current.db_file):
         raise HTTPException(
             status_code=409,
             detail=f"The app has switched to another Rally Log ({current.db_file}); reload",
@@ -402,11 +404,21 @@ def _open_rally_log(request: Request) -> _OpenRallyLog:
 OpenLog = Annotated[_OpenRallyLog, Depends(_open_rally_log)]
 
 
-def _is_rally_log(path: Path) -> bool:
+def _check_is_rally_log(path: Path) -> None:
+    """422 unless `path` holds a Rally Log.
+
+    Only a file DuckDB can't read at all counts as not a Rally Log. A Rally Log that is just busy
+    (the CLI holds its lock, or a request here has it open) raises `duckdb.Error`, which the app
+    answers with 503 so the operator tries again.
+    """
     try:
-        return RallyLog.is_rally_log(path)
-    except duckdb.Error:
-        return False
+        is_log = RallyLog.is_rally_log(path)
+    except duckdb.IOException as exc:
+        if "not a valid DuckDB database file" not in str(exc):
+            raise
+        is_log = False
+    if not is_log:
+        raise HTTPException(status_code=422, detail=f"Not a Rally Log: {path}")
 
 
 def create_app(db_path: Path | None, *, static_dir: Path = STATIC_DIR) -> FastAPI:
@@ -464,10 +476,13 @@ def create_app(db_path: Path | None, *, static_dir: Path = STATIC_DIR) -> FastAP
                 raise HTTPException(
                     status_code=422, detail=f"Couldn't create {target}: {exc}"
                 ) from None
+        elif current is not None and target == current.db_file:
+            # Already open: keep its Camera Motion jobs running.
+            pass
         elif not target.is_file():
             raise HTTPException(status_code=404, detail=f"Rally Log not found: {target}")
-        elif not _is_rally_log(target):
-            raise HTTPException(status_code=422, detail=f"Not a Rally Log: {target}")
+        else:
+            _check_is_rally_log(target)
         rally_logs.switch(target)
         write_last_rally_log(target)
         return rally_log_out()
