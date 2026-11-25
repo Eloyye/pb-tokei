@@ -9,10 +9,11 @@ import {
 import type { Calibration, CalibrationOut, Landmark } from "../api/client";
 import {
   COURT_LINES,
-  LANDMARKS,
+  landmarkHighlight,
   landmarkLabel,
   type Point,
   projectLine,
+  visibleLandmarkMarkers,
 } from "../lib/calibrations";
 
 /** How much the magnifier enlarges, and its size on screen in CSS pixels. */
@@ -111,74 +112,8 @@ export function CalibrationOverlay({
 
   if (!rect) return null;
 
-  const onRef = !calibration || frame === calibration.reference_frame;
   const offRef = Boolean(calibration && frame !== calibration.reference_frame);
-  const unmappedSet = new Set(fit?.unmapped_landmarks ?? []);
-
-  // Build visible markers for the current frame:
-  // - On `reference_frame`: every placed Landmark is shown; ones clicked on another frame are
-  //   drawn at their mapped reference-frame position (or raw position if carried over and
-  //   unmapped, so the operator can drag them into place) with a distinct dashed style.
-  // - Off `reference_frame`: only Landmarks clicked on this exact frame are drawn, so markers
-  //   from other frames never silently float over a different camera picture.
-  const markers: {
-    landmark: Landmark;
-    index: number;
-    at: Point;
-    otherFrame: boolean;
-    clickedFrame: number;
-    flagged: boolean;
-  }[] = [];
-  if (calibration) {
-    LANDMARKS.forEach((landmark, index) => {
-      if (drag?.landmark === landmark) {
-        markers.push({
-          landmark,
-          index,
-          at: drag.at,
-          otherFrame: false,
-          clickedFrame: frame,
-          flagged: false,
-        });
-        return;
-      }
-      const placed = calibration.landmarks[landmark];
-      if (!placed) return;
-      if (placed.frame === frame) {
-        markers.push({
-          landmark,
-          index,
-          at: { x: placed.x, y: placed.y },
-          otherFrame: false,
-          clickedFrame: placed.frame,
-          flagged: Boolean(fit?.errors[landmark]?.needs_attention),
-        });
-        return;
-      }
-      if (!onRef) return;
-      const resolved = fit?.resolved_landmarks[landmark];
-      if (resolved) {
-        if (resolved.x < 0 || resolved.x > 1 || resolved.y < 0 || resolved.y > 1) return;
-        markers.push({
-          landmark,
-          index,
-          at: resolved,
-          otherFrame: true,
-          clickedFrame: placed.frame,
-          flagged: Boolean(fit?.errors[landmark]?.needs_attention),
-        });
-        return;
-      }
-      markers.push({
-        landmark,
-        index,
-        at: { x: placed.x, y: placed.y },
-        otherFrame: true,
-        clickedFrame: placed.frame,
-        flagged: unmappedSet.has(landmark),
-      });
-    });
-  }
+  const markers = visibleLandmarkMarkers(calibration, frame, fit, drag);
 
   const matrix = unmapped
     ? null
@@ -187,6 +122,14 @@ export function CalibrationOverlay({
       : (fit ?? lastFit)?.court_to_image;
   const staticOffRef = offRef && frameMatrix === undefined && !unmapped;
   const templateStale = !fit || staticOffRef;
+  const highlight = landmarkHighlight({
+    selected,
+    calibration,
+    frame,
+    resolvedLandmarks: fit?.resolved_landmarks,
+    drag,
+    matrix,
+  });
 
   return (
     <div
@@ -234,6 +177,14 @@ export function CalibrationOverlay({
             )),
           )}
         </svg>
+      )}
+      {highlight.kind !== "none" && (
+        <div
+          className={`landmark-highlight ${highlight.kind === "ghost" && templateStale ? "stale" : ""}`}
+          data-highlight={highlight.kind}
+          style={{ left: `${highlight.at.x * 100}%`, top: `${highlight.at.y * 100}%` }}
+          aria-hidden
+        />
       )}
       {unmapped ? (
         <output className="unmapped-banner">

@@ -13,6 +13,7 @@ import {
   fitKey,
   isCarriedOver,
   landmarkCounts,
+  landmarkHighlight,
   LANDMARKS,
   landmarkLabel,
   markNotVisible,
@@ -571,5 +572,183 @@ describe("unmappedRangeAt", () => {
     expect(unmappedRangeAt(ranges, 400)).toBe(ranges[1]);
     expect(unmappedRangeAt(ranges, 199)).toBeUndefined();
     expect(unmappedRangeAt(ranges, 251)).toBeUndefined();
+  });
+});
+
+describe("landmarkHighlight", () => {
+  // Maps court feet x in [-10, 10], y in [-22, 22] linearly into [0.1, 0.9] x [0.06, 0.94].
+  const COURT_MATRIX = [
+    [0.04, 0, 0.5],
+    [0, -0.02, 0.5],
+    [0, 0, 1],
+  ];
+
+  it("returns none when no Landmark is selected", () => {
+    const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1005 } });
+
+    expect(
+      landmarkHighlight({
+        selected: null,
+        calibration: c,
+        frame: 1005,
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("returns marker when the selected Landmark was clicked on this frame, even without a matrix", () => {
+    const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1005 } });
+
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1005,
+        matrix: null,
+      }),
+    ).toEqual({ kind: "marker", at: { x: 0.2, y: 0.6 } });
+  });
+
+  it("returns marker on the reference frame for an other-frame Landmark drawn resolved or raw", () => {
+    const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1020 } });
+
+    // Drawn dashed at its in-frame resolved position.
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1005,
+        resolvedLandmarks: { near_kitchen_left: { x: 0.25, y: 0.62 } },
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "marker", at: { x: 0.25, y: 0.62 } });
+
+    // Drawn dashed at its raw position when unresolved (e.g. carried over or fitting).
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1005,
+        resolvedLandmarks: {},
+        matrix: null,
+      }),
+    ).toEqual({ kind: "marker", at: { x: 0.2, y: 0.6 } });
+
+    // Resolved outside the picture -> marker is hidden, so falls back to ghost if projected inside.
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1005,
+        resolvedLandmarks: { near_kitchen_left: { x: -0.1, y: 0.6 } },
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "ghost", at: { x: expect.closeTo(0.1), y: expect.closeTo(0.64) } });
+  });
+
+  it("returns marker at the live drag position while dragging the selected Landmark", () => {
+    const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1020 } });
+
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1050,
+        drag: { landmark: "near_kitchen_left", at: { x: 0.4, y: 0.5 } },
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "marker", at: { x: 0.4, y: 0.5 } });
+  });
+
+  it("returns ghost at the projected court point for remaining, not-visible, and off-ref other-frame Landmarks", () => {
+    const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1005 } }, [
+      "far_kitchen_centre",
+    ]);
+
+    // Remaining Landmark: courtPoint("far_kitchen_right") = { x: 10, y: 7 } -> { x: 0.9, y: 0.36 }.
+    expect(
+      landmarkHighlight({
+        selected: "far_kitchen_right",
+        calibration: c,
+        frame: 1005,
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "ghost", at: { x: 0.9, y: 0.36 } });
+
+    // Not-visible Landmark that projects in-frame still gets a ghost: { x: 0, y: 7 } -> { x: 0.5, y: 0.36 }.
+    expect(
+      landmarkHighlight({
+        selected: "far_kitchen_centre",
+        calibration: c,
+        frame: 1005,
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "ghost", at: { x: 0.5, y: 0.36 } });
+
+    // Clicked on reference frame 1005, now viewing off-ref frame 1020 -> no marker here, gets ghost.
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1020,
+        matrix: COURT_MATRIX,
+      }),
+    ).toEqual({ kind: "ghost", at: { x: expect.closeTo(0.1), y: expect.closeTo(0.64) } });
+  });
+
+  it("returns none when no matrix is available (no fit or unmapped frame)", () => {
+    const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1005 } });
+
+    expect(
+      landmarkHighlight({
+        selected: "far_kitchen_right",
+        calibration: c,
+        frame: 1005,
+        matrix: undefined,
+      }),
+    ).toEqual({ kind: "none" });
+
+    expect(
+      landmarkHighlight({
+        selected: "near_kitchen_left",
+        calibration: c,
+        frame: 1020,
+        matrix: null,
+      }),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("returns none when the projected court point lies outside the picture or behind the camera", () => {
+    const c = cal("main", 1000);
+
+    // Projects far_baseline_right (10, 22) to (1.5, 0.5) -> outside [0, 1]^2.
+    const outOfPicture = [
+      [0.1, 0, 0.5],
+      [0, 0, 0.5],
+      [0, 0, 1],
+    ];
+    expect(
+      landmarkHighlight({
+        selected: "far_baseline_right",
+        calibration: c,
+        frame: 1005,
+        matrix: outOfPicture,
+      }),
+    ).toEqual({ kind: "none" });
+
+    // w = 1 - y = 1 - 22 = -21 <= 0 -> behind the camera.
+    const behindCamera = [
+      [0.04, 0, 0.5],
+      [0, -0.02, 0.5],
+      [0, -1, 1],
+    ];
+    expect(
+      landmarkHighlight({
+        selected: "far_baseline_centre",
+        calibration: c,
+        frame: 1005,
+        matrix: behindCamera,
+      }),
+    ).toEqual({ kind: "none" });
   });
 });

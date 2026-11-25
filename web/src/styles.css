@@ -1170,6 +1170,50 @@ fieldset.transport-group {
   opacity: 0.7;
 }
 
+.landmark-highlight {
+  --pulse-lo: 0.18;
+  --pulse-hi: 0.32;
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle closest-side,
+    transparent 0%,
+    transparent 22%,
+    var(--accent) 46%,
+    transparent 100%
+  );
+  /* Static fallback used when animation is disabled under prefers-reduced-motion. */
+  opacity: 0.25;
+  pointer-events: none;
+  animation: landmark-highlight-pulse 2.8s ease-in-out infinite;
+}
+
+.landmark-highlight.stale {
+  --pulse-lo: 0.07;
+  --pulse-hi: 0.13;
+  /* Static fallback under prefers-reduced-motion. */
+  opacity: 0.1;
+}
+
+@keyframes landmark-highlight-pulse {
+  0%,
+  100% {
+    opacity: var(--pulse-lo);
+  }
+  50% {
+    opacity: var(--pulse-hi);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landmark-highlight {
+    animation: none;
+  }
+}
+
 .landmark-marker {
   position: absolute;
   width: 14px;
