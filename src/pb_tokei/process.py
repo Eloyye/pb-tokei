@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import os
 import selectors
+import signal
 import subprocess
 import threading
 from collections.abc import Callable, Sequence
@@ -56,6 +58,7 @@ def stream_subprocess(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -148,14 +151,26 @@ def stream_subprocess(
 
 
 def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
+    """Terminates `proc` and every child in its process group (e.g. yt-dlp's ffmpeg merger)."""
     if proc.poll() is not None:
         return
-    proc.terminate()
+    _signal_process_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=_TERMINATE_GRACE_S)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _signal_process_group(proc, signal.SIGKILL)
         proc.wait()
+
+
+def _signal_process_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    if hasattr(os, "killpg"):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, sig)
+        return
+    if sig == signal.SIGKILL:
+        proc.kill()
+    else:
+        proc.terminate()
 
 
 def as_stream_runner(

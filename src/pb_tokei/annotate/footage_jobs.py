@@ -144,8 +144,8 @@ class FootageJobService:
         self._closed = False
         self._worker: threading.Thread | None = None
 
-    def close(self) -> None:
-        """Cancels every queued and running job and stops the worker thread."""
+    def close(self, *, timeout: float = 5.0) -> None:
+        """Cancels every queued and running job and waits for the worker to clean up."""
         with self._cond:
             self._closed = True
             for job in self._queue:
@@ -156,7 +156,10 @@ class FootageJobService:
             self._queue.clear()
             if self._active is not None:
                 self._active.cancel.set()
+            worker = self._worker
             self._cond.notify_all()
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=timeout)
 
     def summary(
         self, match_id: MatchId, *, ready_url: str | None = None
@@ -195,7 +198,7 @@ class FootageJobService:
         cookies_remembered = read_cookies_from_browser()
         with self._cond:
             if self._closed:
-                return _idle_out(cookies_remembered)
+                raise FootageJobConflictError("Rally Log changed; reload and try again")
             existing = self._jobs.get(match_id)
             if existing is not None and existing.state in {
                 FootageJobState.QUEUED,

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -17,6 +19,7 @@ from fastapi.testclient import TestClient
 from pb_tokei import main
 from pb_tokei.annotate.app import create_app
 from pb_tokei.annotate.footage_jobs import (
+    FootageJobConflictError,
     FootageJobService,
     FootageJobState,
     footage_error_hint,
@@ -29,7 +32,7 @@ from pb_tokei.footage import (
     download_footage,
     parse_yt_dlp_progress,
 )
-from pb_tokei.process import LineCallback
+from pb_tokei.process import LineCallback, stream_subprocess
 from pb_tokei.rally_log import MatchId, RallyLog, SourceVideo
 from pb_tokei.roster import parse_roster, set_up_match
 from pb_tokei.state import read_cookies_from_browser, write_cookies_from_browser
@@ -770,3 +773,211 @@ def test_origin_check_allows_app_origins_and_get_without_origin(
         headers={"Host": host, "Origin": origin},
     )
     assert put_resp.status_code == 200
+
+
+# --- Review fixes: process groups, shutdown join, closed service, cookies, stdout, TTY ----
+
+
+def test_stream_subprocess_cancel_kills_child_process_group() -> None:
+    """Cancelling a streaming command signals its entire process group so grandchild processes
+    (such as yt-dlp's ffmpeg merger) are not orphaned."""
+    child_pid_ready = threading.Event()
+    child_pids: list[int] = []
+    cancel = threading.Event()
+
+    script = (
+        "import subprocess, sys, time; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "print(p.pid, flush=True); "
+        "time.sleep(60)"
+    )
+
+    def on_line(line: str) -> None:
+        if line.strip().isdigit():
+            child_pids.append(int(line.strip()))
+            child_pid_ready.set()
+            cancel.set()
+
+    with pytest.raises(CommandCancelledError):
+        stream_subprocess(
+            [sys.executable, "-c", script],
+            on_stdout_line=on_line,
+            cancel=cancel,
+            capture_stdout=False,
+        )
+
+    assert child_pid_ready.is_set() and len(child_pids) == 1
+    grandchild_pid = child_pids[0]
+
+    def grandchild_exited() -> bool:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    _wait_until(grandchild_exited, timeout=3.0)
+
+
+def test_close_waits_for_running_worker_and_cleans_up_temp_file(tmp_path: Path) -> None:
+    db = tmp_path / "log.duckdb"
+    match_id = _add_match(db)
+    convert_entered = threading.Event()
+    temp_paths: list[Path] = []
+
+    def on_cv(_source: Path, temp_out: Path, cancel: threading.Event | None) -> None:
+        temp_paths.append(temp_out)
+        convert_entered.set()
+        assert cancel is not None
+        cancel.wait(timeout=5.0)
+        # Brief delay after cancel to verify close() truly joins before returning.
+        time.sleep(0.05)
+
+    service = FootageJobService(db, runner=FakeStreamRunner(on_convert_start=on_cv))
+    service.enqueue(match_id, url=URL_A)
+    assert convert_entered.wait(timeout=2.0)
+
+    service.close()
+
+    # Immediately on return from close(), temp file is already deleted and worker has exited.
+    assert len(temp_paths) == 1 and not temp_paths[0].exists()
+    assert service._worker is not None and not service._worker.is_alive()
+
+
+def test_enqueue_on_closed_service_raises_conflict(tmp_path: Path) -> None:
+    db = tmp_path / "log.duckdb"
+    match_id = _add_match(db)
+    service = FootageJobService(db, runner=FakeStreamRunner())
+    service.close()
+
+    with pytest.raises(FootageJobConflictError, match="Rally Log changed"):
+        service.enqueue(match_id, url=URL_A)
+
+
+def test_cookies_not_saved_when_fetch_request_is_rejected(tmp_path: Path) -> None:
+    db = tmp_path / "log.duckdb"
+    match_id = _add_match(db)
+    write_cookies_from_browser("firefox")
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def on_dl(_vid: str, _part: Path, _cancel: threading.Event | None) -> None:
+        entered.set()
+        release.wait(timeout=5.0)
+
+    client = TestClient(
+        create_app(db, footage_runner=FakeStreamRunner(on_download_start=on_dl)),
+        base_url=LOCAL,
+        headers={"Origin": LOCAL},
+    )
+
+    try:
+        # Bad URL (422) does not overwrite the remembered browser cookie setting.
+        bad = client.post(
+            f"/api/matches/{match_id}/footage/fetch",
+            json={"url": "not-a-url", "cookies_from_browser": "chrome"},
+        )
+        assert bad.status_code == 422
+        assert read_cookies_from_browser() == "firefox"
+
+        # Start a valid job, then send a conflicting fetch (409) with a different browser.
+        ok = client.post(f"/api/matches/{match_id}/footage/fetch", json={"url": URL_A})
+        assert ok.status_code == 200
+        assert entered.wait(timeout=2.0)
+
+        conflict = client.post(
+            f"/api/matches/{match_id}/footage/fetch",
+            json={"url": URL_B, "cookies_from_browser": "safari"},
+        )
+        assert conflict.status_code == 409
+        assert read_cookies_from_browser() == "firefox"
+    finally:
+        release.set()
+        client.post(f"/api/matches/{match_id}/footage/cancel")
+
+
+def test_yt_dlp_streaming_discards_progress_lines_without_buffering_stdout(tmp_path: Path) -> None:
+    footage_dir = tmp_path / "footage"
+    footage_dir.mkdir()
+    target = footage_dir / "vidAAAAAAA.mkv"
+    target.write_bytes(b"video-bytes")
+
+    def streaming_no_stdout_buffer(
+        args: Sequence[str],
+        *,
+        on_stdout_line: LineCallback | None = None,
+        on_stderr_line: LineCallback | None = None,
+        cancel: threading.Event | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if "--skip-download" in args:
+            assert on_stdout_line is not None
+            on_stdout_line("vidAAAAAAA")
+            return subprocess.CompletedProcess(list(args), 0, stdout="", stderr="")
+        assert on_stdout_line is not None
+        for i in range(1, 5):
+            on_stdout_line(f"{PROGRESS_PREFIX} {i * 25:.1f}%| 5.0MiB/s|00:0{5 - i}")
+        on_stdout_line(str(target))
+        # Simulates capture_stdout=False where stdout string is empty.
+        return subprocess.CompletedProcess(list(args), 0, stdout="", stderr="")
+
+    # Remove existing file first so download runs rather than skipping.
+    target.unlink()
+
+    def streaming_writes_file(
+        args: Sequence[str],
+        *,
+        on_stdout_line: LineCallback | None = None,
+        on_stderr_line: LineCallback | None = None,
+        cancel: threading.Event | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if "--skip-download" not in args:
+            target.write_bytes(b"video-bytes")
+        return streaming_no_stdout_buffer(
+            args,
+            on_stdout_line=on_stdout_line,
+            on_stderr_line=on_stderr_line,
+            cancel=cancel,
+        )
+
+    events: list[DownloadProgress] = []
+    result = download_footage(
+        URL_A, footage_dir, run=streaming_writes_file, on_progress=events.append
+    )
+    assert result.source_video.path == target
+    assert len(events) == 4
+    assert events[-1] == DownloadProgress(percent=100.0, speed="5.0MiB/s", eta="00:01")
+
+
+def test_cli_progress_uses_cr_only_on_tty_and_milestones_when_redirected(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    many_lines = [
+        f"{PROGRESS_PREFIX} {pct:5.1f}%|  5.00MiB/s|00:{60 - pct:02d}"
+        for pct in (10, 12, 15, 25, 30, 50, 75, 100)
+    ]
+
+    # Non-TTY stderr: emits clean newline-terminated milestones with no carriage returns.
+    code = main(
+        ["download", URL_A, "--footage-dir", str(tmp_path / "non_tty")],
+        run=FakeStreamRunner(download_lines=many_lines),
+    )
+    non_tty_err = capsys.readouterr().err
+    assert code == 0
+    assert "\r" not in non_tty_err
+    assert "Downloading 10.0%" in non_tty_err
+    assert "Downloading 12.0%" not in non_tty_err
+    assert "Downloading 25.0%" in non_tty_err
+    assert "Downloading 100.0%" in non_tty_err
+
+    # TTY stderr: uses carriage returns to update a single line in place.
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    code = main(
+        ["download", URL_B, "--footage-dir", str(tmp_path / "tty")],
+        run=FakeStreamRunner(download_lines=many_lines),
+    )
+    tty_err = capsys.readouterr().err
+    assert code == 0
+    assert "\rDownloading 10.0%" in tty_err
+    assert "\rDownloading 12.0%" in tty_err
+    assert "\rDownloading 100.0%" in tty_err

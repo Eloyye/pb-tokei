@@ -321,6 +321,7 @@ def _default_stream_run(
             on_stdout_line=on_stdout_line,
             on_stderr_line=on_stderr_line,
             cancel=cancel,
+            capture_stdout=on_stdout_line is None,
         )
     except FileNotFoundError as exc:
         raise FootageDownloadError(
@@ -335,7 +336,19 @@ def _run_yt_dlp(
     on_progress: Callable[[DownloadProgress], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> list[str]:
-    def handle_line(line: str) -> None:
+    output_lines: list[str] = []
+
+    def handle_stdout_line(line: str) -> None:
+        parsed = parse_yt_dlp_progress(line)
+        if parsed is not None:
+            if on_progress is not None:
+                on_progress(parsed)
+            return
+        stripped = line.strip()
+        if stripped:
+            output_lines.append(stripped)
+
+    def handle_stderr_line(line: str) -> None:
         if on_progress is None:
             return
         parsed = parse_yt_dlp_progress(line)
@@ -344,8 +357,8 @@ def _run_yt_dlp(
 
     result = runner(
         args,
-        on_stdout_line=handle_line if on_progress is not None else None,
-        on_stderr_line=handle_line if on_progress is not None else None,
+        on_stdout_line=handle_stdout_line,
+        on_stderr_line=handle_stderr_line if on_progress is not None else None,
         cancel=cancel,
     )
     if result.returncode != 0:
@@ -359,11 +372,13 @@ def _run_yt_dlp(
         detail = "\n".join(err_lines) or f"exit status {result.returncode}"
         stderr_tail = stderr_raw[-_STDERR_TAIL_CHARS:] if stderr_raw else None
         raise FootageDownloadError(f"yt-dlp failed: {detail}", stderr_tail=stderr_tail)
-    return [
-        line.strip()
-        for line in result.stdout.splitlines()
-        if line.strip() and not _ANSI_RE.sub("", line).strip().startswith(PROGRESS_PREFIX)
-    ]
+    if result.stdout:
+        return [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip() and not _ANSI_RE.sub("", line).strip().startswith(PROGRESS_PREFIX)
+        ]
+    return output_lines
 
 
 def validate_url(url: str) -> None:

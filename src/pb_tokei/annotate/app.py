@@ -653,7 +653,8 @@ def create_app(
         """Queues a background download and/or 60 fps conversion for a Match (ADR 0009)."""
         summary, video = rally_log.lookup(match_id)
 
-        if "cookies_from_browser" in body.model_fields_set:
+        should_save_cookies = "cookies_from_browser" in body.model_fields_set
+        if should_save_cookies:
             raw_cookies = body.cookies_from_browser
             if raw_cookies is None or not raw_cookies.strip():
                 cookies_spec: str | None = None
@@ -662,7 +663,6 @@ def create_app(
                     cookies_spec = validate_cookies_from_browser(raw_cookies)
                 except FootageDownloadError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from None
-            write_cookies_from_browser(cookies_spec)
         else:
             cookies_spec = read_cookies_from_browser()
 
@@ -703,7 +703,7 @@ def create_app(
             )
 
         try:
-            return rally_log.footage.enqueue(
+            job = rally_log.footage.enqueue(
                 summary.id,
                 url=target_url,
                 convert_source=convert_source,
@@ -711,6 +711,11 @@ def create_app(
             )
         except FootageJobConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
+
+        if should_save_cookies:
+            write_cookies_from_browser(cookies_spec)
+            job = job.model_copy(update={"cookies_from_browser": cookies_spec})
+        return job
 
     @app.post("/api/matches/{match_id}/footage/cancel", operation_id="cancelMatchFootage")
     def cancel_match_footage(match_id: UUID, rally_log: OpenLog) -> FootageJobOut:
