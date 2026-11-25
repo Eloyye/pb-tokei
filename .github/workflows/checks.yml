@@ -38,9 +38,18 @@ jobs:
       - run: bun run lint
       - run: bun run fmt:check
       - run: bun run test
-      - run: bun run build
-      - run: uv run python -m pb_tokei.annotate.frontend check
+      - name: Verify checkout update builds once
         working-directory: .
+        shell: bash
+        run: |
+          uv run pb-tokei dev update
+          uv run python -m pb_tokei.annotate.frontend check
+          second_update=$(uv run pb-tokei dev update)
+          printf '%s\n' "$second_update"
+          if [[ "$second_update" != *"front end:   up to date, skipped build"* ]]; then
+            echo "Expected the second checkout update to skip the build." >&2
+            exit 1
+          fi
       - name: API types match the FastAPI schema
         run: |
           bun run gen:api

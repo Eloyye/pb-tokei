@@ -19,7 +19,7 @@ uv run pb-tokei dev update
 uv run pre-commit install
 ```
 
-The pre-commit hook runs the Python and front-end checks using the locked tool versions. CI also builds the front end and checks its stamp. The Python checks run on staged Python changes, and the front-end checks run on staged changes under `web/`. `ruff check` runs with `--fix`. The hook also checks that the generated API types are up to date when `web/` or `src/pb_tokei/annotate/` changes.
+The pre-commit hook runs the Python and front-end checks using the locked tool versions. CI also runs `dev update` twice to verify that the first run builds the front end and the second skips the build. The Python checks run on staged Python changes, and the front-end checks run on staged changes under `web/`. `ruff check` runs with `--fix`. The hook also checks that the generated API types are up to date when `web/` or `src/pb_tokei/annotate/` changes.
 
 ## Checks
 
@@ -34,7 +34,7 @@ uv run ty check
 uv run pytest
 ```
 
-Front end, from `web/`:
+Run the front-end checks from `web/`. `bun run build` requires `uv` on your `PATH` to hash the build inputs and stamp the bundle.
 
 ```bash
 bun run typecheck

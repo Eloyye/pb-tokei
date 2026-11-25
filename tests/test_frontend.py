@@ -1,3 +1,4 @@
+import errno
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -38,12 +39,31 @@ def test_source_hash_changes_when_contents_or_paths_change(checkout: tuple[Path,
     assert frontend.source_hash(web_dir) != edited
 
 
-def test_source_hash_ignores_node_modules(checkout: tuple[Path, Path]) -> None:
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "node_modules/dependency/package.json",
+        "src/nested/node_modules/dependency/package.json",
+        ".DS_Store",
+        "src/.DS_Store",
+        "src/.main.ts.swp",
+        "src/main.ts~",
+        ".env.local",
+        "coverage/index.html",
+        "src/main.test.ts",
+        "src/panel.test.tsx",
+        ".oxlintrc.json",
+        ".oxfmtrc.json",
+    ],
+)
+def test_source_hash_ignores_files_outside_the_build(
+    checkout: tuple[Path, Path], relative_path: str
+) -> None:
     web_dir, _ = checkout
     original = frontend.source_hash(web_dir)
-    installed = web_dir / "node_modules" / "dependency" / "package.json"
-    installed.parent.mkdir(parents=True)
-    installed.write_text("{}\n")
+    local_file = web_dir / relative_path
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_text("changed\n")
 
     assert frontend.source_hash(web_dir) == original
 
@@ -51,11 +71,26 @@ def test_source_hash_ignores_node_modules(checkout: tuple[Path, Path]) -> None:
 def test_stamp_and_check(checkout: tuple[Path, Path]) -> None:
     web_dir, _ = checkout
     assert frontend.main(["check"]) == 1
-    assert frontend.main(["stamp"]) == 0
+    assert frontend.main(["stamp", frontend.source_hash(web_dir)]) == 0
     assert frontend.main(["check"]) == 0
 
     (web_dir / ".bun-version").write_text("1.3.14\n")
 
+    assert frontend.main(["check"]) == 1
+
+
+def test_stamp_keeps_the_pre_build_hash_when_sources_change(
+    checkout: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    web_dir, static_dir = checkout
+    assert frontend.main(["hash"]) == 0
+    pre_build_hash = capsys.readouterr().out.strip()
+    assert pre_build_hash == frontend.source_hash(web_dir)
+
+    (web_dir / "src" / "main.ts").write_text("export const value = 2;\n")
+
+    assert frontend.main(["stamp", pre_build_hash]) == 0
+    assert (static_dir / frontend.SOURCE_HASH_FILE).read_text().strip() == pre_build_hash
     assert frontend.main(["check"]) == 1
 
 
@@ -65,7 +100,7 @@ def test_dev_update_builds_only_when_needed(
 ) -> None:
     web_dir, static_dir = checkout
     if state != "unstamped":
-        frontend.stamp_bundle(web_dir, static_dir)
+        frontend.stamp_bundle(static_dir, frontend.source_hash(web_dir))
     if state == "stale":
         (web_dir / "src" / "main.ts").write_text("export const value = 2;\n")
     if state == "missing-index":
@@ -82,7 +117,7 @@ def test_dev_update_builds_only_when_needed(
     output = capsys.readouterr()
     assert output.err == ""
     assert output.out.splitlines()[:2] == [
-        "python deps: synced (uv run)",
+        "python deps: managed by uv run",
         "web deps:    bun install --frozen-lockfile succeeded",
     ]
     if state == "fresh":
@@ -94,7 +129,7 @@ def test_dev_update_builds_only_when_needed(
 
 
 @pytest.mark.parametrize("failing_command", [INSTALL, BUILD])
-def test_dev_update_stops_and_shows_the_failing_commands_output(
+def test_dev_update_stops_and_reports_the_failing_command(
     checkout: tuple[Path, Path], failing_command: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls: list[list[str]] = []
@@ -103,14 +138,40 @@ def test_dev_update_stops_and_shows_the_failing_commands_output(
         command = list(args)
         calls.append(command)
         if command == failing_command:
-            return subprocess.CompletedProcess(args, 2, stdout="step output", stderr="step error")
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 2)
+        return subprocess.CompletedProcess(args, 0)
 
     assert main(["dev", "update"], run=run) != 0
 
     assert calls == ([INSTALL] if failing_command == INSTALL else [INSTALL, BUILD])
     output = capsys.readouterr()
     assert "rebuilt" not in output.out
-    assert "exited with status 2" in output.err
-    assert "step output" in output.err
-    assert "step error" in output.err
+    assert output.err == f"error: {' '.join(failing_command)} exited with status 2\n"
+
+
+def test_dev_update_reports_missing_bun(
+    checkout: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        assert list(args) == INSTALL
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", "bun")
+
+    assert main(["dev", "update"], run=run) == 1
+
+    assert capsys.readouterr().err == "error: [Errno 2] No such file or directory: 'bun'\n"
+
+
+def test_dev_update_requires_a_source_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    web_dir = tmp_path / "missing-web"
+    monkeypatch.setattr(frontend, "WEB_DIR", web_dir)
+
+    def run(_args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        pytest.fail("Bun ran without a source checkout")
+
+    assert main(["dev", "update"], run=run) == 1
+
+    assert (
+        capsys.readouterr().err == f"error: dev update requires a source checkout with {web_dir}\n"
+    )

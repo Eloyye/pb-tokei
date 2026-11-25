@@ -10,7 +10,7 @@ from test_calibration import MAIN, SIDELINE
 from pb_tokei import main
 from pb_tokei.annotate import server
 from pb_tokei.annotate.app import CalibrationOut, create_app
-from pb_tokei.annotate.frontend import stamp_bundle
+from pb_tokei.annotate.frontend import source_hash, stamp_bundle
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
@@ -885,7 +885,7 @@ def test_annotate_checks_the_bundle_and_serves(
         web_dir.mkdir()
         source.write_text("<title>app</title>")
     if state in {"fresh", "stale"}:
-        stamp_bundle(web_dir, static_dir)
+        stamp_bundle(static_dir, source_hash(web_dir))
     if state == "stale":
         source.write_text("<title>updated app</title>")
 

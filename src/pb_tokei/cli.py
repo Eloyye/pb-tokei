@@ -386,12 +386,12 @@ def _run_dev_update(*, run: CommandRunner | None) -> int:
         return 1
     runner = run
     if runner is None:
-        runner = partial(subprocess.run, cwd=WEB_DIR, capture_output=True, text=True, check=False)
+        runner = partial(subprocess.run, cwd=WEB_DIR, text=True, check=False)
 
-    print("python deps: synced (uv run)")
+    print("python deps: managed by uv run", flush=True)
     try:
         runner(["bun", "install", "--frozen-lockfile"]).check_returncode()
-        print("web deps:    bun install --frozen-lockfile succeeded")
+        print("web deps:    bun install --frozen-lockfile succeeded", flush=True)
         if bundle_is_current(WEB_DIR, STATIC_DIR):
             print("front end:   up to date, skipped build")
         else:
@@ -399,9 +399,6 @@ def _run_dev_update(*, run: CommandRunner | None) -> int:
             print("front end:   rebuilt")
     except subprocess.CalledProcessError as exc:
         print(f"error: {shlex.join(exc.cmd)} exited with status {exc.returncode}", file=sys.stderr)
-        for output in (exc.stdout, exc.stderr):
-            if output:
-                print(output.rstrip(), file=sys.stderr)
         return 1
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)

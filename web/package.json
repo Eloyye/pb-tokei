@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && cd .. && uv run python -m pb_tokei.annotate.frontend stamp",
+    "build": "source_hash=$(uv run python -m pb_tokei.annotate.frontend hash) && tsc --noEmit && vite build && uv run --no-sync python -m pb_tokei.annotate.frontend stamp \"$source_hash\"",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",
     "fmt": "oxfmt",
