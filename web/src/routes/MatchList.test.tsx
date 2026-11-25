@@ -65,6 +65,15 @@ afterEach(() => {
 });
 
 describe("MatchList Video pills", () => {
+  it("offers New Match when the Rally Log has no Matches", async () => {
+    vi.mocked(listMatches).mockResolvedValue([]);
+    renderList();
+
+    const link = await screen.findByRole("link", { name: "New Match" });
+    expect(link.getAttribute("href")).toBe("/matches/new");
+    expect(screen.getByText("No Matches yet.")).toBeTruthy();
+  });
+
   it("shows live download/convert progress, Queued (n), Fetch failed, and static statuses", async () => {
     vi.mocked(listMatches).mockResolvedValue([
       makeMatch("m1", { video_status: "ready" }),

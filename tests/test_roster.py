@@ -7,11 +7,17 @@ import pytest
 
 from pb_tokei import main
 from pb_tokei.rally_log import (
+    Franchise,
+    FranchiseId,
     Game,
     Handedness,
     MatchId,
+    Player,
+    PlayerId,
     RallyLog,
     Tour,
+    Tournament,
+    TournamentId,
 )
 from pb_tokei.roster import RosterError, parse_roster, roster_template, set_up_match
 
@@ -267,6 +273,77 @@ def test_existing_match_is_refused_and_its_games_kept(
 
 MLP = {"name": "MLP Dallas 2026", "tour": "mlp"}
 DALLAS_VS_MIAMI = {"franchise_a": "Dallas Flash", "franchise_b": "Miami Pickleball Club"}
+
+
+@pytest.mark.parametrize(
+    ("tournament", "team_a", "franchise_match", "suggestion"),
+    [
+        (
+            MLP,
+            (("  anna  BRIGHT ", "right"), ("Ben Johns", "right")),
+            DALLAS_VS_MIAMI,
+            "Anna Bright",
+        ),
+        (
+            MLP,
+            (("Anna Bright", "right"), ("Ben Johns", "right")),
+            {**DALLAS_VS_MIAMI, "franchise_a": "dallas   flash"},
+            "Dallas Flash",
+        ),
+        (
+            {"name": "mlp  dallas 2026", "tour": "app"},
+            (("Anna Bright", "right"), ("Ben Johns", "right")),
+            None,
+            MLP["name"],
+        ),
+    ],
+)
+def test_normalized_names_suggest_the_existing_spelling(
+    tmp_path: Path,
+    tournament: dict[str, str],
+    team_a: tuple[tuple[str, str], ...],
+    franchise_match: dict[str, str] | None,
+    suggestion: str,
+) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        set_up_match(
+            log, parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        )
+        roster = parse_roster(
+            roster_toml(tournament=tournament, team_a=team_a, franchise_match=franchise_match)
+        )
+        with pytest.raises(RosterError, match=f"did you mean '{suggestion}'"):
+            set_up_match(log, roster)
+        assert not log.has_match(roster.match_id)
+
+
+def test_tournament_name_cannot_be_reused_on_another_tour(tmp_path: Path) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        set_up_match(log, parse_roster(roster_toml()))
+        roster = parse_roster(roster_toml(tournament={**PPA, "tour": "app"}))
+        with pytest.raises(RosterError, match="is on the PPA Tour"):
+            set_up_match(log, roster)
+
+
+def test_exact_match_wins_over_legacy_duplicates(tmp_path: Path) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        following = parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        first = set_up_match(
+            log, parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        )
+        log.save_player(Player(PlayerId(uuid4()), "ANNA BRIGHT", Handedness.LEFT))
+        log.save_tournament(Tournament(TournamentId(uuid4()), MLP["name"], Tour.APP))
+        log.save_tournament(Tournament(TournamentId(uuid4()), MLP["name"].upper(), Tour.MLP))
+        log.save_franchise(Franchise(FranchiseId(uuid4()), "DALLAS FLASH"))
+
+        reused = set_up_match(log, following)
+
+        assert reused.tournament_id == first.tournament_id
+        assert reused.team_a_id == first.team_a_id
+        assert reused.franchise_match_id == first.franchise_match_id
+        assert len(log.list_players()) == 5
+        assert len(log.list_tournaments()) == 3
+        assert len(log.list_franchises()) == 3
 
 
 def test_mlp_matches_share_one_franchise_match(

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import os
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import UUID
 
@@ -41,7 +42,7 @@ from pb_tokei.rally_log import (
 
 
 class RosterError(ValueError):
-    """A Roster File that is malformed, or that disagrees with the Rally Log."""
+    """A Roster that is malformed, or that disagrees with the Rally Log."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,26 @@ class Roster:
     team_b: tuple[RosterPlayer, RosterPlayer]
     franchise_match: RosterFranchiseMatch | None = None
     video: SourceVideo | None = None
+
+    def __post_init__(self) -> None:
+        names = [p.name for p in (*self.team_a, *self.team_b)]
+        if any(not name.strip() for name in names):
+            raise RosterError("each Player needs a name")
+        if len(set(names)) != len(names):
+            raise RosterError("a Player can't appear twice in a Match")
+        if not self.tournament.strip():
+            raise RosterError("Tournament name must be non-empty text")
+        fm = self.franchise_match
+        if fm is None:
+            if self.tour is Tour.MLP:
+                raise RosterError("an MLP Match needs a [franchise_match] section")
+            return
+        if self.tour is not Tour.MLP:
+            raise RosterError('[franchise_match] is only for MLP (tour = "mlp")')
+        if not fm.franchise_a.strip() or not fm.franchise_b.strip():
+            raise RosterError("each Franchise needs a name")
+        if fm.franchise_a == fm.franchise_b:
+            raise RosterError("a Franchise can't play itself")
 
 
 # --- Reading ------------------------------------------------------------------------------
@@ -102,17 +123,10 @@ def parse_roster(text: str) -> Roster:
 
     team_a = _team(data, "team_a")
     team_b = _team(data, "team_b")
-    names = [p.name for p in (*team_a, *team_b)]
-    if len(set(names)) != len(names):
-        raise RosterError("a Player can't appear twice in a Match")
 
     franchise_match = None
     if "franchise_match" in data:
-        if tour is not Tour.MLP:
-            raise RosterError('[franchise_match] is only for MLP (tour = "mlp")')
         franchise_match = _franchise_match(_table(data, "franchise_match"))
-    elif tour is Tour.MLP:
-        raise RosterError("an MLP Match needs a [franchise_match] section")
 
     video = None
     if "video" in data:
@@ -129,7 +143,7 @@ def parse_roster(text: str) -> Roster:
 
     return Roster(
         match_id=MatchId(_uuid(data, "id", "the Roster File")),
-        tournament=_text(tournament, "name", "[tournament]"),
+        tournament=_text(tournament, "name", "[tournament]", strip=False),
         tour=tour,
         team_a=team_a,
         team_b=team_b,
@@ -152,7 +166,8 @@ def _team(data: dict[str, Any], key: str) -> tuple[RosterPlayer, RosterPlayer]:
         _only_keys(player, where, {"name", "handedness"})
         result.append(
             RosterPlayer(
-                _text(player, "name", where), _choice(player, "handedness", Handedness, where)
+                _text(player, "name", where, strip=False),
+                _choice(player, "handedness", Handedness, where),
             )
         )
     return result[0], result[1]
@@ -161,10 +176,8 @@ def _team(data: dict[str, Any], key: str) -> tuple[RosterPlayer, RosterPlayer]:
 def _franchise_match(table: dict[str, Any]) -> RosterFranchiseMatch:
     where = "[franchise_match]"
     _only_keys(table, where, {"franchise_a", "franchise_b"}, {"id"})
-    a = _text(table, "franchise_a", where)
-    b = _text(table, "franchise_b", where)
-    if a == b:
-        raise RosterError(f"{where}: a Franchise can't play itself")
+    a = _text(table, "franchise_a", where, strip=False)
+    b = _text(table, "franchise_b", where, strip=False)
     pinned = FranchiseMatchId(_uuid(table, "id", where)) if "id" in table else None
     return RosterFranchiseMatch(a, b, pinned)
 
@@ -190,11 +203,11 @@ def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value
 
 
-def _text(table: dict[str, Any], key: str, where: str) -> str:
+def _text(table: dict[str, Any], key: str, where: str, *, strip: bool = True) -> str:
     value = table.get(key)
     if not isinstance(value, str) or not value.strip():
         raise RosterError(f"{where} {key} must be non-empty text")
-    return value.strip()
+    return value.strip() if strip else value
 
 
 def _choice[E: (Tour, Handedness)](table: dict[str, Any], key: str, enum: type[E], where: str) -> E:
@@ -221,6 +234,8 @@ def roster_template(match_id: MatchId | None = None) -> str:
     """A Roster File to fill in, with a fresh Match id."""
     match_id = match_id or MatchId(new_id())
     return f'''# Roster File: sets up one Match. Load it with `pb-tokei match add <this file>`.
+# Use the exact stored names for existing Players, Franchises and Tournaments (across all Tours).
+# A name that matches after folding case and whitespace is rejected with the stored spelling.
 id = "{match_id}"
 
 [tournament]
@@ -259,32 +274,58 @@ handedness = "right"
 
 # --- Setting up a Match -------------------------------------------------------------------
 
+# The server gives concurrent requests separate DuckDB connections. A transaction alone cannot
+# stop both from adding the same normalized name under different ids.
+_setup_lock = Lock()
+
 
 def set_up_match(log: RallyLog, roster: Roster) -> Match:
-    """Creates the Match a Roster File describes, finding or adding its Tournament, Players,
-    Teams, Franchises and Franchise Match. Everything is checked before anything is written, and
-    then written in one transaction. Only new records are written: in DuckDB, re-saving a record
-    that a Match already refers to fails."""
+    """Creates the Match a Roster describes in one transaction.
+
+    An exact name reuses the stored Player, Franchise or Tournament on its Tour. A name that
+    only matches after folding case and whitespace raises RosterError. Tournament names are
+    checked across Tours. Only new records are written.
+    """
+    with _setup_lock, log.transaction():
+        return _set_up_match(log, roster)
+
+
+def _set_up_match(log: RallyLog, roster: Roster) -> Match:
     if log.has_match(roster.match_id):
         raise RosterError(f"Match {roster.match_id} already exists")
     new: list[Callable[[], None]] = []
 
-    tournament = log.find_tournament(roster.tournament, roster.tour)
+    tournaments = log.list_tournaments()
+    tournament = next(
+        (t for t in tournaments if t.name == roster.tournament and t.tour is roster.tour), None
+    )
     if tournament is None:
-        tournament = Tournament(TournamentId(new_id()), roster.tournament, roster.tour)
+        other = _find_name(tournaments, roster.tournament, "Tournament")
+        if other is not None:
+            raise RosterError(f"Tournament {other.name!r} is on the {other.tour.upper()} Tour")
+        tournament = Tournament(TournamentId(new_id()), roster.tournament.strip(), roster.tour)
         new.append(partial(log.save_tournament, tournament))
 
-    players: dict[str, Player] = {}
+    available_players = log.list_players()
+    player_ids: dict[str, PlayerId] = {}
     for entry in (*roster.team_a, *roster.team_b):
-        player = _player(log, entry)
+        player = _find_name(available_players, entry.name, "Player")
         if player is None:
-            player = Player(PlayerId(new_id()), entry.name, entry.handedness)
+            player = Player(PlayerId(new_id()), entry.name.strip(), entry.handedness)
             new.append(partial(log.save_player, player))
-        players[entry.name] = player
+            available_players.append(player)
+        elif player.handedness is not entry.handedness:
+            raise RosterError(
+                f"{entry.name} is stored as {player.handedness.value}-handed,"
+                f" but the Roster says {entry.handedness.value}"
+            )
+        player_ids[entry.name] = player.id
+    if len(set(player_ids.values())) != 4:
+        raise RosterError("a Player can't appear twice in a Match")
 
     teams = []
     for entries in (roster.team_a, roster.team_b):
-        a, b = (players[entry.name].id for entry in entries)
+        a, b = (player_ids[entry.name] for entry in entries)
         team = log.find_team(a, b)
         if team is None:
             team = Team(TeamId(new_id()), (a, b))
@@ -295,19 +336,22 @@ def set_up_match(log: RallyLog, roster: Roster) -> Match:
     franchise_match = None
     if roster.franchise_match is not None:
         fm = roster.franchise_match
+        available_franchises = log.list_franchises()
         franchises = []
         for name in (fm.franchise_a, fm.franchise_b):
-            franchise = log.find_franchise(name)
+            franchise = _find_name(available_franchises, name, "Franchise")
             if franchise is None:
-                franchise = Franchise(FranchiseId(new_id()), name)
+                franchise = Franchise(FranchiseId(new_id()), name.strip())
                 new.append(partial(log.save_franchise, franchise))
+                available_franchises.append(franchise)
             franchises.append(franchise)
-        franchise_match, is_new = _franchise_match_for(
-            log, tournament, franchises[0], franchises[1], fm.id
-        )
+        a, b = franchises
+        if a.id == b.id:
+            raise RosterError("a Franchise can't play itself")
+        franchise_match, is_new = _franchise_match_for(log, tournament, a, b, fm.id)
         if is_new:
             new.append(partial(log.save_franchise_match, franchise_match))
-        if franchise_match.franchise_a_id != franchises[0].id:
+        if franchise_match.franchise_a_id != a.id:
             # The stored Franchise Match has the Franchises the other way round; Team A must
             # play for its Franchise A.
             team_a, team_b = team_b, team_a
@@ -320,22 +364,25 @@ def set_up_match(log: RallyLog, roster: Roster) -> Match:
         franchise_match_id=None if franchise_match is None else franchise_match.id,
         source_video=roster.video,
     )
-    with log.transaction():
-        for save in new:
-            save()
-        log.save_match(match)
+    for save in new:
+        save()
+    log.save_match(match)
     return match
 
 
-def _player(log: RallyLog, entry: RosterPlayer) -> Player | None:
-    """The stored Player with this name, or None if there isn't one."""
-    stored = log.find_player(entry.name)
-    if stored is not None and stored.handedness is not entry.handedness:
-        raise RosterError(
-            f"{entry.name} is stored as {stored.handedness.value}-handed,"
-            f" but the Roster File says {entry.handedness.value}"
-        )
-    return stored
+def _find_name[T: (Player, Franchise, Tournament)](
+    records: Sequence[T], name: str, kind: str
+) -> T | None:
+    for record in records:
+        if record.name == name:
+            return record
+    normalized = " ".join(name.split()).casefold()
+    for record in records:
+        if " ".join(record.name.split()).casefold() == normalized:
+            raise RosterError(
+                f"{kind} {name!r} matches an existing name (did you mean {record.name!r}?)"
+            )
+    return None
 
 
 def _franchise_match_for(
@@ -355,7 +402,7 @@ def _franchise_match_for(
             stored.franchise_b_id,
         } != {franchise_a.id, franchise_b.id}:
             raise RosterError(
-                f"Franchise Match {pinned} is between other Franchises or at another Tournament"
+                "That Franchise Match is between other Franchises or at another Tournament"
             )
         return stored, False
 

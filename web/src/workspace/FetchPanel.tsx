@@ -67,7 +67,7 @@ function renderHintWithLinks(hint: string): ReactNode {
  */
 export function FetchPanel({ match }: { match: MatchDetail }) {
   const queryClient = useQueryClient();
-  const [url, setUrl] = useState(match.source_url ?? "");
+  const [urlDraft, setUrlDraft] = useState<string | null>(null);
   const [cookiesDraft, setCookiesDraft] = useState<{ browser: string; profile: string } | null>(
     null,
   );
@@ -80,6 +80,7 @@ export function FetchPanel({ match }: { match: MatchDetail }) {
   });
 
   const job = footageQuery.data;
+  const url = urlDraft ?? job?.requested_url ?? match.source_url ?? "";
   const prevStateRef = useRef<FootageJobState | undefined>(undefined);
 
   // When a job moves from downloading -> converting (SourceVideo recorded), or finishes / errors,
@@ -88,12 +89,14 @@ export function FetchPanel({ match }: { match: MatchDetail }) {
     const state = job?.state;
     const prev = prevStateRef.current;
     prevStateRef.current = state;
-    if (prev === undefined || prev === state) return;
-    const transitionedOutOfActive = isActiveJob(prev) && !isActiveJob(state);
-    const finishedDownload = prev === "downloading" && state === "converting";
-    if (transitionedOutOfActive || finishedDownload) {
-      void queryClient.invalidateQueries({ queryKey: ["matches", match.id] });
-      void queryClient.invalidateQueries({ queryKey: ["matches"] });
+    if (state === undefined || prev === state) return;
+    // A job started before the Workspace opened may have finished before its first poll.
+    const mayHaveFinished = (prev === undefined || isActiveJob(prev)) && !isActiveJob(state);
+    const finishedDownload =
+      (prev === undefined || prev === "downloading") && state === "converting";
+    if (mayHaveFinished || finishedDownload) {
+      void queryClient.invalidateQueries({ queryKey: ["matches", match.id], exact: true });
+      void queryClient.invalidateQueries({ queryKey: ["matches"], exact: true });
     }
   }, [job?.state, match.id, queryClient]);
 
@@ -116,6 +119,7 @@ export function FetchPanel({ match }: { match: MatchDetail }) {
     mutationFn: () => cancelMatchFootage(match.id),
     onSuccess: (next) => {
       setRequestError(null);
+      setUrlDraft(url);
       queryClient.setQueryData<FootageJobOut>(["matches", match.id, "footage"], next);
       void queryClient.invalidateQueries({ queryKey: ["matches"] });
       void queryClient.invalidateQueries({ queryKey: ["matches", match.id] });
@@ -244,7 +248,7 @@ export function FetchPanel({ match }: { match: MatchDetail }) {
                     type="url"
                     className="picker-path"
                     value={url}
-                    onChange={(event) => setUrl(event.target.value)}
+                    onChange={(event) => setUrlDraft(event.target.value)}
                     placeholder="https://www.youtube.com/watch?v=…"
                     autoComplete="off"
                     required

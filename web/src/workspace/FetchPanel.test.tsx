@@ -153,6 +153,7 @@ describe("FetchPanel", () => {
         error: "yt-dlp is not installed or not on PATH",
         hint: "Install yt-dlp (https://github.com/yt-dlp/yt-dlp#installation) and ensure it is on PATH.",
         stderr_tail: "FileNotFoundError: yt-dlp",
+        requested_url: SAMPLE_URL,
       }),
     );
     renderPanel();
@@ -167,6 +168,15 @@ describe("FetchPanel", () => {
     expect(screen.getByText("FileNotFoundError: yt-dlp")).toBeTruthy();
     // Retry form remains available underneath.
     expect(screen.getByRole("button", { name: "Fetch" })).toBeTruthy();
+    expect(screen.getByLabelText<HTMLInputElement>("Video URL").value).toBe(SAMPLE_URL);
+  });
+
+  it("rechecks the Match when a job can have finished before the Workspace's first poll", async () => {
+    const { invalidateSpy } = renderPanel();
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["matches", MATCH_ID], exact: true });
+    });
   });
 
   it("invalidates Match queries when an active job completes so Workspace remounts ready", async () => {
@@ -179,8 +189,8 @@ describe("FetchPanel", () => {
     queryClient.setQueryData(["matches", MATCH_ID, "footage"], makeJob({ state: "idle" }));
 
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["matches", MATCH_ID] });
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["matches"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["matches", MATCH_ID], exact: true });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["matches"], exact: true });
     });
   });
 });

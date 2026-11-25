@@ -189,6 +189,12 @@ class RallyLog:
         id_, name, tour = self._one("SELECT * FROM tournaments WHERE id = ?", tournament_id)
         return Tournament(TournamentId(id_), name, Tour(tour))
 
+    def list_tournaments(self) -> list[Tournament]:
+        return [
+            Tournament(TournamentId(id_), name, Tour(tour))
+            for id_, name, tour in self._all("SELECT * FROM tournaments ORDER BY name, tour, id")
+        ]
+
     def save_player(self, player: Player) -> None:
         self._upsert(
             "players",
@@ -199,6 +205,12 @@ class RallyLog:
     def get_player(self, player_id: PlayerId) -> Player:
         id_, name, handedness = self._one("SELECT * FROM players WHERE id = ?", player_id)
         return Player(PlayerId(id_), name, Handedness(handedness))
+
+    def list_players(self) -> list[Player]:
+        return [
+            Player(PlayerId(id_), name, Handedness(handedness))
+            for id_, name, handedness in self._all("SELECT * FROM players ORDER BY name, id")
+        ]
 
     def save_team(self, team: Team) -> None:
         """Saves a Team. Saving a second Team with the same two Players fails."""
@@ -223,6 +235,12 @@ class RallyLog:
     def get_franchise(self, franchise_id: FranchiseId) -> Franchise:
         id_, name = self._one("SELECT * FROM franchises WHERE id = ?", franchise_id)
         return Franchise(FranchiseId(id_), name)
+
+    def list_franchises(self) -> list[Franchise]:
+        return [
+            Franchise(FranchiseId(id_), name)
+            for id_, name in self._all("SELECT * FROM franchises ORDER BY name, id")
+        ]
 
     def save_franchise_match(self, franchise_match: FranchiseMatch) -> None:
         fm = franchise_match
@@ -274,6 +292,14 @@ class RallyLog:
         return FranchiseMatch(
             FranchiseMatchId(id_), TournamentId(tournament), FranchiseId(a), FranchiseId(b)
         )
+
+    def list_franchise_matches(self) -> list[FranchiseMatch]:
+        return [
+            FranchiseMatch(
+                FranchiseMatchId(id_), TournamentId(tournament), FranchiseId(a), FranchiseId(b)
+            )
+            for id_, tournament, a, b in self._all("SELECT * FROM franchise_matches ORDER BY id")
+        ]
 
     # --- Matches --------------------------------------------------------------------------
 
@@ -357,7 +383,7 @@ class RallyLog:
             SELECT m.id, t.name,
                 pa1.name, pa2.name, pb1.name, pb2.name,
                 fa.name, fb.name,
-                m.source_video_url, m.source_video_id, m.source_video_path
+                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id
             FROM matches m
             JOIN tournaments t ON t.id = m.tournament_id
             JOIN teams ta ON ta.id = m.team_a_id
@@ -383,6 +409,7 @@ class RallyLog:
                 franchise_a=fa,
                 franchise_b=fb,
                 source_video=_source_video(video_url, video_id, video_path),
+                franchise_match_id=None if fm_id is None else FranchiseMatchId(fm_id),
             )
             for (
                 id_,
@@ -396,6 +423,7 @@ class RallyLog:
                 video_url,
                 video_id,
                 video_path,
+                fm_id,
             ) in rows
         ]
 
