@@ -599,6 +599,74 @@ export function skipLandmark(current: Landmark | null): Landmark {
   return LANDMARKS[(index + 1) % LANDMARKS.length]!;
 }
 
+/** A Landmark marker rendered on the Monitor for the current frame. */
+export interface VisibleLandmarkMarker {
+  landmark: Landmark;
+  index: number;
+  at: Point;
+  otherFrame: boolean;
+  clickedFrame: number;
+  flagged: boolean;
+}
+
+/**
+ * Where a Landmark's marker sits on `frame`, or null if no marker is drawn on this frame:
+ * - while dragged: at the live drag point
+ * - clicked on `frame`: at its placed position
+ * - on `reference_frame`, clicked on another frame: at its in-frame resolved position, or its raw
+ *   placed position when unresolved (so carried-over/unmapped points can be dragged into place)
+ * - off `reference_frame`, clicked on another frame: not drawn (null)
+ */
+function markerPosition(
+  calibration: Calibration | undefined,
+  frame: number,
+  landmark: Landmark,
+  resolvedLandmarks: Partial<Record<Landmark, Point>> | undefined,
+  drag: { landmark: Landmark; at: Point } | null | undefined,
+): { at: Point; otherFrame: boolean; clickedFrame: number } | null {
+  if (!calibration) return null;
+  if (drag?.landmark === landmark) {
+    return { at: drag.at, otherFrame: false, clickedFrame: frame };
+  }
+  const placed = calibration.landmarks[landmark];
+  if (!placed) return null;
+  if (placed.frame === frame) {
+    return { at: { x: placed.x, y: placed.y }, otherFrame: false, clickedFrame: placed.frame };
+  }
+  if (frame !== calibration.reference_frame) return null;
+  const resolved = resolvedLandmarks?.[landmark];
+  if (resolved) {
+    if (!isInFramePoint(resolved)) return null;
+    return { at: resolved, otherFrame: true, clickedFrame: placed.frame };
+  }
+  return { at: { x: placed.x, y: placed.y }, otherFrame: true, clickedFrame: placed.frame };
+}
+
+/** Builds the visible Landmark markers for `frame` in clicking order. */
+export function visibleLandmarkMarkers(
+  calibration: Calibration | undefined,
+  frame: number,
+  fit: CalibrationOut | undefined,
+  drag?: { landmark: Landmark; at: Point } | null,
+): VisibleLandmarkMarker[] {
+  if (!calibration) return [];
+  const unmappedSet = new Set(fit?.unmapped_landmarks ?? []);
+  const markers: VisibleLandmarkMarker[] = [];
+  LANDMARKS.forEach((landmark, index) => {
+    const pos = markerPosition(calibration, frame, landmark, fit?.resolved_landmarks, drag);
+    if (!pos) return;
+    const isDragged = drag?.landmark === landmark;
+    const resolved = fit?.resolved_landmarks[landmark];
+    const flagged = isDragged
+      ? false
+      : pos.otherFrame && !resolved
+        ? unmappedSet.has(landmark)
+        : Boolean(fit?.errors[landmark]?.needs_attention);
+    markers.push({ landmark, index, ...pos, flagged });
+  });
+  return markers;
+}
+
 /**
  * How the Monitor highlights the currently selected Landmark:
  * - `marker`: glow behind the Landmark's existing `.landmark-marker` on this frame
@@ -607,7 +675,7 @@ export function skipLandmark(current: Landmark | null): Landmark {
  */
 export type LandmarkHighlight =
   | { kind: "none" }
-  | { kind: "marker" }
+  | { kind: "marker"; at: Point }
   | { kind: "ghost"; at: Point };
 
 export interface LandmarkHighlightInput {
@@ -616,28 +684,10 @@ export interface LandmarkHighlightInput {
   frame: number;
   /** Resolved reference-frame positions from the current fit, if any. */
   resolvedLandmarks?: Partial<Record<Landmark, Point>>;
-  /** Whether the selected Landmark is currently being dragged on this frame. */
-  dragging?: boolean;
+  /** The Landmark currently being dragged and its live image position, if any. */
+  drag?: { landmark: Landmark; at: Point } | null;
   /** The court-to-image matrix the court template uses, or null/undefined if unavailable. */
   matrix: number[][] | null | undefined;
-}
-
-/** Whether `landmark` has a visible marker on `frame` in `CalibrationOverlay`. */
-function hasLandmarkMarker(
-  calibration: Calibration | undefined,
-  frame: number,
-  landmark: Landmark,
-  resolvedLandmarks: Partial<Record<Landmark, Point>> | undefined,
-  dragging: boolean,
-): boolean {
-  if (!calibration) return false;
-  if (dragging) return true;
-  const placed = calibration.landmarks[landmark];
-  if (!placed) return false;
-  if (placed.frame === frame) return true;
-  if (frame !== calibration.reference_frame) return false;
-  const resolved = resolvedLandmarks?.[landmark];
-  return resolved ? isInFramePoint(resolved) : true;
 }
 
 /** Computes the Monitor highlight for the selected Landmark on `frame`. */
@@ -646,13 +696,12 @@ export function landmarkHighlight({
   calibration,
   frame,
   resolvedLandmarks,
-  dragging = false,
+  drag,
   matrix,
 }: LandmarkHighlightInput): LandmarkHighlight {
   if (!selected) return { kind: "none" };
-  if (hasLandmarkMarker(calibration, frame, selected, resolvedLandmarks, dragging)) {
-    return { kind: "marker" };
-  }
+  const marker = markerPosition(calibration, frame, selected, resolvedLandmarks, drag);
+  if (marker) return { kind: "marker", at: marker.at };
   if (!matrix) return { kind: "none" };
   const projected = project(matrix, courtPoint(selected));
   if (!isInFramePoint(projected)) return { kind: "none" };

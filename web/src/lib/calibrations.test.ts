@@ -606,7 +606,7 @@ describe("landmarkHighlight", () => {
         frame: 1005,
         matrix: null,
       }),
-    ).toEqual({ kind: "marker" });
+    ).toEqual({ kind: "marker", at: { x: 0.2, y: 0.6 } });
   });
 
   it("returns marker on the reference frame for an other-frame Landmark drawn resolved or raw", () => {
@@ -621,7 +621,7 @@ describe("landmarkHighlight", () => {
         resolvedLandmarks: { near_kitchen_left: { x: 0.25, y: 0.62 } },
         matrix: COURT_MATRIX,
       }),
-    ).toEqual({ kind: "marker" });
+    ).toEqual({ kind: "marker", at: { x: 0.25, y: 0.62 } });
 
     // Drawn dashed at its raw position when unresolved (e.g. carried over or fitting).
     expect(
@@ -632,7 +632,7 @@ describe("landmarkHighlight", () => {
         resolvedLandmarks: {},
         matrix: null,
       }),
-    ).toEqual({ kind: "marker" });
+    ).toEqual({ kind: "marker", at: { x: 0.2, y: 0.6 } });
 
     // Resolved outside the picture -> marker is hidden, so falls back to ghost if projected inside.
     expect(
@@ -646,7 +646,7 @@ describe("landmarkHighlight", () => {
     ).toEqual({ kind: "ghost", at: { x: expect.closeTo(0.1), y: expect.closeTo(0.64) } });
   });
 
-  it("returns marker while dragging the selected Landmark", () => {
+  it("returns marker at the live drag position while dragging the selected Landmark", () => {
     const c = cal("main", 1000, { near_kitchen_left: { x: 0.2, y: 0.6, frame: 1020 } });
 
     expect(
@@ -654,10 +654,10 @@ describe("landmarkHighlight", () => {
         selected: "near_kitchen_left",
         calibration: c,
         frame: 1050,
-        dragging: true,
+        drag: { landmark: "near_kitchen_left", at: { x: 0.4, y: 0.5 } },
         matrix: COURT_MATRIX,
       }),
-    ).toEqual({ kind: "marker" });
+    ).toEqual({ kind: "marker", at: { x: 0.4, y: 0.5 } });
   });
 
   it("returns ghost at the projected court point for remaining, not-visible, and off-ref other-frame Landmarks", () => {

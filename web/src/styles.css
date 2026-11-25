@@ -1171,6 +1171,8 @@ fieldset.transport-group {
 }
 
 .landmark-highlight {
+  --pulse-lo: 0.18;
+  --pulse-hi: 0.32;
   position: absolute;
   width: 36px;
   height: 36px;
@@ -1183,33 +1185,26 @@ fieldset.transport-group {
     var(--accent) 46%,
     transparent 100%
   );
+  /* Static fallback used when animation is disabled under prefers-reduced-motion. */
   opacity: 0.25;
   pointer-events: none;
   animation: landmark-highlight-pulse 2.8s ease-in-out infinite;
 }
 
 .landmark-highlight.stale {
+  --pulse-lo: 0.07;
+  --pulse-hi: 0.13;
+  /* Static fallback under prefers-reduced-motion. */
   opacity: 0.1;
-  animation-name: landmark-highlight-pulse-stale;
 }
 
 @keyframes landmark-highlight-pulse {
   0%,
   100% {
-    opacity: 0.18;
+    opacity: var(--pulse-lo);
   }
   50% {
-    opacity: 0.32;
-  }
-}
-
-@keyframes landmark-highlight-pulse-stale {
-  0%,
-  100% {
-    opacity: 0.07;
-  }
-  50% {
-    opacity: 0.13;
+    opacity: var(--pulse-hi);
   }
 }
 

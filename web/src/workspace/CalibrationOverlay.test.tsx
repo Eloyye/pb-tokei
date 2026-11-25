@@ -238,4 +238,58 @@ describe("CalibrationOverlay", () => {
     const noneSelected = renderOverlay({ selected: null });
     expect(noneSelected.container.querySelector(".landmark-highlight")).toBeNull();
   });
+
+  it("dims a ghost during !fit (using lastFit), keeps marker glows undimmed, and falls back to ghost when a resolved marker is out of frame", () => {
+    const calibration = makeCalibration();
+    const fit = makeFit(calibration);
+
+    // `!fit` with `lastFit` present -> template is stale -> ghost dims with `.stale`.
+    const savingGhost = renderOverlay({
+      frame: 1005,
+      calibration,
+      fit: undefined,
+      lastFit: fit,
+      selected: "far_kitchen_right",
+    });
+    const staleGhost = savingGhost.container.querySelector<HTMLElement>(".landmark-highlight");
+    expect(staleGhost?.dataset.highlight).toBe("ghost");
+    expect(staleGhost?.classList.contains("stale")).toBe(true);
+    cleanup();
+
+    // `!fit` with a marker on this frame -> marker glow is never dimmed.
+    const savingMarker = renderOverlay({
+      frame: 1005,
+      calibration,
+      fit: undefined,
+      lastFit: fit,
+      selected: "near_kitchen_left",
+    });
+    const undimmedMarker = savingMarker.container.querySelector<HTMLElement>(".landmark-highlight");
+    expect(undimmedMarker?.dataset.highlight).toBe("marker");
+    expect(undimmedMarker?.classList.contains("stale")).toBe(false);
+    cleanup();
+
+    // On reference_frame, an other-frame Landmark whose resolved position is outside [0, 1]^2
+    // has its marker filtered out and falls back to a ghost (never a phantom marker glow).
+    const outOfFrameFit = makeFit(calibration, {
+      resolved_landmarks: {
+        near_kitchen_left: { x: 0.2, y: 0.6 },
+        near_kitchen_right: { x: 1.5, y: 0.5 },
+      },
+    });
+    const filteredOut = renderOverlay({
+      frame: 1005,
+      calibration,
+      fit: outOfFrameFit,
+      lastFit: outOfFrameFit,
+      selected: "near_kitchen_right",
+    });
+    expect(filteredOut.container.querySelector(".landmark-marker.selected")).toBeNull();
+    const fallbackHighlight =
+      filteredOut.container.querySelector<HTMLElement>(".landmark-highlight");
+    expect(fallbackHighlight?.dataset.highlight).toBe("ghost");
+    // courtPoint("near_kitchen_right") = (10, -7) -> (0.9, 0.64).
+    expect(Number.parseFloat(fallbackHighlight!.style.left)).toBeCloseTo(90);
+    expect(Number.parseFloat(fallbackHighlight!.style.top)).toBeCloseTo(64);
+  });
 });
