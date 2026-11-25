@@ -46,22 +46,26 @@ Runs on macOS and Linux (CI runs on Ubuntu). Windows is untested.
 ```bash
 git clone https://github.com/Eloyye/pb-tokei.git
 cd pb-tokei
-uv sync
-cd web && bun install && bun run build && cd ..
+uv run pb-tokei dev update
 ```
 
-Write a Roster File template, fill in the Tournament and the four Players, then create the Match in a new Rally Log:
+Run `uv run pb-tokei dev update` again after `git pull` or `git switch`.
+
+Write a Roster File template.
 
 ```bash
-uv run pb-tokei match new rosters/<tournament>/<match>.toml
-uv run pb-tokei match add rosters/<tournament>/<match>.toml --db rally_log.duckdb
+mkdir -p rosters
+uv run pb-tokei match new rosters/example.toml
 ```
 
-Open the annotation app (`annotate` remembers this Rally Log so later commands can omit `--db` from any directory), click the Match, paste the broadcast URL and click **Fetch** to download and convert it to 60 fps:
+Fill in the Tournament and the four Players in `rosters/example.toml`, then create the Match in a new Rally Log and open the annotation app. Click the Match, paste the broadcast URL and click **Fetch** to download and convert it to 60 fps.
 
 ```bash
+uv run pb-tokei match add rosters/example.toml --db rally_log.duckdb
 uv run pb-tokei annotate --db rally_log.duckdb
 ```
+
+`annotate` remembers this Rally Log so later commands can omit `--db`.
 
 ## Usage
 
