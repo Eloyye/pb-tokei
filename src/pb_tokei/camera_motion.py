@@ -4,7 +4,14 @@ Part of Tracking (ADR 0001, ADR 0006): Event Processing never reads this. Broadc
 (especially the Sideline View) pan and zoom during a Play Segment, so a single Calibration only
 lines up near its `reference_frame`. This module tracks how each frame in a Play Segment moves
 relative to its Calibration's `reference_frame` by chaining ORB + RANSAC homographies across
-keyframes and refining each frame against the visible white court lines.
+keyframes and registering each frame against the visible white court lines.
+
+Registration searches jointly (`_register_to_court_lines`): several ridge candidates per line
+sample, straight-line hypotheses per court line, and homographies from two lines across the court
+and two along it scored on all eight, so a logo edge or lettering beside a line cannot capture
+it. The reference frame is registered too, so clicked Landmarks only seed the search. Lines are
+matched through a one-coefficient lens model estimated on the reference frame (`_Lens`); each
+span stores that `Lens` with its per-frame homographies of the undistorted image (ADR 0011).
 
 Per-frame results are cached on disk outside the Rally Log as derived, rebuildable data keyed by
 the Calibration, Play Segment bounds, source video fingerprint, and `METHOD_VERSION` (ADR 0006).
@@ -31,12 +38,13 @@ from typing import TYPE_CHECKING, Any, NamedTuple, TypeGuard
 import cv2
 import numpy as np
 
+from pb_tokei.calibration import Lens
 from pb_tokei.rally_log import Calibration, CameraView, Landmark, PlaySegment
 
 if TYPE_CHECKING:
     from pb_tokei.calibration import Homography, Matrix
 
-METHOD_VERSION = 1
+METHOD_VERSION = 3
 """Bump whenever the tracking algorithm changes so cached Camera Motion rebuilds everywhere."""
 
 DEFAULT_CACHE_DIR_NAME = ".pb-tokei-cache"
@@ -62,10 +70,33 @@ _LINE_INLIER_PX = 2.2
 _MIN_VISIBLE_LINE_SAMPLES = 20
 _MIN_LINE_INLIERS = 24
 _MIN_LINE_INLIER_RATIO = 0.32
-_MIN_MATCHED_LINES = 2
 _MAX_MEDIAN_LINE_ERROR_FT = 0.30
 _MAX_P90_LINE_ERROR_FT = 0.50
 _MIN_FALLBACK_INLIERS = 100
+
+# A court line counts as matched when this many of its visible samples (and at least
+# `_MIN_LINE_SUPPORT`) sit on a detected ridge. A frame is verified only when at least
+# `_MIN_LINES_PER_FAMILY` distinct lines of each family are matched (see `_LINE_FAMILY`).
+_MIN_LINE_SUPPORT = 6
+_MIN_LINE_SUPPORT_RATIO = 0.30
+_MIN_LINES_PER_FAMILY = 2
+
+# Court-line registration (joint, multi-hypothesis) parameters, in work-resolution pixels at
+# `_WORK_MAX_WIDTH`. The anchor radius bounds how far clicked Landmarks may be from the painted
+# lines on the reference frame and still be corrected.
+_ANCHOR_SEARCH_PX = 40
+_MAX_PEAKS_PER_SAMPLE = 3
+_HYPOTHESES_PER_LINE = 3
+_HYPOTHESIS_INLIER_PX = 1.5
+_HYPOTHESIS_MAX_POINTS = 160
+_HYPOTHESIS_MAX_ANGLE_DEG = 12.0
+_SUPPORT_PX = 2.0
+_NEIGHBOUR_SEARCH_FRACTION = 0.45
+
+# Gauss-Newton line fit: Huber threshold (px) and the power of feet-per-pixel each residual is
+# weighted by (2 minimises squared feet).
+_GN_HUBER_PX = 1.5
+_FT_WEIGHT_POWER = 2.0
 
 
 class _CourtLine(NamedTuple):
@@ -104,26 +135,38 @@ _COURT_LINES: tuple[_CourtLine, ...] = (
     _court_line(Landmark.FAR_KITCHEN_CENTRE, Landmark.FAR_BASELINE_CENTRE),
 )
 
-_TS = np.linspace(0.06, 0.94, _SAMPLES_PER_LINE, dtype=np.float64)
-_SAMPLE_COURT_PTS = np.vstack(
+# Each line is probed densely to find the stretch of it inside the frame, and its samples are spread
+# over that stretch (up to `_SAMPLES_PER_LINE`, no closer than `_MIN_SAMPLE_SPACING_PX`), so a line
+# mostly out of shot, like the far baseline in a corner of the Sideline View, is still sampled
+# densely enough to be found. The ends are inset so samples avoid the crossing lines.
+_PROBE_TS = np.linspace(0.06, 0.94, 129, dtype=np.float64)
+_MIN_SAMPLE_SPACING_PX = 4.0
+_LINE_STARTS = np.array([[line.x1, line.y1] for line in _COURT_LINES], dtype=np.float64)
+_LINE_ENDS = np.array([[line.x2, line.y2] for line in _COURT_LINES], dtype=np.float64)
+_PROBE_COURT_PTS = np.concatenate(
     [
-        np.column_stack(
-            [
-                line.x1 + (line.x2 - line.x1) * _TS,
-                line.y1 + (line.y2 - line.y1) * _TS,
-                np.ones(_SAMPLES_PER_LINE),
-            ]
-        )
-        for line in _COURT_LINES
-    ]
-)
-_SAMPLE_LINE_EQS = np.vstack(
-    [np.tile([line.a, line.b, line.c], (_SAMPLES_PER_LINE, 1)) for line in _COURT_LINES]
-)
-_SAMPLE_LINE_IDS = np.concatenate(
-    [np.full(_SAMPLES_PER_LINE, lid, dtype=np.int32) for lid in range(len(_COURT_LINES))]
+        _LINE_STARTS[:, None, :]
+        + (_LINE_ENDS - _LINE_STARTS)[:, None, :] * _PROBE_TS[None, :, None],
+        np.ones((len(_COURT_LINES), len(_PROBE_TS), 1)),
+    ],
+    axis=2,
 )
 _LINE_EQS = np.array([[line.a, line.b, line.c] for line in _COURT_LINES], dtype=np.float64)
+
+
+# Lines across the court (baselines, kitchen lines) fix where a point is along the court's length;
+# lines along it (sidelines, centreline) fix where it is across. A frame matched only to one family
+# can slide along the other unnoticed, so verification needs both. The two centreline halves lie on
+# one straight line and count once (`_LINE_KEY`).
+_ACROSS, _ALONG = 0, 1
+_LINE_FAMILY = np.array([_ACROSS] * 4 + [_ALONG] * 4, dtype=np.int32)
+_LINE_KEY = np.array([0, 1, 2, 3, 4, 5, 6, 6], dtype=np.int32)
+_N_LINE_KEYS = 7
+_KEY_FAMILY = np.array([_ACROSS] * 4 + [_ALONG] * 3, dtype=np.int32)
+# Each key's court line as `a*x + b*y + c = 0` (feet), and the court coordinate it pins.
+# Line `k` is the first line with key `k`, so the first seven lines give each key's equation.
+_KEY_EQS = _LINE_EQS[:_N_LINE_KEYS]
+_KEY_COORD = np.array([-22.0, -7.0, 7.0, 22.0, -10.0, 10.0, 0.0])
 
 
 class CameraMotionError(RuntimeError):
@@ -166,8 +209,16 @@ class SpanMotion:
     """Tracked Camera Motion for one CalibrationSpan: per-frame `frame_to_ref` homographies.
 
     Each matrix at index `i` (frame `start_frame + i`) maps normalised image coordinates `[0, 1]^2`
-    of that frame to normalised image coordinates of `calibration_reference_frame`. When
-    `mapped[i]` is False, the frame could not be registered and has no court mapping.
+    of that frame, undistorted by `lens` when there is one, to normalised image coordinates of
+    `calibration_reference_frame` as the Calibration's Landmark fit sees them: composed with the
+    fit (`Homography.compose(..., lens=lens)`), it gives the frame's court mapping. The reference
+    frame itself maps to the identity only when its court-line registration failed and the
+    clicked fit stands; otherwise its matrix corrects the clicks onto the painted lines (ADR 0010).
+    When `mapped[i]` is False, the frame could not be registered and has no court mapping.
+    `line_error_ft[i]` is the median court-line residual of the frame's registration.
+
+    `lens` is the span's lens, estimated on the reference frame (ADR 0011), or None when it was
+    not estimated (the reference frame did not register) or is negligible.
     """
 
     start_frame: int
@@ -178,6 +229,7 @@ class SpanMotion:
     mapped: np.ndarray  # shape (N,), dtype bool
     matrices: np.ndarray  # shape (N, 3, 3), dtype float64
     line_error_ft: np.ndarray  # shape (N,), dtype float32 (NaN when unmapped)
+    lens: Lens | None = None
 
     @property
     def frame_count(self) -> int:
@@ -255,6 +307,11 @@ class CameraMotion:
         """The normalised `frame_to_ref` homography at `frame`, or None if unmapped/untracked."""
         span = self.span_at(frame)
         return None if span is None else span.at(frame)
+
+    def lens_at(self, frame: int) -> Lens | None:
+        """The lens `at(frame)` expects its image points undistorted by, or None for none."""
+        span = self.span_at(frame)
+        return None if span is None else span.lens
 
     def unmapped_ranges(self) -> list[FrameRange]:
         """All contiguous unmapped frame ranges across tracked spans, in frame order."""
@@ -633,6 +690,8 @@ class CameraMotionCache:
                 mapped = np.array(data["mapped"], dtype=bool)
                 matrices = np.array(data["matrices"], dtype=np.float64)
                 line_error_ft = np.array(data["line_error_ft"], dtype=np.float32)
+                lens_k1 = float(data["lens_k1"])
+                lens_aspect = float(data["lens_aspect"])
         except OSError, ValueError, KeyError:
             return None
         expected_n = span.frame_count
@@ -640,6 +699,8 @@ class CameraMotionCache:
             mapped.shape != (expected_n,)
             or matrices.shape != (expected_n, 3, 3)
             or line_error_ft.shape != (expected_n,)
+            or not math.isfinite(lens_k1)
+            or not (math.isfinite(lens_aspect) and lens_aspect > 0)
         ):
             return None
         return SpanMotion(
@@ -651,6 +712,7 @@ class CameraMotionCache:
             mapped=mapped,
             matrices=matrices,
             line_error_ft=line_error_ft,
+            lens=Lens(lens_k1, lens_aspect) if lens_k1 != 0.0 else None,
         )
 
     def put(self, video_path: Path, span: CalibrationSpan, motion: SpanMotion) -> None:
@@ -667,6 +729,8 @@ class CameraMotionCache:
                 mapped=motion.mapped.astype(bool),
                 matrices=motion.matrices.astype(np.float64),
                 line_error_ft=motion.line_error_ft.astype(np.float32),
+                lens_k1=np.float64(0.0 if motion.lens is None else motion.lens.k1),
+                lens_aspect=np.float64(1.0 if motion.lens is None else motion.lens.aspect),
             )
             tmp.replace(target)
         except BaseException:
@@ -994,6 +1058,8 @@ class _LineStats:
     med_px: float
     med_ft: float
     p90_ft: float
+    n_across: int = 0
+    n_along: int = 0
 
 
 _EMPTY_LINE_STATS = _LineStats(0, 0, 0, 0, math.inf, math.inf, math.inf)
@@ -1048,6 +1114,7 @@ def _track_span_open(
     flank = max(3, int(round(5 * sw / 960)))
     r_wide = max(10, int(round(16 * sw / 960)))
     r_narrow = max(4, int(round(6 * sw / 960)))
+    r_anchor = max(r_wide, int(round(_ANCHOR_SEARCH_PX * sw / 960)))
     h_court_to_ref_w = s_norm_to_w @ base_homography.court_to_image
 
     start_f = span.start_frame
@@ -1067,12 +1134,14 @@ def _track_span_open(
 
     # Read external reference frame if it sits outside this span.
     ref_gray_ext: np.ndarray | None = None
+    ref_score_ext: np.ndarray | None = None
     if not ref_inside:
         cap.set(cv2.CAP_PROP_POS_FRAMES, ref_f)
         ok, ref_bgr = cap.read()
         if ok and ref_bgr is not None:
             ref_small = _resize_work(ref_bgr, sw, sh)
             ref_gray_ext = cv2.cvtColor(ref_small, cv2.COLOR_BGR2GRAY)
+            ref_score_ext = _white_score(ref_small)
 
     # Pass 1: grab sequentially through span, decoding only keyframes.
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
@@ -1109,8 +1178,37 @@ def _track_span_open(
     elif ref_gray_ext is not None:
         ref_feats = detector.detectAndCompute(ref_gray_ext, feat_mask)
 
+    # `kf_c2p` holds `court -> undistorted work px` (see `_Lens`); stored frames keep that, and the
+    # span carries the lens (`SpanMotion.lens`).
     kf_c2p: dict[int, Matrix] = {}
     kf_err: dict[int, float] = {}
+
+    # The clicked Landmarks only approximate the reference frame's court lines: to a few pixels
+    # when clicked carefully, by feet when a click is off-target or pinned to the frame edge. Every
+    # other frame is tracked from the reference frame, so register it against the painted lines
+    # too (estimating the lens on the way), and keep the clicked fit only when that won't verify.
+    ref_score = kf_score.get(ref_f) if ref_inside else ref_score_ext
+    lens = _Lens.none(sw, sh)
+    h_anchor = h_court_to_ref_w
+    anchor_err_ft: float | None = None
+    if ref_score is not None:
+        anchored = _anchor_to_court_lines(
+            ref_score, h_court_to_ref_w, search_radius=r_anchor, flank=flank, valid_mask=feat_mask
+        )
+        if anchored is not None:
+            h_anchor, anchor_err_ft, lens = anchored
+
+    def register(score: np.ndarray, h_init: Matrix, radius: int) -> tuple[Matrix, _LineStats]:
+        return _register_frame(
+            score,
+            h_init,
+            search_radius=radius,
+            r_wide=r_wide,
+            r_narrow=r_narrow,
+            flank=flank,
+            valid_mask=feat_mask,
+            lens=lens,
+        )
 
     def try_relocalize(target_f: int, anchor_feats: Any, anchor_c2p: Matrix) -> bool:
         h_step, inliers, spread_ok = _match_features(
@@ -1122,9 +1220,7 @@ def _track_span_open(
         if h_init is None:
             return False
         h_init = h_init @ anchor_c2p
-        h_ref, st = _refine_to_lines(
-            kf_score[target_f], h_init, passes=(r_wide, r_narrow), flank=flank, valid_mask=feat_mask
-        )
+        h_ref, st = register(kf_score[target_f], h_init, r_anchor)
         if not _frame_accepted(st, feature_inliers=inliers):
             return False
         kf_c2p[target_f] = h_ref
@@ -1141,9 +1237,7 @@ def _track_span_open(
         if h_inv is None:
             return False
         h_init = h_inv @ kf_c2p[prev_f]
-        h_ref, st = _refine_to_lines(
-            kf_score[cur_f], h_init, passes=(r_wide, r_narrow), flank=flank, valid_mask=feat_mask
-        )
+        h_ref, st = register(kf_score[cur_f], h_init, r_anchor)
         if not _frame_accepted(st, feature_inliers=inliers):
             return False
         kf_c2p[cur_f] = h_ref
@@ -1164,7 +1258,7 @@ def _track_span_open(
             if prev_mapped and last_good is not None:
                 ok = try_step(cur_f, last_good)
             if not ok and ref_feats is not None:
-                ok = try_relocalize(cur_f, ref_feats, h_court_to_ref_w)
+                ok = try_relocalize(cur_f, ref_feats, h_anchor)
             if not ok and last_good is not None and last_good != ref_f:
                 ok = try_relocalize(cur_f, kf_feats[last_good], kf_c2p[last_good])
             if ok:
@@ -1174,8 +1268,8 @@ def _track_span_open(
                 prev_mapped = False
 
     if ref_inside and ref_f in kf_gray:
-        kf_c2p[ref_f] = h_court_to_ref_w
-        kf_err[ref_f] = 0.0
+        kf_c2p[ref_f] = h_anchor
+        kf_err[ref_f] = 0.0 if anchor_err_ft is None else anchor_err_ft
         ref_pos = available_kfs.index(ref_f)
         walk(list(range(ref_pos + 1, len(available_kfs))), ref_f)
         walk(list(range(ref_pos - 1, -1, -1)), ref_f)
@@ -1198,7 +1292,8 @@ def _track_span_open(
         line_error_ft[idx] = np.float32(err_ft)
 
     for f, h_w in kf_c2p.items():
-        if f == ref_f:
+        if f == ref_f and anchor_err_ft is None:
+            # The clicked fit stands: the reference frame maps to itself.
             idx = f - start_f
             mapped[idx] = True
             matrices[idx] = np.eye(3, dtype=np.float64)
@@ -1214,15 +1309,139 @@ def _track_span_open(
             kf_c2p=kf_c2p,
             sw=sw,
             sh=sh,
+            r_wide=r_wide,
             r_narrow=r_narrow,
             flank=flank,
             feat_mask=feat_mask,
+            lens=lens,
             ref_f=ref_f,
             store_frame=store_frame,
             cancel=cancel,
         )
 
-    return _build_span_motion(span, mapped, matrices, line_error_ft)
+    return _build_span_motion(
+        span, mapped, matrices, line_error_ft, lens=lens.lens if lens.k1 != 0.0 else None
+    )
+
+
+def _register_frame(
+    score_img: np.ndarray,
+    h_court_to_px_init: Matrix,
+    *,
+    search_radius: int,
+    r_wide: int,
+    r_narrow: int,
+    flank: int,
+    valid_mask: np.ndarray | None,
+    lens: _Lens,
+) -> tuple[Matrix, _LineStats]:
+    """Registers a frame to the court lines: jointly, or by plain refinement if that fails."""
+    joint = _register_to_court_lines(
+        score_img,
+        h_court_to_px_init,
+        search_radius=search_radius,
+        flank=flank,
+        valid_mask=valid_mask,
+        lens=lens,
+    )
+    if joint is not None and _lines_ok(joint.stats):
+        return joint.h_court_to_px, joint.stats
+    return _refine_to_lines(
+        score_img,
+        h_court_to_px_init,
+        passes=(r_wide, r_narrow),
+        flank=flank,
+        valid_mask=valid_mask,
+        lens=lens,
+    )
+
+
+def _anchor_to_court_lines(
+    score_img: np.ndarray,
+    h_court_to_px_init: Matrix,
+    *,
+    search_radius: int,
+    flank: int,
+    valid_mask: np.ndarray | None,
+) -> tuple[Matrix, float, _Lens] | None:
+    """Registers the reference frame from its clicked fit, estimating the lens on the way.
+
+    Returns `(court -> undistorted px, median line error in feet, lens)`, or None when the
+    registration does not verify (the clicked fit then stands, with no lens correction).
+    """
+    sh, sw = score_img.shape
+    lens = _Lens.none(sw, sh)
+    reg = _register_to_court_lines(
+        score_img,
+        h_court_to_px_init,
+        search_radius=search_radius,
+        flank=flank,
+        valid_mask=valid_mask,
+        lens=lens,
+    )
+    if reg is None or not _lines_ok(reg.stats):
+        return None
+    # Bent lines only partly fit a straight hypothesis until the lens is known, so alternate.
+    for _ in range(2):
+        estimate = _estimate_lens(reg, lens, score_img.shape)
+        if estimate is None:
+            break
+        lens_k, h_k = estimate
+        reg_k = _register_to_court_lines(
+            score_img,
+            h_k,
+            search_radius=search_radius,
+            flank=flank,
+            valid_mask=valid_mask,
+            lens=lens_k,
+        )
+        if reg_k is None or not _lines_ok(reg_k.stats):
+            break
+        lens, reg = lens_k, reg_k
+    return reg.h_court_to_px, reg.stats.med_ft, lens
+
+
+def _estimate_lens(
+    reg: _Registration, lens: _Lens, shape: tuple[int, ...]
+) -> tuple[_Lens, Matrix] | None:
+    """The radial coefficient that best straightens a registration's line points.
+
+    Searches `k1` coarse-to-fine, refitting the court homography to the points undistorted by
+    each candidate and scoring the scale-corrected point-to-line residuals. Returns the lens and
+    its `court -> undistorted px` fit, or None when the registration has too few points.
+    """
+    pts = reg.samples.pts
+    if len(pts) < 24:
+        return None
+    frame_pts = lens.distort(pts)
+    eqs = reg.samples.eqs
+    h_p2c0 = _safe_inv(reg.h_court_to_px)
+    if h_p2c0 is None:
+        return None
+    radius2 = lens.radius2(frame_pts)
+
+    def cost(k1: float) -> tuple[float, Matrix]:
+        lens_k = lens.with_k1(k1)
+        undist = lens_k.undistort(frame_pts)
+        h_p2c = _fit_lines_gn(
+            h_p2c0, h_p2c0, undist, eqs, shape, outlier_px=None, iterations=8, regularise=False
+        )
+        l_img = (h_p2c.T @ eqs.T).T
+        r = np.abs(np.sum(l_img[:, :2] * undist, axis=1) + l_img[:, 2]) / np.maximum(
+            np.hypot(l_img[:, 0], l_img[:, 1]), 1e-12
+        )
+        r = r / (1.0 + 2.0 * k1 * radius2)  # back to frame pixels
+        return float(np.mean(np.minimum(r, 3.0) ** 2)), h_p2c
+
+    results = {k: cost(k) for k in np.round(np.arange(-0.05, 0.2501, 0.01), 4)}
+    k_best = min(results, key=lambda k: results[k][0])
+    for k in np.round(np.arange(k_best - 0.009, k_best + 0.0091, 0.001), 4):
+        results[k] = cost(float(k))
+    k_best = min(results, key=lambda k: results[k][0])
+    h_c2p = _safe_inv(results[k_best][1])
+    if h_c2p is None:
+        return None
+    return lens.with_k1(float(k_best)), _normalise_h(h_c2p)
 
 
 def _fill_intermediate_frames(
@@ -1232,13 +1451,27 @@ def _fill_intermediate_frames(
     kf_c2p: dict[int, Matrix],
     sw: int,
     sh: int,
+    r_wide: int,
     r_narrow: int,
     flank: int,
     feat_mask: np.ndarray | None,
+    lens: _Lens,
     ref_f: int,
     store_frame: Callable[[int, Matrix, float], None],
     cancel: threading.Event | None = None,
 ) -> None:
+    def register(score: np.ndarray, h_init: Matrix) -> tuple[Matrix, _LineStats]:
+        return _register_frame(
+            score,
+            h_init,
+            search_radius=r_wide,
+            r_wide=r_wide,
+            r_narrow=r_narrow,
+            flank=flank,
+            valid_mask=feat_mask,
+            lens=lens,
+        )
+
     cap.set(cv2.CAP_PROP_POS_FRAMES, available_kfs[0])
     cur_pos = available_kfs[0]
 
@@ -1282,14 +1515,17 @@ def _fill_intermediate_frames(
                 if steady:
                     # Fast path for a stationary camera: verify court lines first without full GN.
                     st0 = _evaluate_lines(
-                        sc, h_interp, search_radius=r_narrow, flank=flank, valid_mask=feat_mask
+                        sc,
+                        h_interp,
+                        search_radius=r_narrow,
+                        flank=flank,
+                        valid_mask=feat_mask,
+                        lens=lens,
                     )
                     if _lines_ok(st0) and st0.med_px < 1.0:
                         store_frame(f, h_interp, st0.med_ft)
                         continue
-                h_ref, st = _refine_to_lines(
-                    sc, h_interp, passes=(r_narrow,), flank=flank, valid_mask=feat_mask
-                )
+                h_ref, st = register(sc, h_interp)
                 if _lines_ok(st):
                     store_frame(f, h_ref, st.med_ft)
         else:
@@ -1303,26 +1539,14 @@ def _fill_intermediate_frames(
                     break
                 slice_scores.append((f, _white_score(_resize_work(bgr, sw, sh))))
 
-            if m0:
-                h_cur = kf_c2p[k0]
-                for f, sc in slice_scores:
-                    h_ref, st = _refine_to_lines(
-                        sc, h_cur, passes=(r_narrow,), flank=flank, valid_mask=feat_mask
-                    )
-                    if not _lines_ok(st):
-                        break
-                    h_cur = h_ref
-                    store_frame(f, h_ref, st.med_ft)
-            else:
-                h_cur = kf_c2p[k1]
-                for f, sc in reversed(slice_scores):
-                    h_ref, st = _refine_to_lines(
-                        sc, h_cur, passes=(r_narrow,), flank=flank, valid_mask=feat_mask
-                    )
-                    if not _lines_ok(st):
-                        break
-                    h_cur = h_ref
-                    store_frame(f, h_ref, st.med_ft)
+            ordered = slice_scores if m0 else list(reversed(slice_scores))
+            h_cur = kf_c2p[k0] if m0 else kf_c2p[k1]
+            for f, sc in ordered:
+                h_ref, st = register(sc, h_cur)
+                if not _lines_ok(st):
+                    break
+                h_cur = h_ref
+                store_frame(f, h_ref, st.med_ft)
 
 
 # --- Low-level vision helpers -------------------------------------------------------------
@@ -1333,6 +1557,8 @@ def _build_span_motion(
     mapped: np.ndarray,
     matrices: np.ndarray,
     line_error_ft: np.ndarray,
+    *,
+    lens: Lens | None = None,
 ) -> SpanMotion:
     return SpanMotion(
         start_frame=span.start_frame,
@@ -1343,6 +1569,7 @@ def _build_span_motion(
         mapped=mapped,
         matrices=matrices,
         line_error_ft=line_error_ft,
+        lens=lens,
     )
 
 
@@ -1443,6 +1670,205 @@ def _is_sane_homography(homography: Matrix, sw: int, sh: int, *, strict_step: bo
     return low <= ratio <= high
 
 
+class _Lens(NamedTuple):
+    """A `Lens` in work pixels: points are normalised by the frame size, bent, and scaled back.
+
+    Broadcast lenses bow straight court lines near the frame edges (16-18 px across a 1080p
+    Sideline View), further than any single homography can follow, so court lines are matched in
+    the undistorted image.
+    """
+
+    lens: Lens
+    sw: int
+    sh: int
+
+    @classmethod
+    def none(cls, sw: int, sh: int) -> _Lens:
+        return cls(Lens(0.0, sw / sh), sw, sh)
+
+    @property
+    def k1(self) -> float:
+        return self.lens.k1
+
+    def with_k1(self, k1: float) -> _Lens:
+        return self._replace(lens=Lens(k1, self.lens.aspect))
+
+    def _size(self) -> np.ndarray:
+        return np.array([self.sw, self.sh], dtype=np.float64)
+
+    def radius2(self, pts: np.ndarray) -> np.ndarray:
+        return self.lens.radius2(pts / self._size())
+
+    def undistort(self, pts: np.ndarray) -> np.ndarray:
+        if self.k1 == 0.0 or len(pts) == 0:
+            return pts
+        return self.lens.undistort(pts / self._size()) * self._size()
+
+    def distort(self, pts: np.ndarray) -> np.ndarray:
+        if self.k1 == 0.0 or len(pts) == 0:
+            return pts
+        return self.lens.distort(pts / self._size()) * self._size()
+
+
+class _RidgeProfiles(NamedTuple):
+    """White-ridge response along the normal of each visible court-line sample.
+
+    `(u, v)` are sample positions in the frame and `(nx, ny)` unit normals there; `ridge[i, j]`
+    is the response at offset `j - radius` pixels from sample `i` along its normal. Points found
+    on them are undistorted with `lens` before fitting.
+    """
+
+    u: np.ndarray
+    v: np.ndarray
+    nx: np.ndarray
+    ny: np.ndarray
+    lids: np.ndarray
+    ridge: np.ndarray
+    radius: int
+    vis_per_line: np.ndarray
+    lens: _Lens
+
+    @property
+    def n_vis(self) -> int:
+        return int(self.vis_per_line.sum())
+
+    def points(self, rows: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+        """Undistorted image points `offsets` pixels along the normals of samples `rows`."""
+        pts = np.column_stack(
+            [self.u[rows] + offsets * self.nx[rows], self.v[rows] + offsets * self.ny[rows]]
+        ).astype(np.float64)
+        return self.lens.undistort(pts)
+
+    def undistorted_positions(self) -> np.ndarray:
+        return self.lens.undistort(np.column_stack([self.u, self.v]).astype(np.float64))
+
+
+class _LineSamples(NamedTuple):
+    """The strongest ridge on each visible court-line sample: image point and its court line."""
+
+    pts: np.ndarray
+    eqs: np.ndarray
+    lids: np.ndarray
+    vis_per_line: np.ndarray
+
+    @property
+    def n_vis(self) -> int:
+        return int(self.vis_per_line.sum())
+
+
+def _no_samples(vis_per_line: np.ndarray | None = None) -> _LineSamples:
+    vis = np.zeros(len(_COURT_LINES), dtype=np.int64) if vis_per_line is None else vis_per_line
+    return _LineSamples(np.zeros((0, 2)), np.zeros((0, 3)), np.zeros((0,), dtype=np.int32), vis)
+
+
+def _ridge_profiles(
+    score_img: np.ndarray,
+    h_court_to_px: Matrix,
+    *,
+    search_radius: int,
+    flank: int,
+    valid_mask: np.ndarray | None,
+    lens: _Lens,
+) -> _RidgeProfiles | None:
+    """Samples the white-ridge response along normals to the projected court lines (vectorised).
+
+    `h_court_to_px` maps the court into the undistorted image; `lens` bends it into the frame.
+    Returns None when `h_court_to_px` is singular.
+    """
+    h_img, w_img = score_img.shape
+    h_px_to_court = _safe_inv(h_court_to_px)
+    if h_px_to_court is None:
+        return None
+
+    court_pts, lids_v = _visible_line_samples(
+        h_court_to_px, w_img, h_img, edge=flank + 2, lens=lens
+    )
+    proj = (h_court_to_px @ court_pts.T).T
+    p_u = proj[:, :2] / proj[:, 2:3]
+    l_img = (h_px_to_court.T @ _LINE_EQS.T).T
+    norms = np.maximum(np.hypot(l_img[:, 0], l_img[:, 1]), 1e-12)
+    n_u = (l_img[:, :2] / norms[:, None])[lids_v]
+    if lens.k1 == 0.0 or len(p_u) == 0:
+        p_d, n_d = p_u, n_u
+    else:
+        # The lens bends the line: take its normal from the distorted tangent.
+        t_u = np.column_stack([-n_u[:, 1], n_u[:, 0]])
+        t_d = lens.distort(p_u + t_u) - lens.distort(p_u - t_u)
+        t_d /= np.maximum(np.hypot(t_d[:, 0], t_d[:, 1]), 1e-12)[:, None]
+        n_d = np.column_stack([t_d[:, 1], -t_d[:, 0]])
+        p_d = lens.distort(p_u)
+    u0, v0, nx, ny = p_d[:, 0], p_d[:, 1], n_d[:, 0], n_d[:, 1]
+    if valid_mask is not None and len(u0):
+        ix = np.clip(np.rint(u0).astype(np.int32), 0, w_img - 1)
+        iy = np.clip(np.rint(v0).astype(np.int32), 0, h_img - 1)
+        keep = valid_mask[iy, ix] > 0
+        u0, v0, nx, ny, lids_v = u0[keep], v0[keep], nx[keep], ny[keep], lids_v[keep]
+
+    vis_per_line = np.bincount(lids_v, minlength=len(_COURT_LINES))
+
+    s_vals = np.arange(-search_radius - flank, search_radius + flank + 1, dtype=np.float32)
+    if len(u0) == 0:
+        ridge = np.zeros((0, 2 * search_radius + 1), dtype=np.float32)
+    else:
+        su = (u0[:, None] + nx[:, None] * s_vals[None, :]).astype(np.float32)
+        sv = (v0[:, None] + ny[:, None] * s_vals[None, :]).astype(np.float32)
+        profs = cv2.remap(score_img, su, sv, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        center = profs[:, flank:-flank]
+        ridge = np.minimum(center - profs[:, : -2 * flank], center - profs[:, 2 * flank :])
+        # Offsets whose ridge test reaches off the frame carry no evidence.
+        inside = (su >= 0) & (su <= w_img - 1) & (sv >= 0) & (sv <= h_img - 1)
+        usable = inside[:, flank:-flank] & inside[:, : -2 * flank] & inside[:, 2 * flank :]
+        ridge = np.where(usable, ridge, np.float32(-1e3))
+    return _RidgeProfiles(u0, v0, nx, ny, lids_v, ridge, search_radius, vis_per_line, lens)
+
+
+def _visible_line_samples(
+    h_court_to_px: Matrix, w_img: int, h_img: int, *, edge: float, lens: _Lens
+) -> tuple[np.ndarray, np.ndarray]:
+    """Court points spread over each line's in-frame stretch, and the line each belongs to."""
+    proj = np.einsum("ij,lnj->lni", h_court_to_px, _PROBE_COURT_PTS)
+    w = proj[:, :, 2]
+    in_front = w > 1e-6
+    safe_w = np.where(in_front, w, 1.0)
+    frame = lens.distort(
+        np.column_stack([(proj[:, :, 0] / safe_w).ravel(), (proj[:, :, 1] / safe_w).ravel()])
+    )
+    us = frame[:, 0].reshape(w.shape)
+    vs = frame[:, 1].reshape(w.shape)
+    inside = in_front & (us > edge) & (us < w_img - edge) & (vs > edge) & (vs < h_img - edge)
+    pts: list[np.ndarray] = []
+    lids: list[np.ndarray] = []
+    for lid in range(len(_COURT_LINES)):
+        idx = np.flatnonzero(inside[lid])
+        if len(idx) < 2:
+            continue
+        lo, hi = idx[0], idx[-1]
+        length_px = math.hypot(us[lid, hi] - us[lid, lo], vs[lid, hi] - vs[lid, lo])
+        n = min(_SAMPLES_PER_LINE, int(length_px / _MIN_SAMPLE_SPACING_PX))
+        if n < 2:
+            continue
+        ts = np.linspace(_PROBE_TS[lo], _PROBE_TS[hi], n)
+        start, end = _LINE_STARTS[lid], _LINE_ENDS[lid]
+        xy = start[None, :] + (end - start)[None, :] * ts[:, None]
+        pts.append(np.column_stack([xy, np.ones(n)]))
+        lids.append(np.full(n, lid, dtype=np.int32))
+    if not pts:
+        return np.zeros((0, 3)), np.zeros((0,), dtype=np.int32)
+    return np.vstack(pts), np.concatenate(lids)
+
+
+def _subpixel_offsets(ridge: np.ndarray, rows: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """Parabolic sub-pixel peak offsets (in samples, within +-0.5) at `ridge[rows, idx]`."""
+    ym = ridge[rows, idx - 1]
+    y0 = ridge[rows, idx]
+    yp = ridge[rows, idx + 1]
+    d2 = ym - 2.0 * y0 + yp
+    # Skip peaks beside an off-frame offset (masked to a large negative response).
+    safe = (np.abs(d2) > 1e-6) & (ym > -100.0) & (yp > -100.0)
+    sub = np.where(safe, 0.5 * (ym - yp) / np.where(safe, d2, 1.0), 0.0)
+    return np.clip(sub, -0.5, 0.5)
+
+
 def _sample_lines(
     score_img: np.ndarray,
     h_court_to_px: Matrix,
@@ -1450,65 +1876,39 @@ def _sample_lines(
     search_radius: int,
     flank: int,
     valid_mask: np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-    """Detects white court-line ridges along normals to projected court lines (vectorised)."""
-    h_img, w_img = score_img.shape
-    h_px_to_court = _safe_inv(h_court_to_px)
-    if h_px_to_court is None:
-        return np.zeros((0, 2)), np.zeros((0, 3)), np.zeros((0,), dtype=np.int32), 0
+    lens: _Lens,
+) -> _LineSamples:
+    """Detects the strongest white court-line ridge along each projected court line's normal.
 
-    proj = (h_court_to_px @ _SAMPLE_COURT_PTS.T).T
-    in_front = proj[:, 2] > 1e-6
-    denom = np.where(in_front, proj[:, 2], 1.0)
-    us = np.where(in_front, proj[:, 0] / denom, -1.0)
-    vs = np.where(in_front, proj[:, 1] / denom, -1.0)
+    Points are returned undistorted (see `_Lens`).
+    """
+    prof = _ridge_profiles(
+        score_img,
+        h_court_to_px,
+        search_radius=search_radius,
+        flank=flank,
+        valid_mask=valid_mask,
+        lens=lens,
+    )
+    if prof is None:
+        return _no_samples()
+    if prof.n_vis < 8:
+        return _no_samples(prof.vis_per_line)
 
-    margin = search_radius + flank + 2
-    vis = in_front & (us > margin) & (us < w_img - margin) & (vs > margin) & (vs < h_img - margin)
-    if valid_mask is not None and np.any(vis):
-        vi = np.flatnonzero(vis)
-        ix = np.clip(np.rint(us[vi]).astype(np.int32), 0, w_img - 1)
-        iy = np.clip(np.rint(vs[vi]).astype(np.int32), 0, h_img - 1)
-        vis[vi] = valid_mask[iy, ix] > 0
-
-    n_vis = int(np.count_nonzero(vis))
-    if n_vis < 8:
-        return np.zeros((0, 2)), np.zeros((0, 3)), np.zeros((0,), dtype=np.int32), n_vis
-
-    u0, v0 = us[vis], vs[vis]
-    lids_v, eqs_v = _SAMPLE_LINE_IDS[vis], _SAMPLE_LINE_EQS[vis]
-    l_img = (h_px_to_court.T @ _LINE_EQS.T).T
-    norms = np.maximum(np.hypot(l_img[:, 0], l_img[:, 1]), 1e-12)
-    nx = (l_img[:, 0] / norms)[lids_v]
-    ny = (l_img[:, 1] / norms)[lids_v]
-
-    s_vals = np.arange(-search_radius - flank, search_radius + flank + 1, dtype=np.float32)
-    su = (u0[:, None] + nx[:, None] * s_vals[None, :]).astype(np.float32)
-    sv = (v0[:, None] + ny[:, None] * s_vals[None, :]).astype(np.float32)
-
-    profs = cv2.remap(score_img, su, sv, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    center = profs[:, flank:-flank]
-    ridge = np.minimum(center - profs[:, : -2 * flank], center - profs[:, 2 * flank :])
-
+    ridge = prof.ridge
     best_idx = np.argmax(ridge, axis=1)
-    rows = np.arange(n_vis)
+    rows = np.arange(prof.n_vis)
     peaks = ridge[rows, best_idx]
     ok = (peaks >= _RIDGE_THRESHOLD) & (best_idx > 0) & (best_idx < ridge.shape[1] - 1)
     if not np.any(ok):
-        return np.zeros((0, 2)), np.zeros((0, 3)), np.zeros((0,), dtype=np.int32), n_vis
+        return _no_samples(prof.vis_per_line)
 
     ok_rows = rows[ok]
     bi = best_idx[ok]
-    ym = ridge[ok_rows, bi - 1]
-    y0 = ridge[ok_rows, bi]
-    yp = ridge[ok_rows, bi + 1]
-    d2 = ym - 2.0 * y0 + yp
-    sub = np.where(np.abs(d2) > 1e-6, 0.5 * (ym - yp) / np.where(np.abs(d2) > 1e-6, d2, 1.0), 0.0)
-    sub = np.clip(sub, -0.5, 0.5)
-    s_peak = (bi - search_radius) + sub
-
-    pts = np.column_stack([u0[ok] + s_peak * nx[ok], v0[ok] + s_peak * ny[ok]]).astype(np.float64)
-    return pts, eqs_v[ok], lids_v[ok], n_vis
+    s_peak = (bi - search_radius) + _subpixel_offsets(ridge, ok_rows, bi)
+    pts = prof.points(ok_rows, s_peak)
+    lids = prof.lids[ok]
+    return _LineSamples(pts, _LINE_EQS[lids], lids, prof.vis_per_line)
 
 
 def _evaluate_lines(
@@ -1518,17 +1918,23 @@ def _evaluate_lines(
     search_radius: int,
     flank: int,
     valid_mask: np.ndarray | None,
+    lens: _Lens,
 ) -> _LineStats:
     """Measures court-line agreement of `h_court_to_px` without modifying it."""
     h_p2c = _safe_inv(h_court_to_px)
     if h_p2c is None:
         return _EMPTY_LINE_STATS
-    pts, eqs, lids, n_vis = _sample_lines(
-        score_img, h_court_to_px, search_radius=search_radius, flank=flank, valid_mask=valid_mask
+    samples = _sample_lines(
+        score_img,
+        h_court_to_px,
+        search_radius=search_radius,
+        flank=flank,
+        valid_mask=valid_mask,
+        lens=lens,
     )
-    if len(pts) == 0:
-        return _LineStats(n_vis, 0, 0, 0, math.inf, math.inf, math.inf)
-    return _compute_line_stats(h_p2c, pts, eqs, lids, n_vis)
+    if len(samples.pts) == 0:
+        return _LineStats(samples.n_vis, 0, 0, 0, math.inf, math.inf, math.inf)
+    return _compute_line_stats(h_p2c, samples)
 
 
 def _refine_to_lines(
@@ -1538,82 +1944,46 @@ def _refine_to_lines(
     passes: tuple[int, ...],
     flank: int,
     valid_mask: np.ndarray | None,
+    lens: _Lens,
 ) -> tuple[Matrix, _LineStats]:
-    """Refines `h_court_to_px_init` via Huber-IRLS Gauss-Newton onto detected white court lines."""
-    h_img, w_img = score_img.shape
+    """Refines `h_court_to_px_init` via Huber-IRLS Gauss-Newton onto detected white court lines.
+
+    Residuals are weighted by how many feet on the court each pixel spans, so the fit minimises
+    court error rather than pixel error: the foreshortened far side, where one pixel is many
+    inches, is not traded away for sub-pixel agreement on the near side.
+    """
+    shape = score_img.shape
     h_c2p_init = _normalise_h(h_court_to_px_init)
     h_p2c_init = _safe_inv(h_c2p_init)
     if h_p2c_init is None:
         return h_court_to_px_init, _EMPTY_LINE_STATS
     h_p2c = h_p2c_init.copy()
 
-    n_p = np.array([[2.0 / w_img, 0.0, -1.0], [0.0, 2.0 / h_img, -1.0], [0.0, 0.0, 1.0]])
-    n_p_inv = np.linalg.inv(n_p)
-    reg = np.diag([2.0, 2.0, 1.0, 2.0, 2.0, 1.0, 5.0, 5.0])
-
     stats = _EMPTY_LINE_STATS
     for radius in passes:
         h_cur_c2p = _safe_inv(h_p2c)
         if h_cur_c2p is None:
             return h_court_to_px_init, _EMPTY_LINE_STATS
-        pts, eqs, lids, n_vis = _sample_lines(
-            score_img, h_cur_c2p, search_radius=radius, flank=flank, valid_mask=valid_mask
+        samples = _sample_lines(
+            score_img,
+            h_cur_c2p,
+            search_radius=radius,
+            flank=flank,
+            valid_mask=valid_mask,
+            lens=lens,
         )
-        if len(pts) < 12 or len(set(lids.tolist())) < 2:
-            stats = _LineStats(n_vis, len(pts), 0, 0, math.inf, math.inf, math.inf)
+        if len(samples.pts) < 12 or len(set(samples.lids.tolist())) < 2:
+            stats = _LineStats(samples.n_vis, len(samples.pts), 0, 0, math.inf, math.inf, math.inf)
             break
-
-        m_cur = _normalise_h(n_p @ h_c2p_init @ h_p2c @ n_p_inv)
-        p = np.array(
-            [
-                m_cur[0, 0] - 1.0,
-                m_cur[0, 1],
-                m_cur[0, 2],
-                m_cur[1, 0],
-                m_cur[1, 1] - 1.0,
-                m_cur[1, 2],
-                m_cur[2, 0],
-                m_cur[2, 1],
-            ],
-            dtype=np.float64,
+        h_p2c = _fit_lines_gn(
+            h_p2c_init,
+            h_p2c,
+            samples.pts,
+            samples.eqs,
+            shape,
+            outlier_px=5.0 if radius <= 8 else None,
         )
-        pts_h = np.hstack([pts, np.ones((len(pts), 1))])
-        l0 = (n_p_inv.T @ h_p2c_init.T @ eqs.T).T
-
-        huber_delta = 1.5
-        for _ in range(6):
-            m_mat = _param_matrix(p)
-            l_img = (n_p.T @ m_mat.T @ l0.T).T
-            r = np.sum(l_img * pts_h, axis=1) / np.maximum(
-                np.hypot(l_img[:, 0], l_img[:, 1]), 1e-12
-            )
-            abs_r = np.abs(r)
-            w_irls = np.where(abs_r <= huber_delta, 1.0, huber_delta / np.maximum(abs_r, 1e-12))
-            if radius <= 8:
-                w_irls = np.where(abs_r > 5.0, 0.0, w_irls)
-
-            jac = np.empty((len(pts), 8), dtype=np.float64)
-            eps = 1e-6
-            for k in range(8):
-                p2 = p.copy()
-                p2[k] += eps
-                l2 = (n_p.T @ _param_matrix(p2).T @ l0.T).T
-                r2 = np.sum(l2 * pts_h, axis=1) / np.maximum(np.hypot(l2[:, 0], l2[:, 1]), 1e-12)
-                jac[:, k] = (r2 - r) / eps
-
-            jw = jac * w_irls[:, None]
-            try:
-                dp = np.linalg.solve(jw.T @ jac + reg, -(jw.T @ r + reg @ p))
-            except np.linalg.LinAlgError:
-                break
-            p += dp
-            if float(np.linalg.norm(dp)) < 1e-5:
-                break
-
-        candidate = h_p2c_init @ n_p_inv @ _param_matrix(p) @ n_p
-        if np.all(np.isfinite(candidate)) and np.linalg.cond(candidate) < _MAX_HOMOGRAPHY_COND:
-            h_p2c = candidate
-        stats = _compute_line_stats(h_p2c, pts, eqs, lids, n_vis)
+        stats = _compute_line_stats(h_p2c, samples)
 
     h_final = _safe_inv(h_p2c)
     if h_final is None:
@@ -1621,13 +1991,490 @@ def _refine_to_lines(
     return h_final, stats
 
 
-def _compute_line_stats(
-    h_p2c: Matrix,
+def _fit_lines_gn(
+    h_p2c_ref: Matrix,
+    h_p2c_start: Matrix,
     pts: np.ndarray,
     eqs: np.ndarray,
-    lids: np.ndarray,
-    n_vis: int,
-) -> _LineStats:
+    shape: tuple[int, ...],
+    *,
+    outlier_px: float | None,
+    iterations: int = 6,
+    regularise: bool = True,
+) -> Matrix:
+    """Huber-IRLS Gauss-Newton fit of `px -> court` so `pts` lie on their court lines `eqs`.
+
+    Parameterised as a perturbation of `h_p2c_ref` (and, with `regularise`, pulled towards it),
+    starting from `h_p2c_start`. Residuals are point-to-line distances in pixels, weighted by
+    feet per pixel (`_feet_per_pixel_weights`) and by how much of each line was seen
+    (`_coverage_weights`); with `outlier_px`, points further off than that are ignored. Returns
+    `h_p2c_start` if the fit degenerates.
+    """
+    h_img, w_img = shape[:2]
+    n_p = np.array([[2.0 / w_img, 0.0, -1.0], [0.0, 2.0 / h_img, -1.0], [0.0, 0.0, 1.0]])
+    n_p_inv = np.linalg.inv(n_p)
+    reg = np.diag([2.0, 2.0, 1.0, 2.0, 2.0, 1.0, 5.0, 5.0]) * (1.0 if regularise else 1e-6)
+    h_c2p_ref = _safe_inv(h_p2c_ref)
+    if h_c2p_ref is None:
+        return h_p2c_start
+    w_ft = _feet_per_pixel_weights(h_p2c_start, pts, eqs) * _coverage_weights(h_p2c_start, pts, eqs)
+
+    m_cur = _normalise_h(n_p @ h_c2p_ref @ h_p2c_start @ n_p_inv)
+    p = np.array(
+        [
+            m_cur[0, 0] - 1.0,
+            m_cur[0, 1],
+            m_cur[0, 2],
+            m_cur[1, 0],
+            m_cur[1, 1] - 1.0,
+            m_cur[1, 2],
+            m_cur[2, 0],
+            m_cur[2, 1],
+        ],
+        dtype=np.float64,
+    )
+    pts_h = np.hstack([pts, np.ones((len(pts), 1))])
+    l0 = (n_p_inv.T @ h_p2c_ref.T @ eqs.T).T
+
+    huber_delta = _GN_HUBER_PX
+    for _ in range(iterations):
+        m_mat = _param_matrix(p)
+        l_img = (n_p.T @ m_mat.T @ l0.T).T
+        r = np.sum(l_img * pts_h, axis=1) / np.maximum(np.hypot(l_img[:, 0], l_img[:, 1]), 1e-12)
+        abs_r = np.abs(r)
+        w_irls = np.where(abs_r <= huber_delta, 1.0, huber_delta / np.maximum(abs_r, 1e-12))
+        if outlier_px is not None:
+            w_irls = np.where(abs_r > outlier_px, 0.0, w_irls)
+
+        jac = np.empty((len(pts), 8), dtype=np.float64)
+        eps = 1e-6
+        for k in range(8):
+            p2 = p.copy()
+            p2[k] += eps
+            l2 = (n_p.T @ _param_matrix(p2).T @ l0.T).T
+            r2 = np.sum(l2 * pts_h, axis=1) / np.maximum(np.hypot(l2[:, 0], l2[:, 1]), 1e-12)
+            jac[:, k] = (r2 - r) / eps
+
+        jw = jac * (w_irls * w_ft)[:, None]
+        try:
+            dp = np.linalg.solve(jw.T @ jac + reg, -(jw.T @ r + reg @ p))
+        except np.linalg.LinAlgError:
+            break
+        p += dp
+        if float(np.linalg.norm(dp)) < 1e-5:
+            break
+
+    candidate = h_p2c_ref @ n_p_inv @ _param_matrix(p) @ n_p
+    if np.all(np.isfinite(candidate)) and np.linalg.cond(candidate) < _MAX_HOMOGRAPHY_COND:
+        return candidate
+    return h_p2c_start
+
+
+def _register_to_court_lines(
+    score_img: np.ndarray,
+    h_court_to_px_init: Matrix,
+    *,
+    search_radius: int,
+    flank: int,
+    valid_mask: np.ndarray | None,
+    lens: _Lens,
+    rounds: int = 3,
+) -> _Registration | None:
+    """Registers the court to its painted lines from a rough `court -> px` estimate.
+
+    `_refine_to_lines` snaps every sample to its strongest nearby ridge, so a rough estimate lets
+    each line lock onto whatever bright edge is closest (a logo, lettering, the back wall). This
+    searches jointly instead: it keeps several ridge candidates per sample, finds straight-line
+    hypotheses for each court line, and scores every homography built from two lines across the
+    court and two along it by how many samples on all eight lines it explains. A logo edge can
+    pass for one line but not consistently with the court's geometry, so it cannot win.
+
+    The winner is then fitted (in feet, `_fit_lines_gn`) to the points of every line hypothesis it
+    agrees with, including lines the lens bends a few pixels off any single homography (the
+    baselines at the frame edges). Those stay in the fit however far the compromise leaves them,
+    rather than dropping out of a narrow search window and letting the fit slide off them. The
+    search repeats around the result for up to `rounds` rounds, so lines that started outside the
+    search band are found once the rest of the court is in place. The stats describe the fitted
+    hypothesis points. Everything happens in the image undistorted by `lens`.
+
+    Returns None when no hypothesis can be formed or too few lines of a family associate.
+    """
+    h_cur = _normalise_h(h_court_to_px_init)
+    result: _Registration | None = None
+    for _ in range(rounds):
+        h_p2c_cur = _safe_inv(h_cur)
+        if h_p2c_cur is None:
+            break
+        prof = _ridge_profiles(
+            score_img,
+            h_cur,
+            search_radius=search_radius,
+            flank=flank,
+            valid_mask=valid_mask,
+            lens=lens,
+        )
+        if prof is None or prof.n_vis < _MIN_VISIBLE_LINE_SAMPLES:
+            break
+        cands = _ridge_candidates(prof, _neighbour_limits(prof, h_p2c_cur))
+        if cands is None:
+            break
+        rows, pts = cands
+        hyps = _line_hypotheses(prof, rows, pts, h_p2c_cur)
+        best = _best_court_hypothesis(hyps, prof, rows, pts, h_cur, h_p2c_cur)
+        if best is None:
+            break
+        samples = _associate_hypotheses(
+            best, hyps, prof.vis_per_line, tolerance=0.75 * search_radius
+        )
+        h_p2c_best = _safe_inv(best)
+        if samples is None or h_p2c_best is None:
+            break
+        h_p2c_fit = _fit_lines_gn(
+            h_p2c_best,
+            h_p2c_best,
+            samples.pts,
+            samples.eqs,
+            score_img.shape,
+            outlier_px=None,
+            iterations=10,
+        )
+        h_fit = _safe_inv(h_p2c_fit)
+        if h_fit is None:
+            break
+        h_fit = _normalise_h(h_fit)
+        result = _Registration(h_fit, _compute_line_stats(h_p2c_fit, samples), samples)
+        moved = _max_corner_disp(h_cur, h_fit, score_img.shape[1], score_img.shape[0])
+        h_cur = h_fit
+        if moved < 0.5:
+            break
+    return result
+
+
+class _Registration(NamedTuple):
+    """A frame registered to the court lines: `court -> undistorted px`, its stats and points."""
+
+    h_court_to_px: Matrix
+    stats: _LineStats
+    samples: _LineSamples
+
+
+def _associate_hypotheses(
+    h_c2p: Matrix,
+    hyps: list[list[tuple[np.ndarray, np.ndarray]]],
+    vis_per_line: np.ndarray,
+    *,
+    tolerance: float,
+) -> _LineSamples | None:
+    """The points of each court line's best-supported hypothesis within `tolerance` pixels.
+
+    A hypothesis is within tolerance when the median distance of its points to where `h_c2p`
+    projects that court line is. The lens bends lines near the frame edges a few pixels off any
+    single homography, so the nearest hypothesis there can be sponsor lettering painted beside the
+    line; a painted line is one long unbroken ridge, lettering a broken one, so the hypothesis
+    with most points wins and distance only breaks ties. Returns None when fewer than
+    `_MIN_LINES_PER_FAMILY` lines of either family associate.
+    """
+    h_p2c = _safe_inv(h_c2p)
+    if h_p2c is None:
+        return None
+    l_proj = (h_p2c.T @ _KEY_EQS.T).T
+    l_proj = l_proj / np.maximum(np.hypot(l_proj[:, 0], l_proj[:, 1]), 1e-12)[:, None]
+    pts_all: list[np.ndarray] = []
+    lids_all: list[np.ndarray] = []
+    families = [0, 0]
+    for key in range(_N_LINE_KEYS):
+        best: tuple[int, float, np.ndarray] | None = None
+        for _line, line_pts in hyps[key]:
+            d = float(np.median(np.abs(line_pts @ l_proj[key, :2] + l_proj[key, 2])))
+            if d > tolerance:
+                continue
+            if best is None or (len(line_pts), -d) > (best[0], -best[1]):
+                best = (len(line_pts), d, line_pts)
+        if best is None:
+            continue
+        pts_all.append(best[2])
+        lids_all.append(np.full(len(best[2]), key))  # line `key` carries key `key`
+        families[int(_KEY_FAMILY[key])] += 1
+    if min(families) < _MIN_LINES_PER_FAMILY:
+        return None
+    lids = np.concatenate(lids_all).astype(np.int32)
+    return _LineSamples(np.vstack(pts_all), _LINE_EQS[lids], lids, vis_per_line)
+
+
+def _neighbour_limits(prof: _RidgeProfiles, h_p2c: Matrix) -> np.ndarray:
+    """Per-sample search limit: a fraction of the distance to the nearest other line of its family.
+
+    Keeps a wide search from reaching the neighbouring parallel line (the far baseline from the far
+    kitchen line on a high Main View, say), which would make a shifted assignment look consistent.
+    """
+    l_img = (h_p2c.T @ _KEY_EQS.T).T
+    p = np.column_stack([prof.undistorted_positions(), np.ones(len(prof.u))])
+    num = p @ l_img.T
+    den = prof.nx[:, None] * l_img[None, :, 0] + prof.ny[:, None] * l_img[None, :, 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dist = np.abs(num / den)
+    own = _LINE_KEY[prof.lids]
+    other_same_family = (_KEY_FAMILY[None, :] == _LINE_FAMILY[prof.lids][:, None]) & (
+        np.arange(_N_LINE_KEYS)[None, :] != own[:, None]
+    )
+    dist = np.where(other_same_family & np.isfinite(dist), dist, np.inf)
+    nearest = dist.min(axis=1) if dist.shape[1] else np.full(len(prof.u), np.inf)
+    return np.clip(_NEIGHBOUR_SEARCH_FRACTION * nearest, 2.0, float(prof.radius))
+
+
+def _ridge_candidates(
+    prof: _RidgeProfiles, limits: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Up to `_MAX_PEAKS_PER_SAMPLE` ridge peaks per sample within its limit, sorted by sample.
+
+    Returns `(rows, pts)`: the sample index of each candidate and its sub-pixel image point.
+    """
+    ridge = prof.ridge
+    n, m = ridge.shape
+    if n == 0 or m < 3:
+        return None
+    offsets = np.abs(np.arange(1, m - 1) - prof.radius)
+    inner = ridge[:, 1:-1]
+    peak = (
+        (inner >= ridge[:, :-2])
+        & (inner > ridge[:, 2:])
+        & (inner >= _RIDGE_THRESHOLD)
+        & (offsets[None, :] <= limits[:, None])
+    )
+    vals = np.where(peak, inner, -np.inf)
+    k = min(_MAX_PEAKS_PER_SAMPLE, vals.shape[1])
+    top = np.argpartition(-vals, k - 1, axis=1)[:, :k]
+    ok = np.isfinite(np.take_along_axis(vals, top, axis=1))
+    if not np.any(ok):
+        return None
+    rows = np.broadcast_to(np.arange(n)[:, None], top.shape)[ok]
+    idx = top[ok] + 1
+    s = (idx - prof.radius) + _subpixel_offsets(ridge, rows, idx)
+    pts = prof.points(rows, s)
+    order = np.argsort(rows, kind="stable")
+    return rows[order], pts[order]
+
+
+def _line_hypotheses(
+    prof: _RidgeProfiles, rows: np.ndarray, pts: np.ndarray, h_p2c: Matrix
+) -> list[list[tuple[np.ndarray, np.ndarray]]]:
+    """Up to `_HYPOTHESES_PER_LINE` straight image lines per court line (`_LINE_KEY`).
+
+    Each is the best-supported straight line through that court line's ridge candidates (at most
+    one candidate per sample counts), roughly parallel to its predicted image, after removing the
+    candidates of the hypotheses already found. Returned as `(line, inlier_points)` pairs.
+    """
+    l_pred = (h_p2c.T @ _KEY_EQS.T).T
+    keys = _LINE_KEY[prof.lids[rows]]
+    visible = np.bincount(_LINE_KEY, weights=prof.vis_per_line, minlength=_N_LINE_KEYS)
+    cos_max = math.cos(math.radians(_HYPOTHESIS_MAX_ANGLE_DEG))
+    hyps: list[list[tuple[np.ndarray, np.ndarray]]] = [[] for _ in range(_N_LINE_KEYS)]
+    for key in range(_N_LINE_KEYS):
+        needed = max(_MIN_LINE_SUPPORT, math.ceil(_MIN_LINE_SUPPORT_RATIO * visible[key]))
+        remaining = np.flatnonzero(keys == key)
+        d_pred = np.array([-l_pred[key, 1], l_pred[key, 0]])
+        d_norm = float(np.hypot(*d_pred))
+        if d_norm < 1e-12:
+            continue
+        d_pred /= d_norm
+        for _ in range(_HYPOTHESES_PER_LINE):
+            if len(np.unique(rows[remaining])) < needed:
+                break
+            fit = _fit_straight_line(pts[remaining], rows[remaining], d_pred, cos_max)
+            if fit is None:
+                break
+            line, inl = fit
+            if len(np.unique(rows[remaining][inl])) < needed:
+                break
+            hyps[key].append((line, pts[remaining][inl]))
+            remaining = remaining[~inl]
+    return hyps
+
+
+def _fit_straight_line(
+    pts: np.ndarray, rows: np.ndarray, d_pred: np.ndarray, cos_max: float
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Exhaustive two-point RANSAC for the straight line through most of `pts`.
+
+    Only lines within `_HYPOTHESIS_MAX_ANGLE_DEG` of `d_pred` are considered. Returns the
+    least-squares line `(a, b, c)` (unit normal) through the inliers and the inlier mask.
+    """
+    n = len(pts)
+    pool = (
+        np.arange(n)
+        if n <= _HYPOTHESIS_MAX_POINTS
+        else np.linspace(0, n - 1, _HYPOTHESIS_MAX_POINTS).astype(np.intp)
+    )
+    i, j = np.triu_indices(len(pool), 1)
+    i, j = pool[i], pool[j]
+    d = pts[j] - pts[i]
+    length = np.hypot(d[:, 0], d[:, 1])
+    valid = (rows[i] != rows[j]) & (length > 1e-6)
+    dirs = d / np.maximum(length, 1e-12)[:, None]
+    valid &= np.abs(dirs @ d_pred) >= cos_max
+    if not np.any(valid):
+        return None
+    anchor = pts[i[valid]]
+    normal = np.column_stack([-dirs[valid, 1], dirs[valid, 0]])
+    dist = np.abs(
+        (pts[None, :, 0] - anchor[:, 0:1]) * normal[:, 0:1]
+        + (pts[None, :, 1] - anchor[:, 1:2]) * normal[:, 1:2]
+    )
+    inl = dist[int(np.argmax(np.count_nonzero(dist < _HYPOTHESIS_INLIER_PX, axis=1)))]
+    inl = inl < _HYPOTHESIS_INLIER_PX
+    for _ in range(2):  # least-squares refit, then re-select inliers against it
+        if np.count_nonzero(inl) < 2:
+            return None
+        q = pts[inl]
+        centre = q.mean(axis=0)
+        _, _, vt = np.linalg.svd(q - centre)
+        nrm = vt[1]
+        line = np.array([nrm[0], nrm[1], -float(nrm @ centre)])
+        inl = np.abs(pts @ line[:2] + line[2]) < _HYPOTHESIS_INLIER_PX
+    return line, inl
+
+
+def _best_court_hypothesis(
+    hyps: list[list[tuple[np.ndarray, np.ndarray]]],
+    prof: _RidgeProfiles,
+    rows: np.ndarray,
+    pts: np.ndarray,
+    h_init: Matrix,
+    h_p2c_init: Matrix,
+) -> Matrix | None:
+    """The `court -> px` homography, from two lines across and two along, that explains most.
+
+    Every candidate homography is scored by how many samples, on every court line, have a ridge
+    candidate within `_SUPPORT_PX` of where it projects that line; ties go to the one closest to
+    `h_init`. `h_init` itself competes too, so a frame with too few hypotheses keeps it.
+    """
+    lines = [(k, line) for k in range(_N_LINE_KEYS) for line, _pts in hyps[k]]
+    across = [(k, line) for k, line in lines if _KEY_FAMILY[k] == _ACROSS]
+    along = [(k, line) for k, line in lines if _KEY_FAMILY[k] == _ALONG]
+    homographies = [h_init]
+    for (k1, l1), (k2, l2) in itertools.combinations(across, 2):
+        if k1 == k2:
+            continue
+        for (k3, l3), (k4, l4) in itertools.combinations(along, 2):
+            if k3 == k4:
+                continue
+            h = _homography_from_lines((k1, l1), (k2, l2), (k3, l3), (k4, l4))
+            if h is not None:
+                homographies.append(h)
+    hs = np.stack(homographies)
+    dets = np.linalg.det(hs)
+    hs = hs[np.isfinite(dets) & (np.abs(dets) > 1e-12)]
+    if len(hs) == 0:
+        return None
+    hinv = np.linalg.inv(hs)
+
+    # Probe points: the visible samples' court positions under `h_init`.
+    probe_px = np.column_stack([prof.undistorted_positions(), np.ones(len(prof.u))])[
+        :: max(1, prof.n_vis // 48)
+    ]
+    probe_court = (h_p2c_init @ probe_px.T).T
+    probe_ok = np.abs(probe_court[:, 2]) > 1e-12
+    probe_px, probe_court = probe_px[probe_ok], probe_court[probe_ok]
+    probe_court = probe_court / probe_court[:, 2:3]
+    projected = np.einsum("kij,nj->kni", hs, probe_court)
+    w = projected[:, :, 2]
+    in_front = np.all(w > 1e-9, axis=1)
+    disp = np.median(
+        np.hypot(
+            projected[:, :, 0] / np.where(w > 1e-9, w, 1.0) - probe_px[None, :, 0],
+            projected[:, :, 1] / np.where(w > 1e-9, w, 1.0) - probe_px[None, :, 1],
+        ),
+        axis=1,
+    )
+
+    # Support: samples with a candidate within `_SUPPORT_PX` of their projected court line.
+    eqs = _LINE_EQS[prof.lids[rows]]
+    l_img = np.einsum("kji,nj->kni", hinv, eqs)
+    pts_h = np.column_stack([pts, np.ones(len(pts))])
+    dist = np.abs(np.sum(l_img * pts_h[None], axis=2)) / np.maximum(
+        np.hypot(l_img[:, :, 0], l_img[:, :, 1]), 1e-12
+    )
+    starts = np.concatenate([[0], np.flatnonzero(np.diff(rows)) + 1])
+    support = np.count_nonzero(np.minimum.reduceat(dist, starts, axis=1) < _SUPPORT_PX, axis=1)
+    score = np.where(in_front, support - disp / (4.0 * prof.radius), -np.inf)
+    best = int(np.argmax(score))
+    return hs[best] if np.isfinite(score[best]) else None
+
+
+def _homography_from_lines(
+    across_a: tuple[int, np.ndarray],
+    across_b: tuple[int, np.ndarray],
+    along_a: tuple[int, np.ndarray],
+    along_b: tuple[int, np.ndarray],
+) -> Matrix | None:
+    """The `court -> px` homography taking two court lines of each family to these image lines."""
+    img: list[np.ndarray] = []
+    court: list[tuple[float, float]] = []
+    for k_across, l_across in (across_a, across_b):
+        for k_along, l_along in (along_a, along_b):
+            x = np.cross(l_across, l_along)
+            if abs(float(x[2])) < 1e-9:
+                return None
+            img.append(x[:2] / x[2])
+            court.append((float(_KEY_COORD[k_along]), float(_KEY_COORD[k_across])))
+    try:
+        h = cv2.getPerspectiveTransform(
+            np.array(court, dtype=np.float32), np.array(img, dtype=np.float32)
+        )
+    except cv2.error:
+        return None
+    h = np.asarray(h, dtype=np.float64)
+    return _normalise_h(h) if np.all(np.isfinite(h)) else None
+
+
+def _coverage_weights(h_p2c: Matrix, pts: np.ndarray, eqs: np.ndarray) -> np.ndarray:
+    """Per-point weights so each court line counts by how many feet of it were seen.
+
+    Samples are spread over each line's visible stretch, so a line barely in shot gets as many as
+    a line seen end to end; without this it would dominate the fit.
+    """
+    pts_h = np.hstack([pts, np.ones((len(pts), 1))])
+    court = (h_p2c @ pts_h.T).T
+    ok = np.abs(court[:, 2]) > 1e-12
+    xy = np.where(ok[:, None], court[:, :2] / np.where(ok, court[:, 2], 1.0)[:, None], 0.0)
+    along = xy[:, 0] * eqs[:, 1] - xy[:, 1] * eqs[:, 0]  # position along each point's line
+    _, group = np.unique(np.round(eqs, 9), axis=0, return_inverse=True)
+    group = group.ravel()
+    weights = np.ones(len(pts))
+    for g in np.unique(group):
+        members = group == g
+        extent = float(np.ptp(along[members & ok])) if np.any(members & ok) else 0.0
+        weights[members] = max(extent, 1.0) / np.count_nonzero(members)
+    return weights / float(np.median(weights))
+
+
+def _feet_per_pixel_weights(h_p2c: Matrix, pts: np.ndarray, eqs: np.ndarray) -> np.ndarray:
+    """Per-point weights proportional to (feet per pixel across its line)^2, median-normalised.
+
+    A point's residual in pixels times its feet-per-pixel is its residual in court feet, so
+    weighting squared pixel residuals by this makes Gauss-Newton minimise squared feet.
+    """
+    pts_h = np.hstack([pts, np.ones((len(pts), 1))])
+    l_img = (h_p2c.T @ eqs.T).T
+    l_norm = np.maximum(np.hypot(l_img[:, 0], l_img[:, 1]), 1e-12)
+    # Court-line value (feet) changes by |grad| per pixel moved along the image normal.
+    court_h = (h_p2c @ pts_h.T).T
+    w = court_h[:, 2]
+    safe = np.abs(w) > 1e-12
+    # d/dp of (eq . H p) / (h3 . p): the gradient's norm along the image line normal.
+    num = np.sum(eqs * court_h, axis=1)
+    grad = (eqs @ h_p2c)[:, :2] * w[:, None] - num[:, None] * h_p2c[2, :2][None, :]
+    grad = grad / np.where(safe, w * w, 1.0)[:, None]
+    nrm = l_img[:, :2] / l_norm[:, None]
+    ft_per_px = np.abs(np.sum(grad * nrm, axis=1))
+    ft_per_px = np.where(safe & np.isfinite(ft_per_px), ft_per_px, 0.0)
+    med = float(np.median(ft_per_px[ft_per_px > 0])) if np.any(ft_per_px > 0) else 1.0
+    return np.clip((ft_per_px / med) ** _FT_WEIGHT_POWER, 0.05, 25.0)
+
+
+def _compute_line_stats(h_p2c: Matrix, samples: _LineSamples) -> _LineStats:
+    pts, eqs, lids = samples.pts, samples.eqs, samples.lids
+    n_vis = samples.n_vis
     pts_h = np.hstack([pts, np.ones((len(pts), 1))])
     l_img = (h_p2c.T @ eqs.T).T
     err_px = np.abs(
@@ -1645,15 +2492,26 @@ def _compute_line_stats(
     inliers = valid_w & (err_px < _LINE_INLIER_PX)
     if not np.any(inliers):
         return _LineStats(n_vis, len(pts), 0, 0, math.inf, math.inf, math.inf)
+    matched = _matched_line_keys(lids[inliers], samples.vis_per_line)
     return _LineStats(
         n_vis=n_vis,
         n_obs=len(pts),
         n_inliers=int(np.count_nonzero(inliers)),
-        n_lines=len(set(lids[inliers].tolist())),
+        n_lines=int(np.count_nonzero(matched)),
         med_px=float(np.median(err_px[inliers])),
         med_ft=float(np.median(err_ft[inliers])),
         p90_ft=float(np.percentile(err_ft[inliers], 90)),
+        n_across=int(np.count_nonzero(matched & (_KEY_FAMILY == _ACROSS))),
+        n_along=int(np.count_nonzero(matched & (_KEY_FAMILY == _ALONG))),
     )
+
+
+def _matched_line_keys(inlier_lids: np.ndarray, vis_per_line: np.ndarray) -> np.ndarray:
+    """Which distinct court lines (`_LINE_KEY`) have enough of their visible samples on a ridge."""
+    support = np.bincount(_LINE_KEY[inlier_lids], minlength=_N_LINE_KEYS)
+    visible = np.bincount(_LINE_KEY, weights=vis_per_line, minlength=_N_LINE_KEYS)
+    needed = np.maximum(_MIN_LINE_SUPPORT, np.ceil(_MIN_LINE_SUPPORT_RATIO * visible))
+    return (visible > 0) & (support >= needed)
 
 
 def _lines_ok(stats: _LineStats) -> bool:
@@ -1662,7 +2520,8 @@ def _lines_ok(stats: _LineStats) -> bool:
     min_req = max(_MIN_LINE_INLIERS, int(_MIN_LINE_INLIER_RATIO * stats.n_vis))
     return (
         stats.n_inliers >= min_req
-        and stats.n_lines >= _MIN_MATCHED_LINES
+        and stats.n_across >= _MIN_LINES_PER_FAMILY
+        and stats.n_along >= _MIN_LINES_PER_FAMILY
         and stats.med_ft <= _MAX_MEDIAN_LINE_ERROR_FT
         and stats.p90_ft <= _MAX_P90_LINE_ERROR_FT
     )

@@ -320,6 +320,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 fit={activeFit}
                 lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
                 frameMatrix={cameraMotion.frameMatrix}
+                frameLens={cameraMotion.frameLens}
                 unmapped={cameraMotion.frameUnmapped}
                 selected={selected}
                 editable={Boolean(segment)}

@@ -647,13 +647,18 @@ def test_camera_motion_tracks_caches_and_serves_frames_with_unmapped_cuts(
         f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=19"
     ).json()
     assert len(frames["court_to_image"]) == 20
+    assert len(frames["lens"]) == 20
     assert len(frames["unmapped"]) == 20
     # Reference frame and live-play frames are mapped; cut frames are unmapped (null).
     assert frames["court_to_image"][5] is not None and frames["unmapped"][5] is False
     assert frames["court_to_image"][0] is not None and frames["unmapped"][0] is False
     for cut_f in range(12, 16):
         assert frames["court_to_image"][cut_f] is None
+        assert frames["lens"][cut_f] is None
         assert frames["unmapped"][cut_f] is True
+    # A lens, when estimated, comes with the frame's proportions.
+    for lens in frames["lens"]:
+        assert lens is None or lens["aspect"] == pytest.approx(640 / 360)
 
 
 def test_calibrations_api_registers_off_reference_landmarks_on_panning_video(

@@ -3,6 +3,7 @@ import type {
   CalibrationOut,
   CameraView,
   Landmark,
+  Lens,
   PlaySegment,
   UnmappedRangeOut,
 } from "../api/client";
@@ -688,6 +689,8 @@ export interface LandmarkHighlightInput {
   drag?: { landmark: Landmark; at: Point } | null;
   /** The court-to-image matrix the court template uses, or null/undefined if unavailable. */
   matrix: number[][] | null | undefined;
+  /** The lens that bends `matrix`'s image into the frame, if any (see `distort`). */
+  lens?: Lens | null;
 }
 
 /** Computes the Monitor highlight for the selected Landmark on `frame`. */
@@ -698,28 +701,51 @@ export function landmarkHighlight({
   resolvedLandmarks,
   drag,
   matrix,
+  lens,
 }: LandmarkHighlightInput): LandmarkHighlight {
   if (!selected) return { kind: "none" };
   const marker = markerPosition(calibration, frame, selected, resolvedLandmarks, drag);
   if (marker) return { kind: "marker", at: marker.at };
   if (!matrix) return { kind: "none" };
-  const projected = project(matrix, courtPoint(selected));
+  const projected = project(matrix, courtPoint(selected), lens);
   if (!isInFramePoint(projected)) return { kind: "none" };
   return { kind: "ghost", at: projected };
 }
 
 /**
  * A court point through a 3×3 homography into normalised image coordinates, or null if it is
- * behind the camera (`w` not positive, as the server orients its matrices).
+ * behind the camera (`w` not positive, as the server orients its matrices). With a `lens`, the
+ * matrix maps into the undistorted image and the point is then bent into the frame (`distort`).
  */
-export function project(matrix: number[][], point: Point): Point | null {
+export function project(matrix: number[][], point: Point, lens?: Lens | null): Point | null {
   const [a, b, c] = matrix as [number[], number[], number[]];
   const w = c[0]! * point.x + c[1]! * point.y + c[2]!;
   if (!(w > 0)) return null;
-  return {
+  const at = {
     x: (a[0]! * point.x + a[1]! * point.y + a[2]!) / w,
     y: (b[0]! * point.x + b[1]! * point.y + b[2]!) / w,
   };
+  return lens ? distort(at, lens) : at;
+}
+
+/**
+ * Where an undistorted normalised image point appears in the frame through a broadcast lens.
+ *
+ * The server's model (ADR 0011): an undistorted point lies at `c + (p - c) * (1 + k1 * r^2)` for
+ * the frame point `p`, with `c` the centre and `r` its distance from it in half-diagonals; this
+ * inverts that by fixed-point iteration on the radial scale.
+ */
+export function distort(point: Point, lens: Lens): Point {
+  if (lens.k1 === 0) return point;
+  const dx = point.x - 0.5;
+  const dy = point.y - 0.5;
+  const a2 = lens.aspect * lens.aspect;
+  const ru2 = (4 * (dx * dx * a2 + dy * dy)) / (a2 + 1);
+  let s = 1;
+  for (let i = 0; i < 12; i++) {
+    s = Math.min(5, Math.max(0.2, 1 / Math.max(1 + lens.k1 * ru2 * s * s, 1e-3)));
+  }
+  return { x: 0.5 + dx * s, y: 0.5 + dy * s };
 }
 
 /** A court line, and whether it is drawn dashed (the Zone boundaries at 9, 12 and 18 ft). */
@@ -742,17 +768,27 @@ export const COURT_LINES: CourtLine[] = [
 
 /**
  * A court line through a homography as image polylines. A line is cut where it passes behind
- * the camera; each visible stretch is sampled so it stays straight after projection.
+ * the camera; each visible stretch is sampled so it stays straight after projection, or follows
+ * the bend when a `lens` bends it into the frame.
  */
-export function projectLine(matrix: number[][], courtLine: CourtLine, samples = 24): Point[][] {
+export function projectLine(
+  matrix: number[][],
+  courtLine: CourtLine,
+  lens?: Lens | null,
+  samples = 24,
+): Point[][] {
   const runs: Point[][] = [];
   let run: Point[] = [];
   for (let i = 0; i <= samples; i++) {
     const t = i / samples;
-    const at = project(matrix, {
-      x: courtLine.from.x + (courtLine.to.x - courtLine.from.x) * t,
-      y: courtLine.from.y + (courtLine.to.y - courtLine.from.y) * t,
-    });
+    const at = project(
+      matrix,
+      {
+        x: courtLine.from.x + (courtLine.to.x - courtLine.from.x) * t,
+        y: courtLine.from.y + (courtLine.to.y - courtLine.from.y) * t,
+      },
+      lens,
+    );
     if (at) {
       run.push(at);
     } else if (run.length) {

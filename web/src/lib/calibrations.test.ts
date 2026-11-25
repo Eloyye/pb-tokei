@@ -10,6 +10,7 @@ import {
   courtPoint,
   currentFit,
   deleteCalibration,
+  distort,
   fitKey,
   isCarriedOver,
   landmarkCounts,
@@ -345,6 +346,22 @@ describe("nextLandmark and skipLandmark", () => {
   });
 });
 
+/** How far a polyline's middle sits below the chord between its ends (0 when straight). */
+function sag(run: { x: number; y: number }[]): number {
+  const first = run[0]!;
+  const last = run.at(-1)!;
+  const mid = run[Math.floor(run.length / 2)]!;
+  return mid.y - (first.y + last.y) / 2;
+}
+
+/** The server's lens model (ADR 0011): an undistorted point lies at c + (p - c) * (1 + k1 * r^2). */
+function undistort(p: { x: number; y: number }, k1: number, aspect: number) {
+  const dx = p.x - 0.5;
+  const dy = p.y - 0.5;
+  const r2 = (4 * (dx * dx * aspect * aspect + dy * dy)) / (aspect * aspect + 1);
+  return { x: 0.5 + dx * (1 + k1 * r2), y: 0.5 + dy * (1 + k1 * r2) };
+}
+
 describe("project", () => {
   it("applies the homography and rejects points behind the camera", () => {
     const scaled = [
@@ -368,10 +385,52 @@ describe("project", () => {
     expect(runs[0]!.length).toBeLessThan(25);
   });
 
+  it("bends a court line through a lens, and leaves it straight without one", () => {
+    // A horizontal court line projected off-centre, near the top of the frame.
+    const matrix = [
+      [0.04, 0, 0.5],
+      [0, 0, 0.15],
+      [0, 0, 1],
+    ];
+    const line = { from: { x: -10, y: 0 }, to: { x: 10, y: 0 }, dashed: false };
+
+    const straight = projectLine(matrix, line)[0]!;
+    const bent = projectLine(matrix, line, { k1: 0.1, aspect: 16 / 9 })[0]!;
+
+    expect(sag(straight)).toBeCloseTo(0, 9);
+    // Barrel distortion pulls the ends towards the centre more than the middle: the line bows.
+    expect(Math.abs(sag(bent))).toBeGreaterThan(0.002);
+  });
+
   it("draws the court lines and the dashed Zone boundaries", () => {
     expect(COURT_LINES.filter((l) => l.dashed).map((l) => l.from.y)).toEqual([
       -18, -12, -9, 9, 12, 18,
     ]);
+  });
+});
+
+describe("distort", () => {
+  it("inverts the server's undistortion across the frame", () => {
+    const lens = { k1: 0.12, aspect: 16 / 9 };
+    for (const x of [0, 0.2, 0.5, 0.8, 1]) {
+      for (const y of [0, 0.3, 0.5, 1]) {
+        const back = distort(undistort({ x, y }, lens.k1, lens.aspect), lens);
+        // Within a millionth of the frame: far below a pixel.
+        expect(back.x).toBeCloseTo(x, 6);
+        expect(back.y).toBeCloseTo(y, 6);
+      }
+    }
+  });
+
+  it("moves points by their distance from the centre in pixels, and not at all without k1", () => {
+    const lens = { k1: 0.1, aspect: 16 / 9 };
+    // 300 px right of and below the centre of a 1920x1080 frame.
+    const right = distort({ x: 0.5 + 300 / 1920, y: 0.5 }, lens);
+    const below = distort({ x: 0.5, y: 0.5 + 300 / 1080 }, lens);
+
+    expect((right.x - 0.5) * 1920).toBeCloseTo((below.y - 0.5) * 1080, 9);
+    expect((right.x - 0.5) * 1920).toBeLessThan(300);
+    expect(distort({ x: 0.9, y: 0.1 }, { k1: 0, aspect: 16 / 9 })).toEqual({ x: 0.9, y: 0.1 });
   });
 });
 

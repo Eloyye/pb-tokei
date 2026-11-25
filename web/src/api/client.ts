@@ -102,6 +102,7 @@ export type CameraMotionOut = Schemas["CameraMotionOut"];
 export type CameraMotionSpanOut = Schemas["CameraMotionSpanOut"];
 export type CameraMotionStatus = Schemas["CameraMotionStatus"];
 export type CameraMotionFramesOut = Schemas["CameraMotionFramesOut"];
+export type Lens = Schemas["LensOut"];
 export type UnmappedRangeOut = Schemas["UnmappedRangeOut"];
 export type FootageJobOut = Schemas["FootageJobOut"];
 export type FootageJobState = Schemas["FootageJobState"];

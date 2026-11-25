@@ -337,14 +337,17 @@ export interface components {
      * @description Per-frame court-to-image matrices across an inclusive frame window.
      *
      *     Entry `i` corresponds to `start_frame + i`: `court_to_image[i]` is the 3×3 matrix when mapped,
-     *     or null otherwise; `unmapped[i]` is True specifically when the frame is inside a tracked Play
-     *     Segment span whose registration failed (so its positions are Unknown).
+     *     or null otherwise; `lens[i]` is the lens that bends that matrix's image into the frame, or
+     *     null when there is none (draw it straight); `unmapped[i]` is True specifically when the frame
+     *     is inside a tracked Play Segment span whose registration failed (so its positions are Unknown).
      */
     CameraMotionFramesOut: {
       /** Court To Image */
       court_to_image: (number[][] | null)[];
       /** End Frame */
       end_frame: number;
+      /** Lens */
+      lens: (components["schemas"]["LensOut"] | null)[];
       /** Start Frame */
       start_frame: number;
       /** Unmapped */
@@ -576,6 +579,22 @@ export interface components {
       off_court: boolean;
       /** Residual Ft */
       residual_ft: number | null;
+    };
+    /**
+     * LensOut
+     * @description One-coefficient radial lens distortion about the frame centre (ADR 0011).
+     *
+     *     A court point maps through the frame's `court_to_image` matrix into the undistorted image,
+     *     then appears in the frame at `c + (p - c) * s` with `c = (0.5, 0.5)`, where `s` solves
+     *     `s * (1 + k1 * r^2 * s^2) = 1` for `r^2 = 4 * ((p.x - 0.5)^2 * aspect^2 + (p.y - 0.5)^2) /
+     *     (aspect^2 + 1)`: the distance from the centre in half-diagonals, `aspect` being the frame's
+     *     width over its height.
+     */
+    LensOut: {
+      /** Aspect */
+      aspect: number;
+      /** K1 */
+      k1: number;
     };
     /**
      * MatchDetailOut

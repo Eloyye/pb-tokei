@@ -6,6 +6,7 @@ import pytest
 from pb_tokei.calibration import (
     CourtMapping,
     Homography,
+    Lens,
     assess,
     calibration_at,
     fit_landmarks,
@@ -144,6 +145,46 @@ def test_image_to_court_to_image_round_trips(camera: Camera) -> None:
 
     assert back is not None
     assert back.x == pytest.approx(start.x) and back.y == pytest.approx(start.y)
+
+
+def test_a_lens_bends_points_by_their_distance_from_the_centre_in_pixels() -> None:
+    lens = Lens(k1=0.1, aspect=WIDTH / HEIGHT)
+    # 300 px right of the centre, and 300 px below it, are the same distance away.
+    right = np.array([[0.5 + 300 / WIDTH, 0.5]])
+    below = np.array([[0.5, 0.5 + 300 / HEIGHT]])
+
+    moved_right = (lens.undistort(right)[0, 0] - 0.5) * WIDTH - 300
+    moved_below = (lens.undistort(below)[0, 1] - 0.5) * HEIGHT - 300
+
+    assert moved_right > 0
+    assert moved_right == pytest.approx(moved_below)
+    assert lens.undistort(np.array([[0.5, 0.5]]))[0] == pytest.approx([0.5, 0.5])
+
+
+def test_distorting_undoes_undistorting_across_the_frame() -> None:
+    lens = Lens(k1=0.12, aspect=WIDTH / HEIGHT)
+    grid = np.array([[x, y] for x in np.linspace(0, 1, 9) for y in np.linspace(0, 1, 9)])
+
+    assert lens.distort(lens.undistort(grid)) == pytest.approx(grid, abs=1e-9)
+
+
+@pytest.mark.parametrize("camera", [MAIN, SIDELINE], ids=["main", "sideline"])
+def test_a_homography_with_a_lens_round_trips_through_the_bent_frame(camera: Camera) -> None:
+    fit = fit_landmarks(camera.clicks())
+    assert fit is not None
+    lens = Lens(k1=0.1, aspect=WIDTH / HEIGHT)
+    homography = Homography(fit.image_to_court, fit.court_to_image, lens=lens)
+    court = CourtPoint(3.0, -7.0)
+
+    seen = homography.to_image(court)
+    straight = fit.to_image(court)
+
+    assert seen is not None and straight is not None
+    # The lens moves the point, along the line from the centre.
+    assert (seen.x, seen.y) != pytest.approx((straight.x, straight.y))
+    bent = lens.undistort(np.array([[seen.x, seen.y]]))[0]
+    assert bent == pytest.approx([straight.x, straight.y])
+    assert_near(homography.to_court(seen), court, 1e-6)
 
 
 def test_noisy_clicks_still_place_zone_boundaries_within_half_a_foot() -> None:
