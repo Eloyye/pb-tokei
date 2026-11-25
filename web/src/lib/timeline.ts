@@ -11,6 +11,12 @@ export interface FrameRange {
 /** The narrowest view, in frames: a quarter second. */
 export const MIN_SPAN = 15;
 
+/** The zoom factor for one keypress, button click, or wheel notch. */
+export const ZOOM_STEP = 1.5;
+
+const WHEEL_LINE_PIXELS = 16;
+const WHEEL_GESTURE_GAP_MS = 150;
+
 /** Tick spacings the ruler may use, in frames: from 1 frame to 10 minutes. */
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 18000, 36000];
 
@@ -72,6 +78,94 @@ export function zoomView(
   const rel = span > 0 ? (anchor - view.start) / span : 0.5;
   const at = Math.min(1, Math.max(0, rel));
   return clampView({ start: anchor - next * at, end: anchor + next * (1 - at) }, totalFrames);
+}
+
+interface WheelDeltas {
+  deltaMode: number;
+  deltaX: number;
+  deltaY: number;
+}
+
+interface WheelDimensions {
+  laneWidth: number;
+  pageHeight: number;
+}
+
+type WheelAxis = "x" | "y";
+
+export interface WheelAxisLock {
+  axis: WheelAxis;
+  timeStamp: number;
+}
+
+function wheelPixels(
+  { deltaMode, deltaX, deltaY }: WheelDeltas,
+  { laneWidth, pageHeight }: WheelDimensions,
+): { x: number; y: number } {
+  switch (deltaMode) {
+    case 1: // DOM_DELTA_LINE
+      return { x: deltaX * WHEEL_LINE_PIXELS, y: deltaY * WHEEL_LINE_PIXELS };
+    case 2: // DOM_DELTA_PAGE
+      return { x: deltaX * laneWidth, y: deltaY * pageHeight };
+    default:
+      return { x: deltaX, y: deltaY };
+  }
+}
+
+function dominantAxis(x: number, y: number): WheelAxis {
+  return Math.abs(x) > Math.abs(y) ? "x" : "y";
+}
+
+/** Keep a scroll on its first dominant axis through any remaining diagonal deltas. */
+export function lockWheelAxis(
+  previous: WheelAxisLock | undefined,
+  wheel: WheelDeltas & { timeStamp: number },
+  dimensions: WheelDimensions,
+): WheelAxisLock | undefined {
+  const { timeStamp } = wheel;
+  if (previous && timeStamp - previous.timeStamp < WHEEL_GESTURE_GAP_MS) {
+    return { axis: previous.axis, timeStamp };
+  }
+  const { x, y } = wheelPixels(wheel, dimensions);
+  if (x === 0 && y === 0) return undefined;
+  return { axis: dominantAxis(x, y), timeStamp };
+}
+
+interface WheelViewContext extends WheelDimensions {
+  pointerFraction?: number;
+  playing: boolean;
+  frame: number;
+  totalFrames: number;
+  overview: boolean;
+  axis?: WheelAxis;
+}
+
+/** Zoom or pan the visible frame range for a Timeline wheel event. */
+export function wheelToView(
+  view: FrameRange,
+  wheel: WheelDeltas & { shiftKey: boolean; ctrlKey: boolean },
+  context: WheelViewContext,
+): FrameRange {
+  const { laneWidth, pointerFraction, playing, frame, totalFrames, overview, axis } = context;
+  if (laneWidth <= 0) return view;
+
+  const { x, y } = wheelPixels(wheel, context);
+  const span = view.end - view.start;
+  const eitherAxisPans = overview || wheel.shiftKey;
+  const scrollAxis = eitherAxisPans ? dominantAxis(x, y) : (axis ?? dominantAxis(x, y));
+  if (overview || (!wheel.ctrlKey && (eitherAxisPans || scrollAxis === "x"))) {
+    const delta = scrollAxis === "x" ? x : y;
+    const shift = (delta / laneWidth) * span;
+    if (shift === 0) return view;
+    return clampView({ start: view.start + shift, end: view.end + shift }, totalFrames);
+  }
+  if (y === 0) return view;
+
+  const factor = wheel.ctrlKey ? Math.exp(y / 100) : ZOOM_STEP ** (y / 100);
+  const limitedFactor = Math.max(1 / ZOOM_STEP, Math.min(ZOOM_STEP, factor));
+  const anchor =
+    playing || pointerFraction === undefined ? frame : view.start + span * pointerFraction;
+  return zoomView(view, limitedFactor, anchor, totalFrames);
 }
 
 /**

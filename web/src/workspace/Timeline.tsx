@@ -1,14 +1,17 @@
-import { type PointerEvent, useState } from "react";
+import { type PointerEvent, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { PlaySegment, UnmappedRangeOut } from "../api/client";
-import { formatTimecode } from "../lib/frames";
+import { clampFrame, formatTimecode } from "../lib/frames";
 import { describe, moveEdge, type PendingSegment, VIEW_LABELS } from "../lib/segments";
 import {
   centreOn,
   type FrameRange,
   frameAt,
   fullView,
+  lockWheelAxis,
   rulerTicks,
   toPercent,
+  type WheelAxisLock,
+  wheelToView,
 } from "../lib/timeline";
 import { Icon } from "./icons";
 import { Panel, PanelTitle } from "./Panel";
@@ -20,6 +23,17 @@ const TRACKS = [
   { id: "issues", label: "Issues", empty: "" },
 ] as const;
 
+interface EdgeDrag {
+  segmentStart: number;
+  edge: "start" | "end";
+  frame: number;
+}
+
+type TimelineDrag = { pointerId: number; clientX: number } & (
+  | { kind: "scrub"; frame: number | null }
+  | ({ kind: "edge" } & EdgeDrag)
+);
+
 /**
  * The Timeline: an overview of the whole video, a ruler with the playhead, and one lane per
  * track. Dragging on the ruler or the lanes scrubs; the overview moves the view.
@@ -29,6 +43,7 @@ export function Timeline({
   onViewChange,
   frame,
   totalFrames,
+  playing,
   onSeek,
   onZoom,
   focused,
@@ -42,6 +57,7 @@ export function Timeline({
   onViewChange: (view: FrameRange) => void;
   frame: number;
   totalFrames: number;
+  playing: boolean;
   onSeek: (frame: number) => void;
   onZoom: (direction: "in" | "out") => void;
   focused: boolean;
@@ -59,30 +75,100 @@ export function Timeline({
   const ticks = rulerTicks(view);
   const hasVideo = totalFrames > 0;
 
-  const lastFrame = Math.max(0, totalFrames - 1);
-  // An edge being dragged: drawn where it is going, committed once on release.
-  const [drag, setDrag] = useState<{
-    segmentStart: number;
-    edge: "start" | "end";
-    frame: number;
-  }>();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const rulerRef = useRef<HTMLDivElement>(null);
+  const wheelAxis = useRef<WheelAxisLock | undefined>(undefined);
+  const queuedWheelView = useRef<{ from: FrameRange; to: FrameRange } | null>(null);
+  const activeDrag = useRef<TimelineDrag | null>(null);
+  const [edgePreview, setEdgePreview] = useState<EdgeDrag>();
   const shown =
-    segments && drag
-      ? moveEdge(segments, null, drag.segmentStart, drag.edge, drag.frame).segments
+    segments && edgePreview
+      ? moveEdge(segments, null, edgePreview.segmentStart, edgePreview.edge, edgePreview.frame)
+          .segments
       : segments;
-  const laneFrame = (event: PointerEvent<HTMLElement>) => {
-    const lane = event.currentTarget.closest(".lane");
-    if (!lane) return 0;
-    const rect = lane.getBoundingClientRect();
-    const at = frameAt(view, (event.clientX - rect.left) / rect.width);
-    return Math.min(lastFrame, Math.max(0, at));
+
+  // Several wheel events can arrive before React commits the view.
+  const currentView = () => {
+    const queued = queuedWheelView.current;
+    return queued?.from === view ? queued.to : view;
   };
 
-  const scrub = (event: PointerEvent<HTMLDivElement>) => {
-    if (!hasVideo) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    onSeek(frameAt(view, (event.clientX - rect.left) / rect.width));
+  const applyDrag = (clientX: number, nextView: FrameRange, rect: DOMRect) => {
+    const drag = activeDrag.current;
+    if (!drag || rect.width <= 0) return;
+    const target = clampFrame(frameAt(nextView, (clientX - rect.left) / rect.width), totalFrames);
+    const next = { ...drag, clientX, frame: target };
+    activeDrag.current = next;
+    if (next.kind === "edge") {
+      if (target !== drag.frame) setEdgePreview(next);
+    } else if (target !== drag.frame || (playing && target !== frame)) {
+      onSeek(target);
+    }
   };
+
+  const moveDrag = (event: PointerEvent<HTMLElement>) => {
+    if (activeDrag.current?.pointerId !== event.pointerId) return;
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    const rect = rulerRef.current?.getBoundingClientRect();
+    if (rect) applyDrag(event.clientX, currentView(), rect);
+  };
+
+  const finishDrag = (event: PointerEvent<HTMLElement>, commitEdge = false) => {
+    const drag = activeDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    activeDrag.current = null;
+    if (drag.kind === "edge") {
+      setEdgePreview(undefined);
+      if (commitEdge) onMoveEdge(drag.segmentStart, drag.edge, drag.frame);
+    }
+  };
+
+  const onWheel = useEffectEvent((event: WheelEvent) => {
+    event.preventDefault();
+    const rect = rulerRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+
+    const { deltaMode, deltaX, deltaY, timeStamp, shiftKey, ctrlKey, clientX } = event;
+    const wheel = { deltaMode, deltaX, deltaY, timeStamp, shiftKey, ctrlKey };
+    const target = event.target instanceof Element ? event.target : null;
+    const overview = Boolean(target?.closest(".overview"));
+    const overHeader = target?.closest(".track-head, .timeline-timecode");
+    const dimensions = { laneWidth: rect.width, pageHeight: bodyRef.current?.clientHeight ?? 0 };
+    const lock =
+      overview || shiftKey || ctrlKey
+        ? undefined
+        : lockWheelAxis(wheelAxis.current, wheel, dimensions);
+    wheelAxis.current = lock;
+
+    const previous = currentView();
+    const pointerFraction =
+      overHeader || clientX < rect.left
+        ? undefined
+        : Math.min(1, (clientX - rect.left) / rect.width);
+    const next = wheelToView(previous, wheel, {
+      ...dimensions,
+      pointerFraction,
+      playing,
+      frame,
+      totalFrames,
+      overview,
+      axis: lock?.axis,
+    });
+    if (next.start === previous.start && next.end === previous.end) return;
+
+    queuedWheelView.current = { from: view, to: next };
+    onViewChange(next);
+    const drag = activeDrag.current;
+    if (drag) applyDrag(drag.clientX, next, rect);
+  });
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const listener = (event: WheelEvent) => onWheel(event);
+    body.addEventListener("wheel", listener, { passive: false });
+    return () => body.removeEventListener("wheel", listener);
+  }, []);
 
   return (
     <Panel
@@ -96,7 +182,7 @@ export function Timeline({
             type="button"
             className="icon-button"
             onClick={() => onZoom("out")}
-            title="Zoom out (-)"
+            title="Zoom out (- or scroll down)"
             aria-label="Zoom out"
           >
             <Icon name="minus" />
@@ -105,7 +191,7 @@ export function Timeline({
             type="button"
             className="icon-button"
             onClick={() => onZoom("in")}
-            title="Zoom in (=)"
+            title="Zoom in (= or scroll up)"
             aria-label="Zoom in"
           >
             <Icon name="plus" />
@@ -116,7 +202,7 @@ export function Timeline({
         </>
       }
     >
-      <div className="timeline-body">
+      <div ref={bodyRef} className="timeline-body">
         <div className="timeline-timecode">{formatTimecode(frame)}</div>
         <div className="overview">
           <div
@@ -140,7 +226,7 @@ export function Timeline({
             }}
           />
         </div>
-        <div className="ruler">
+        <div ref={rulerRef} className="ruler">
           {ticks.frames.map((f) => (
             <div key={f} className="tick" style={{ left: `${toPercent(view, f)}%` }}>
               <span>{formatTimecode(f)}</span>
@@ -187,29 +273,25 @@ export function Timeline({
                             className={`seg-handle ${edge}`}
                             aria-hidden
                             onPointerDown={(event) => {
-                              if (!segments) return;
+                              const original = segments?.[index];
+                              if (!original || activeDrag.current) return;
                               event.stopPropagation();
                               event.currentTarget.setPointerCapture(event.pointerId);
-                              const original = segments.find(
-                                (s) => s.start_frame === segment.start_frame,
-                              );
-                              if (!original) return;
-                              setDrag({
+                              const drag: TimelineDrag = {
+                                kind: "edge",
+                                pointerId: event.pointerId,
+                                clientX: event.clientX,
                                 segmentStart: original.start_frame,
                                 edge,
                                 frame: edge === "start" ? original.start_frame : original.end_frame,
-                              });
+                              };
+                              activeDrag.current = drag;
+                              setEdgePreview(drag);
                             }}
-                            onPointerMove={(event) => {
-                              if (!drag || !event.currentTarget.hasPointerCapture(event.pointerId))
-                                return;
-                              setDrag({ ...drag, frame: laneFrame(event) });
-                            }}
-                            onPointerUp={() => {
-                              if (drag) onMoveEdge(drag.segmentStart, drag.edge, drag.frame);
-                              setDrag(undefined);
-                            }}
-                            onPointerCancel={() => setDrag(undefined)}
+                            onPointerMove={moveDrag}
+                            onPointerUp={(event) => finishDrag(event, true)}
+                            onPointerCancel={finishDrag}
+                            onLostPointerCapture={finishDrag}
                           />
                         ))}
                     </div>
@@ -269,12 +351,22 @@ export function Timeline({
             touchAction: "none",
           }}
           onPointerDown={(event) => {
+            if (!hasVideo || activeDrag.current) return;
+            const rect = rulerRef.current?.getBoundingClientRect();
+            if (!rect) return;
             event.currentTarget.setPointerCapture(event.pointerId);
-            scrub(event);
+            activeDrag.current = {
+              kind: "scrub",
+              pointerId: event.pointerId,
+              clientX: event.clientX,
+              frame: null,
+            };
+            applyDrag(event.clientX, currentView(), rect);
           }}
-          onPointerMove={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) scrub(event);
-          }}
+          onPointerMove={moveDrag}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onLostPointerCapture={finishDrag}
         >
           {hasVideo && <div className="playhead" style={{ left: `${toPercent(view, frame)}%` }} />}
         </div>

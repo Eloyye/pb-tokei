@@ -33,7 +33,7 @@ import {
 } from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import { type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
+import { type FrameRange, fullView, reconcileView, ZOOM_STEP, zoomView } from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
@@ -46,8 +46,6 @@ import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
 import { useCameraMotion } from "./useCameraMotion";
 import { useRecording } from "./useRecording";
-
-const ZOOM_STEP = 1.5;
 
 const MESSAGES: Record<WorkspaceName, string> = {
   calibrate:
@@ -63,7 +61,7 @@ const MESSAGES: Record<WorkspaceName, string> = {
 export function Workspace({ match, workspace }: { match: MatchDetail; workspace: WorkspaceName }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, controls] = usePlayer(videoRef);
-  const { frame, totalFrames, speed } = state;
+  const { frame, totalFrames, playing, speed } = state;
   const { step, togglePlay, setSpeed } = controls;
   const [gotoOpen, setGotoOpen] = useState(false);
   const [view, setView] = useState<FrameRange>(() => fullView(totalFrames));
@@ -416,6 +414,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           onViewChange={setView}
           frame={frame}
           totalFrames={totalFrames}
+          playing={playing}
           onSeek={controls.seek}
           onZoom={zoom}
           focused={focused === "timeline"}

@@ -174,10 +174,13 @@ Status rules:
 
 ## Timeline
 
-- **Header.** Zoom out and in (`-` / `=`) and Fit Rally.
-- **Overview bar.** The whole Game: Rally blocks in the Serving Team's color, the visible window outlined in blue, and the playhead. Click to move the window.
+- **Header.** Zoom out and in around the playhead (`-` / `=`) and Fit Rally.
+- **Overview bar.** The whole Game: Rally blocks in the Serving Team's color, the visible window outlined in blue, and the playhead. Click to jump or scroll in any direction to pan at the same scale as the lanes.
 - **Ruler.** HH:MM:SS:FF ticks, with the tick step chosen from the zoom. The blue playhead has a head on the ruler. Click or drag on the ruler or any lane to scrub.
 - **Track headers** on the left, Premiere-style, with the current timecode above them.
+- **Zoom.** Scroll up to zoom in and down to zoom out, or pinch. Over the ruler and lanes, zoom follows the pointer while paused. During playback or over the track headers and timecode, zoom follows the playhead.
+- **Pan.** Swipe horizontally or hold `Shift` while scrolling. During playback, the view follows the playhead again on the next frame.
+- During a scrub or Play Segment edge drag, the drag follows the frame under the pointer after zooming or panning.
 - **Tracks:**
   - **Segments.** Play Segments colored by Camera View (Main blue-gray, Sideline brown). Editable only in Calibrate.
   - **Rallies.** One clip per Rally in the Serving Team's color, labeled with status, number and score. The current clip is outlined.
@@ -215,9 +218,9 @@ Every change autosaves at once through the API. There is no Save button. The sta
 
 Playback keys are unchanged from the current app (`web/src/lib/keymap.ts`). Plain letters and digits never move the playhead.
 
-This is the Annotate and Review keymap. **Today** marks the keys that work in the current app (✓); the rest are planned with Rally and Shot entry (#12) and the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet always lists exactly the keys that work.
+This is the Annotate and Review keymap. **Today** marks the inputs that work in the current app (✓). The remaining shortcuts are planned with Rally and Shot entry (#12) and the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet lists the current shortcuts and Timeline gestures.
 
-| Action | Key | Today |
+| Action | Input | Today |
 |---|---|---|
 | Play / pause (stops at the Rally's end) | `Space` | ✓ (stopping at the Rally's end is planned) |
 | One frame back / forward | `←` / `→` | ✓ |
@@ -226,7 +229,8 @@ This is the Annotate and Review keymap. **Today** marks the keys that work in th
 | Go to frame or time | `/` | ✓ |
 | Previous / next Shot (seek to contact) | `↑` / `↓` | planned |
 | Previous / next Rally | `PgUp` / `PgDn` | planned |
-| Zoom timeline | `-` / `=` | ✓ |
+| Zoom the Timeline | `-` / `=`, vertical scroll or pinch | ✓ |
+| Pan the Timeline | Horizontal swipe, `Shift`+scroll, or scroll on the Overview bar | ✓ |
 | Move field cursor | `Tab` / `Shift+Tab` | planned (in Calibrate, `Tab` skips to the next Landmark) |
 | Rally start / end at playhead | `Shift+I` / `Shift+O` | planned (in Calibrate: Play Segment start / end) |
 | Add Shot at playhead | `M` | planned |
