@@ -351,15 +351,25 @@ def _run_annotate(args: argparse.Namespace) -> int:
     # Imported here so the other commands don't pay for loading FastAPI and uvicorn.
     from pb_tokei.annotate.server import FrontEndNotBuiltError, serve
 
-    db_path = _resolve_cli_db(args.db)
-    if db_path is None:
-        return 1
+    if args.db is None:
+        # With nothing to fall back on, start anyway: the app opens its Rally Log picker.
+        try:
+            db_path = resolve_rally_log(None)
+        except RallyLogNotFoundError as exc:
+            print(f"{exc}\nRally Log: none open; choose or create one in the app", file=sys.stderr)
+            db_path = None
+        else:
+            print(f"Rally Log: {db_path}", file=sys.stderr)
+    else:
+        db_path = _resolve_cli_db(args.db)
+        if db_path is None:
+            return 1
     try:
         serve(
             db_path,
             port=args.port,
             open_browser=not args.no_browser,
-            on_started=lambda: write_last_rally_log(db_path),
+            on_started=None if db_path is None else lambda: write_last_rally_log(db_path),
         )
     except FrontEndNotBuiltError as exc:
         print(f"error: {exc}", file=sys.stderr)

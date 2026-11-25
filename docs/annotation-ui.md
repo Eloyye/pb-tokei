@@ -35,7 +35,7 @@ A clickable prototype with sample data and working keys lives in [design/annotat
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Top bar.** Holds the brand, a breadcrumb (`Home › Tournament › Teams`), the workspace tabs in the center, and on the right the open Rally Log's filename (full path on hover) and a `?` button. There is no menu bar. The active workspace is shown in accent blue and underlined.
+- **Top bar.** Holds the brand, a breadcrumb (`Home › Tournament › Teams`), the workspace tabs in the center, and on the right the open Rally Log's filename (full path on hover; click it to switch Rally Log, see below) and a `?` button. There is no menu bar. The active workspace is shown in accent blue and underlined.
 - **Panels** have a 28 px header with tab labels, and are separated by 4 px gutters. The panel last clicked gets a 1 px accent outline (Premiere's focused panel).
 - **Resizing.** Three splitters: right column width, bottom row height, and Rallies panel width. Sizes are remembered per browser in `localStorage`. There is no drag-docking.
 - **Status bar** (24 px), left to right:
@@ -46,6 +46,8 @@ A clickable prototype with sample data and working keys lives in [design/annotat
   - Operator Time Ratio (in Review, shown against the 0.25 budget)
   - issue counts, red and amber
   - the `?` hint
+
+- **Rally Log picker.** A modal opened from the Rally Log's name. It shows the open Rally Log and up to 10 recent ones (the open one and missing files can't be chosen; missing files carry an amber `missing` pill). It has a path field, prefilled with the open Rally Log's folder, with **Open** and **New Rally Log** buttons. Choosing one waits for queued saves ("Saving changes…"), and refuses with the save's error if any save is retrying or was refused. On success the app goes Home on the new Rally Log. The picker opens by itself when no Rally Log is open, and the header then reads `No Rally Log` in amber. When another tab has switched the Rally Log, the name becomes an amber **Rally Log switched elsewhere: reload**.
 
 ## Workspaces
 

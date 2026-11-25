@@ -187,12 +187,38 @@ h1 {
   min-width: 0;
 }
 
-.rally-log-name {
+.rally-log-button {
+  min-width: 0;
   overflow: hidden;
+  padding: 2px 6px;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
   font-size: 11px;
+  cursor: pointer;
+}
+
+.rally-log-button::after {
+  content: " ▾";
+  color: var(--faint);
+}
+
+.rally-log-button:hover {
+  color: var(--text);
+  border-color: var(--line-2);
+}
+
+.rally-log-button.missing,
+.rally-log-button.stale {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+}
+
+.rally-log-button.stale::after {
+  content: none;
 }
 
 .help-button {
@@ -315,6 +341,11 @@ h1 {
 .pill-none {
   background: var(--raised);
   color: var(--dim);
+}
+
+.pill-missing {
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 /* --- Workspace grid --------------------------------------------------------------------- */
@@ -1591,4 +1622,125 @@ fieldset.transport-group {
   border-radius: 3px;
   background: var(--raised);
   cursor: pointer;
+}
+
+/* --- Rally Log picker -------------------------------------------------------------------- */
+
+.picker-card {
+  width: min(560px, calc(100% - 32px));
+}
+
+.picker-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px 16px;
+}
+
+.picker-body h3 {
+  margin: 0 0 6px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.picker-open {
+  margin: 0;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.picker-open .mono {
+  color: var(--text);
+}
+
+.picker-recent {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.picker-recent button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.picker-recent button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.picker-recent button:disabled {
+  cursor: default;
+}
+
+.picker-recent button:disabled .mono {
+  color: var(--dim);
+}
+
+.picker-folder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.picker-path {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--app);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  font: 12px var(--mono);
+  outline: none;
+}
+
+.picker-path:focus {
+  border-color: var(--accent);
+}
+
+.picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.picker-actions .button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.picker-busy {
+  color: var(--dim);
+}
+
+.picker-hint {
+  margin: 8px 0 0;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.picker-error {
+  margin: 0;
+  color: var(--fail);
+  overflow-wrap: anywhere;
 }

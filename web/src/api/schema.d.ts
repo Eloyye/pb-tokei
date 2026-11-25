@@ -180,7 +180,14 @@ export interface paths {
     /** Get Rally Log */
     get: operations["getRallyLog"];
     put?: never;
-    post?: never;
+    /**
+     * Open Rally Log
+     * @description Switches the app to another Rally Log, or creates an empty one, and remembers it.
+     *
+     *     404 if the file to open doesn't exist, 422 if it isn't a Rally Log or the folder for a new
+     *     one doesn't exist, 409 if a new one's file already exists.
+     */
+    post: operations["openRallyLog"];
     delete?: never;
     options?: never;
     head?: never;
@@ -412,6 +419,23 @@ export interface components {
       video_status: components["schemas"]["VideoStatus"];
     };
     /**
+     * OpenRallyLogIn
+     * @description A Rally Log to switch to, or with `create`, a new empty one to make and switch to.
+     *
+     *     A relative `path` is taken from the open Rally Log's directory (the server's start directory
+     *     when none is open), and `~` is expanded. A new Rally Log gets `.duckdb` added if its name
+     *     lacks it.
+     */
+    OpenRallyLogIn: {
+      /**
+       * Create
+       * @default false
+       */
+      create: boolean;
+      /** Path */
+      path: string;
+    };
+    /**
      * PlacedLandmarkIO
      * @description A Landmark clicked on a video frame, in normalised coordinates (0 to 1).
      */
@@ -436,9 +460,22 @@ export interface components {
     };
     /**
      * RallyLogOut
-     * @description The Rally Log file the annotation app is serving.
+     * @description The Rally Log the app is serving (null until one is chosen), and those opened recently.
      */
     RallyLogOut: {
+      /** Path */
+      path: string | null;
+      /** Recent */
+      recent: components["schemas"]["RecentRallyLogOut"][];
+    };
+    /**
+     * RecentRallyLogOut
+     * @description A Rally Log opened before; `exists` is false once its file has gone (moved, deleted, or
+     *     on a drive that isn't mounted).
+     */
+    RecentRallyLogOut: {
+      /** Exists */
+      exists: boolean;
       /** Path */
       path: string;
     };
@@ -818,6 +855,39 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["RallyLogOut"];
+        };
+      };
+    };
+  };
+  openRallyLog: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OpenRallyLogIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RallyLogOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
     };

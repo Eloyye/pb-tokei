@@ -3,13 +3,54 @@ import type { components, paths } from "./schema";
 
 const api = createClient<paths>();
 
+/**
+ * The Rally Log this tab loaded its data from, named in every request so that once the app has
+ * switched Rally Log (in another tab, say) the server answers 409 instead of reading or saving
+ * the wrong file. Null until the tab learns which Rally Log is open.
+ */
+let tabRallyLog: string | null = null;
+const tabRallyLogListeners = new Set<() => void>();
+
+api.use({
+  onRequest({ request }) {
+    if (tabRallyLog !== null) request.headers.set("X-Rally-Log", encodeURIComponent(tabRallyLog));
+    return request;
+  },
+});
+
+export function getTabRallyLog(): string | null {
+  return tabRallyLog;
+}
+
+export function subscribeTabRallyLog(listener: () => void): () => void {
+  tabRallyLogListeners.add(listener);
+  return () => tabRallyLogListeners.delete(listener);
+}
+
+function setTabRallyLog(path: string | null) {
+  if (path === tabRallyLog) return;
+  tabRallyLog = path;
+  for (const listener of tabRallyLogListeners) listener();
+}
+
 export type RallyLogInfo = Schemas["RallyLogOut"];
+export type RecentRallyLog = Schemas["RecentRallyLogOut"];
 export type Match = Awaited<ReturnType<typeof listMatches>>[number];
 export type MatchDetail = Awaited<ReturnType<typeof getMatch>>;
 
+/** The Rally Log the app has open. A tab that hasn't loaded one yet takes it as its own. */
 export async function getRallyLog(): Promise<RallyLogInfo> {
   const { data, error, response } = await api.GET("/api/rally-log");
   if (data === undefined) throw apiError(response, error);
+  if (tabRallyLog === null) setTabRallyLog(data.path);
+  return data;
+}
+
+/** Switches the app to another Rally Log, or with `create` to a new empty one, for this tab. */
+export async function openRallyLog(path: string, create: boolean): Promise<RallyLogInfo> {
+  const { data, error, response } = await api.POST("/api/rally-log", { body: { path, create } });
+  if (data === undefined) throw apiError(response, error);
+  setTabRallyLog(data.path);
   return data;
 }
 

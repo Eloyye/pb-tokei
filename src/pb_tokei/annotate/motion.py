@@ -98,13 +98,29 @@ class _JobState:
 
 
 class CameraMotionService:
-    """Tracks and caches Camera Motion per Match without touching the Rally Log database."""
+    """Tracks and caches Camera Motion per Match without touching the Rally Log database.
+
+    One service serves one Rally Log: its cache folder sits beside that Rally Log, and its jobs
+    are keyed by Match id, which is only unique within a Rally Log.
+    """
 
     def __init__(self, cache_dir: Path, *, max_concurrent: int = MAX_CONCURRENT_JOBS) -> None:
         self._cache = CameraMotionCache(cache_dir)
         self._lock = threading.Lock()
         self._slots = threading.Semaphore(max(1, max_concurrent))
         self._jobs: dict[MatchId, _JobState] = {}
+        self._closed = False
+
+    def close(self) -> None:
+        """Cancels every running job and starts no more; used when the app leaves its Rally Log.
+
+        A cancelled job stops at its next check and caches nothing further. Spans it finished
+        before stay cached beside the old Rally Log, ready if it is opened again.
+        """
+        with self._lock:
+            self._closed = True
+            for job in self._jobs.values():
+                job.cancel.set()
 
     @property
     def cache(self) -> CameraMotionCache:
@@ -224,7 +240,7 @@ class CameraMotionService:
             existing = self._jobs.get(match_id)
             if existing is not None and existing.running and existing.signature == sig:
                 reused = existing
-            else:
+            elif not self._closed:
                 if existing is not None and existing.running:
                     existing.cancel.set()
                 started = _JobState(signature=sig, running=True)
@@ -235,7 +251,9 @@ class CameraMotionService:
                 reused.done.wait()
             return self.status(match_id, video_path, seg_snapshot, cal_snapshot)
 
-        assert started is not None
+        if started is None:
+            # Closed: the app has moved on to another Rally Log, so nothing new starts.
+            return self.status(match_id, video_path, seg_snapshot, cal_snapshot)
         if wait:
             self._run_job(match_id, started, video_path, seg_snapshot, cal_snapshot)
             return self.status(match_id, video_path, seg_snapshot, cal_snapshot)

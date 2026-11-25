@@ -14,6 +14,7 @@ import {
 import { commit, type History, redo, startHistory, undo } from "../lib/history";
 import { withRetries } from "../lib/retry";
 import { combineStatus, createSaveQueue, type SaveQueue, type SaveStatus } from "../lib/saveQueue";
+import { reportSaveStatus } from "../lib/unsavedChanges";
 import { type CalibrationEdit, fitKey } from "../lib/calibrations";
 import { followStart, type PendingSegment, type SegmentEdit } from "../lib/segments";
 
@@ -76,11 +77,15 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
   useEffect(() => {
     let cancelled = false;
     const statuses = new Map<string, SaveStatus>();
+    // This editor's saves, as seen by a Rally Log switch waiting for them (lib/unsavedChanges).
+    const owner = {};
     const options = (key: string) => ({
       retryable: isRetryable,
       onStatus: (status: SaveStatus) => {
         statuses.set(key, status);
-        if (!cancelled) setSaveStatus(combineStatus([...statuses.values()]));
+        const combined = combineStatus([...statuses.values()]);
+        reportSaveStatus(owner, combined);
+        if (!cancelled) setSaveStatus(combined);
       },
     });
     // A view's saved Calibrations come back fitted; their fits replace that view's.
@@ -126,8 +131,13 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     );
     return () => {
       cancelled = true;
-      queues.segments.close();
-      for (const view of VIEWS) queues.calibrations[view].close();
+      const all = [queues.segments, ...VIEWS.map((view) => queues.calibrations[view])];
+      for (const q of all) q.close();
+      // A closing queue still sends its latest value; a switch waits for that too.
+      if (all.some((q) => q.status().state !== "saved")) {
+        reportSaveStatus(owner, { state: "saving" });
+      }
+      void Promise.all(all.map((q) => q.settled())).then(() => reportSaveStatus(owner, null));
     };
   }, [matchId]);
 

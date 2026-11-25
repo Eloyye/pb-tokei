@@ -2,20 +2,24 @@
 
 The Rally Log is opened afresh for each request and closed straight after, before any video
 streams, so the CLI (`match add`, `download --match`) can still write to the DuckDB file while the
-app runs.
+app runs. The app serves one Rally Log at a time and can switch to another, or to a new one,
+without restarting (`POST /api/rally-log`).
 """
 
 from __future__ import annotations
 
 import math
 import shlex
+import threading
 from collections.abc import Callable, Mapping
 from enum import StrEnum
 from pathlib import Path
+from typing import Annotated
+from urllib.parse import unquote
 from uuid import UUID
 
 import duckdb
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -41,12 +45,17 @@ from pb_tokei.rally_log import (
     SourceVideo,
     resolve_video_path,
 )
+from pb_tokei.state import read_recent_rally_logs, write_last_rally_log
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 # The server binds 127.0.0.1 only. Checking the Host header as well stops DNS rebinding: a page
 # whose domain re-resolves to 127.0.0.1 would otherwise be same-origin with the app.
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+
+# Names the Rally Log a request means; see `_open_rally_log`.
+RALLY_LOG_HEADER = "X-Rally-Log"
+RALLY_LOG_SUFFIX = ".duckdb"
 
 
 class VideoStatus(StrEnum):
@@ -55,10 +64,31 @@ class VideoStatus(StrEnum):
     READY = "ready"
 
 
-class RallyLogOut(BaseModel):
-    """The Rally Log file the annotation app is serving."""
+class RecentRallyLogOut(BaseModel):
+    """A Rally Log opened before; `exists` is false once its file has gone (moved, deleted, or
+    on a drive that isn't mounted)."""
 
     path: str
+    exists: bool
+
+
+class RallyLogOut(BaseModel):
+    """The Rally Log the app is serving (null until one is chosen), and those opened recently."""
+
+    path: str | None
+    recent: list[RecentRallyLogOut]
+
+
+class OpenRallyLogIn(BaseModel):
+    """A Rally Log to switch to, or with `create`, a new empty one to make and switch to.
+
+    A relative `path` is taken from the open Rally Log's directory (the server's start directory
+    when none is open), and `~` is expanded. A new Rally Log gets `.duckdb` added if its name
+    lacks it.
+    """
+
+    path: str = Field(min_length=1)
+    create: bool = False
 
 
 class MatchOut(BaseModel):
@@ -255,53 +285,43 @@ class _VideoState:
         return f"pb-tokei convert {shlex.quote(str(self.source_path))}"
 
 
-def create_app(
-    db_path: Path,
-    *,
-    static_dir: Path = STATIC_DIR,
-    cache_dir: Path | None = None,
-) -> FastAPI:
-    """Builds the app for the Rally Log at `db_path`.
+class _OpenRallyLog:
+    """The Rally Log the app is serving, with the Camera Motion service for its Matches.
 
-    Relative `SourceVideo.path` values are resolved against the Rally Log's directory (ADR 0007).
+    A request takes this once and uses it throughout, so switching Rally Log mid-request never
+    splits one request across two files.
     """
-    db_file = db_path.resolve()
-    motion_service = CameraMotionService(
-        default_cache_dir(db_file) if cache_dir is None else cache_dir
-    )
-    app = FastAPI(title="pb-tokei annotate")
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
 
-    def lookup(match_id: UUID) -> tuple[MatchSummary, _VideoState]:
-        with RallyLog.open(db_file) as log:
-            try:
-                summary = log.get_match_summary(MatchId(match_id))
-            except KeyError:
-                raise HTTPException(
-                    status_code=404, detail=f"Match not found: {match_id}"
-                ) from None
-        return summary, _VideoState(summary.source_video, db_file)
+    def __init__(self, db_file: Path) -> None:
+        self.db_file = db_file
+        self.motion = CameraMotionService(default_cache_dir(db_file))
 
-    def lookup_motion_inputs(
-        match_id: UUID,
+    def video(self, source_video: SourceVideo | None) -> _VideoState:
+        return _VideoState(source_video, self.db_file)
+
+    def lookup(self, match_id: UUID) -> tuple[MatchSummary, _VideoState]:
+        summary = self.run(lambda log: _match_summary(log, match_id))
+        return summary, self.video(summary.source_video)
+
+    def motion_inputs(
+        self, match_id: UUID
     ) -> tuple[MatchId, Path | None, tuple[PlaySegment, ...], tuple[Calibration, ...]]:
         mid = MatchId(match_id)
-        with RallyLog.open(db_file) as log:
-            try:
-                summary = log.get_match_summary(mid)
-            except KeyError:
-                raise HTTPException(
-                    status_code=404, detail=f"Match not found: {match_id}"
-                ) from None
-            segments = log.get_play_segments(mid)
-            calibrations = log.get_calibrations(mid)
-        video = _VideoState(summary.source_video, db_file)
+
+        def load(
+            log: RallyLog,
+        ) -> tuple[MatchSummary, tuple[PlaySegment, ...], tuple[Calibration, ...]]:
+            summary = _match_summary(log, match_id)
+            return summary, log.get_play_segments(mid), log.get_calibrations(mid)
+
+        summary, segments, calibrations = self.run(load)
+        video = self.video(summary.source_video)
         video_path = video.converted_path if video.status is VideoStatus.READY else None
         return mid, video_path, segments, calibrations
 
-    def with_log[T](action: Callable[[RallyLog], T]) -> T:
+    def run[T](self, action: Callable[[RallyLog], T]) -> T:
         """Runs an action on the Rally Log: 404 for a missing Match, 422 for invalid data."""
-        with RallyLog.open(db_file) as log:
+        with RallyLog.open(self.db_file) as log:
             try:
                 return action(log)
             except MatchNotFound as exc:
@@ -309,28 +329,162 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from None
 
+    def fit_calibrations(
+        self,
+        calibrations: list[Calibration] | tuple[Calibration, ...],
+        segments: tuple[PlaySegment, ...],
+        source_video: SourceVideo | None,
+    ) -> list[CalibrationOut]:
+        video = self.video(source_video)
+        video_path = video.converted_path if video.status is VideoStatus.READY else None
+        out: list[CalibrationOut] = []
+        for cal in calibrations:
+            f2r = (
+                self.motion.cache.register_calibration_frames(video_path, cal, segments)
+                if cal.has_off_reference_landmarks and video_path is not None
+                else None
+            )
+            out.append(CalibrationOut.from_domain(cal, frame_to_ref=f2r))
+        return out
+
+
+def _match_summary(log: RallyLog, match_id: UUID) -> MatchSummary:
+    try:
+        return log.get_match_summary(MatchId(match_id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Match not found: {match_id}") from None
+
+
+class _RallyLogs:
+    """Which Rally Log the app serves (one at a time, or none yet); switching swaps it for every
+    later request."""
+
+    def __init__(self, db_file: Path | None) -> None:
+        self._lock = threading.Lock()
+        self._current = None if db_file is None else _OpenRallyLog(db_file)
+
+    @property
+    def current(self) -> _OpenRallyLog | None:
+        return self._current
+
+    def switch(self, db_file: Path) -> None:
+        """Serves `db_file` from now on, cancelling the old Rally Log's Camera Motion jobs."""
+        with self._lock:
+            old = self._current
+            if old is not None and old.db_file == db_file:
+                return
+            self._current = _OpenRallyLog(db_file)
+        if old is not None:
+            old.motion.close()
+
+
+def _open_rally_log(request: Request) -> _OpenRallyLog:
+    """The open Rally Log, provided it is the one the request means.
+
+    The front end names the Rally Log it loaded its data from in `X-Rally-Log` (percent-encoded),
+    so a tab left on a Rally Log another tab has switched away from gets a 409 rather than
+    reading or saving the wrong file. Requests without the header (curl, scripts) take whichever
+    is open.
+    """
+    rally_logs: _RallyLogs = request.app.state.rally_logs
+    current = rally_logs.current
+    if current is None:
+        raise HTTPException(status_code=409, detail="No Rally Log is open: open or create one")
+    wanted = request.headers.get(RALLY_LOG_HEADER)
+    if wanted is not None and unquote(wanted) != str(current.db_file):
+        raise HTTPException(
+            status_code=409,
+            detail=f"The app has switched to another Rally Log ({current.db_file}); reload",
+        )
+    return current
+
+
+OpenLog = Annotated[_OpenRallyLog, Depends(_open_rally_log)]
+
+
+def _is_rally_log(path: Path) -> bool:
+    try:
+        return RallyLog.is_rally_log(path)
+    except duckdb.Error:
+        return False
+
+
+def create_app(db_path: Path | None, *, static_dir: Path = STATIC_DIR) -> FastAPI:
+    """Builds the app, serving the Rally Log at `db_path`, or none until one is chosen in the app.
+
+    Relative `SourceVideo.path` values are resolved against the Rally Log's directory (ADR 0007).
+    """
+    rally_logs = _RallyLogs(None if db_path is None else db_path.resolve())
+    app = FastAPI(title="pb-tokei annotate")
+    app.state.rally_logs = rally_logs
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
+
     @app.exception_handler(duckdb.Error)
     async def rally_log_unavailable(_request: Request, exc: duckdb.Error) -> JSONResponse:
         # Most often the CLI is writing to the file at that moment; a retry will succeed.
         return JSONResponse(status_code=503, content={"detail": f"Rally Log unavailable: {exc}"})
 
+    # --- Rally Log -----------------------------------------------------------------------
+
+    def rally_log_out() -> RallyLogOut:
+        current = rally_logs.current
+        return RallyLogOut(
+            path=None if current is None else str(current.db_file),
+            recent=[
+                RecentRallyLogOut(path=str(p), exists=p.is_file()) for p in read_recent_rally_logs()
+            ],
+        )
+
     @app.get("/api/rally-log", operation_id="getRallyLog")
     def get_rally_log() -> RallyLogOut:
-        return RallyLogOut(path=str(db_file))
+        return rally_log_out()
+
+    @app.post("/api/rally-log", operation_id="openRallyLog")
+    def open_rally_log(body: OpenRallyLogIn) -> RallyLogOut:
+        """Switches the app to another Rally Log, or creates an empty one, and remembers it.
+
+        404 if the file to open doesn't exist, 422 if it isn't a Rally Log or the folder for a new
+        one doesn't exist, 409 if a new one's file already exists.
+        """
+        current = rally_logs.current
+        base = Path.cwd() if current is None else current.db_file.parent
+        target = (base / Path(body.path).expanduser()).resolve()
+        if body.create:
+            if target.suffix != RALLY_LOG_SUFFIX:
+                target = target.with_name(target.name + RALLY_LOG_SUFFIX)
+            if target.exists():
+                raise HTTPException(status_code=409, detail=f"Already exists: {target}")
+            if not target.parent.is_dir():
+                raise HTTPException(status_code=422, detail=f"No such folder: {target.parent}")
+            try:
+                with RallyLog.open(target):
+                    pass
+            except duckdb.Error as exc:
+                target.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=422, detail=f"Couldn't create {target}: {exc}"
+                ) from None
+        elif not target.is_file():
+            raise HTTPException(status_code=404, detail=f"Rally Log not found: {target}")
+        elif not _is_rally_log(target):
+            raise HTTPException(status_code=422, detail=f"Not a Rally Log: {target}")
+        rally_logs.switch(target)
+        write_last_rally_log(target)
+        return rally_log_out()
+
+    # --- Matches -------------------------------------------------------------------------
 
     @app.get("/api/matches", operation_id="listMatches")
-    def list_matches() -> list[MatchOut]:
-        with RallyLog.open(db_file) as log:
-            summaries = log.list_matches()
-        return [
-            MatchOut.from_summary(s, _VideoState(s.source_video, db_file).status) for s in summaries
-        ]
+    def list_matches(rally_log: OpenLog) -> list[MatchOut]:
+        summaries = rally_log.run(lambda log: log.list_matches())
+        return [MatchOut.from_summary(s, rally_log.video(s.source_video).status) for s in summaries]
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
-    def get_match(match_id: UUID) -> MatchDetailOut:
-        summary, video = lookup(match_id)
+    def get_match(match_id: UUID, rally_log: OpenLog) -> MatchDetailOut:
+        summary, video = rally_log.lookup(match_id)
         return MatchDetailOut.from_match(
-            MatchOut.from_summary(summary, video.status), video.fix_command(summary.id, db_file)
+            MatchOut.from_summary(summary, video.status),
+            video.fix_command(summary.id, rally_log.db_file),
         )
 
     @app.get(
@@ -339,9 +493,9 @@ def create_app(
         response_class=FileResponse,
         responses={200: {"content": {"video/mp4": {}}}, 206: {"content": {"video/mp4": {}}}},
     )
-    def get_match_video(match_id: UUID) -> FileResponse:
+    def get_match_video(match_id: UUID, rally_log: OpenLog) -> FileResponse:
         # The Rally Log is closed before the file streams, which can take as long as playback.
-        _summary, video = lookup(match_id)
+        _summary, video = rally_log.lookup(match_id)
         if video.status is not VideoStatus.READY or video.converted_path is None:
             raise HTTPException(status_code=404, detail=f"No converted video for Match {match_id}")
         return FileResponse(video.converted_path, media_type="video/mp4")
@@ -349,39 +503,24 @@ def create_app(
     # --- Play Segments and Calibrations --------------------------------------------------
 
     @app.get("/api/matches/{match_id}/play-segments", operation_id="getPlaySegments")
-    def get_play_segments(match_id: UUID) -> list[PlaySegmentIO]:
-        segments = with_log(lambda log: log.get_play_segments(MatchId(match_id)))
+    def get_play_segments(match_id: UUID, rally_log: OpenLog) -> list[PlaySegmentIO]:
+        segments = rally_log.run(lambda log: log.get_play_segments(MatchId(match_id)))
         return [PlaySegmentIO.from_domain(s) for s in segments]
 
     @app.put("/api/matches/{match_id}/play-segments", operation_id="replacePlaySegments")
-    def replace_play_segments(match_id: UUID, body: list[PlaySegmentIO]) -> list[PlaySegmentIO]:
+    def replace_play_segments(
+        match_id: UUID, body: list[PlaySegmentIO], rally_log: OpenLog
+    ) -> list[PlaySegmentIO]:
         """Replaces all of a Match's Play Segments. 422 if any two share a frame."""
 
         def change(log: RallyLog) -> tuple[PlaySegment, ...]:
             log.replace_play_segments(MatchId(match_id), [s.to_domain() for s in body])
             return log.get_play_segments(MatchId(match_id))
 
-        return [PlaySegmentIO.from_domain(s) for s in with_log(change)]
-
-    def fit_calibrations(
-        calibrations: list[Calibration] | tuple[Calibration, ...],
-        segments: tuple[PlaySegment, ...],
-        source_video: SourceVideo | None,
-    ) -> list[CalibrationOut]:
-        video = _VideoState(source_video, db_file)
-        video_path = video.converted_path if video.status is VideoStatus.READY else None
-        out: list[CalibrationOut] = []
-        for cal in calibrations:
-            f2r = (
-                motion_service.cache.register_calibration_frames(video_path, cal, segments)
-                if cal.has_off_reference_landmarks and video_path is not None
-                else None
-            )
-            out.append(CalibrationOut.from_domain(cal, frame_to_ref=f2r))
-        return out
+        return [PlaySegmentIO.from_domain(s) for s in rally_log.run(change)]
 
     @app.get("/api/matches/{match_id}/calibrations", operation_id="getCalibrations")
-    def get_calibrations(match_id: UUID) -> list[CalibrationOut]:
+    def get_calibrations(match_id: UUID, rally_log: OpenLog) -> list[CalibrationOut]:
         mid = MatchId(match_id)
 
         def load(
@@ -392,18 +531,18 @@ def create_app(
             summary = log.get_match_summary(mid)
             return calibrations, segments, summary.source_video
 
-        calibrations, segments, source_video = with_log(load)
-        return fit_calibrations(calibrations, segments, source_video)
+        calibrations, segments, source_video = rally_log.run(load)
+        return rally_log.fit_calibrations(calibrations, segments, source_video)
 
     @app.put(
         "/api/matches/{match_id}/calibrations/{camera_view}", operation_id="replaceCalibrations"
     )
     def replace_calibrations(
-        match_id: UUID, camera_view: CameraView, body: list[CalibrationIn]
+        match_id: UUID, camera_view: CameraView, body: list[CalibrationIn], rally_log: OpenLog
     ) -> list[CalibrationOut]:
         """Replaces a Match's Calibrations of one Camera View, returning them with their fits."""
         mid = MatchId(match_id)
-        summary, video = lookup(match_id)
+        summary, video = rally_log.lookup(match_id)
         if video.status is VideoStatus.READY and video.converted_path is not None:
             frame_count = video_frame_count(video.converted_path)
             if frame_count is not None:
@@ -435,32 +574,37 @@ def create_app(
             segments = log.get_play_segments(mid)
             return [c for c in saved if c.camera_view is camera_view], segments
 
-        saved_of_view, segments = with_log(change)
-        return fit_calibrations(saved_of_view, segments, summary.source_video)
+        saved_of_view, segments = rally_log.run(change)
+        return rally_log.fit_calibrations(saved_of_view, segments, summary.source_video)
 
     # --- Camera Motion -------------------------------------------------------------------
 
     @app.get("/api/matches/{match_id}/camera-motion", operation_id="getCameraMotion")
-    def get_camera_motion(match_id: UUID) -> CameraMotionOut:
-        mid, video_path, segments, calibrations = lookup_motion_inputs(match_id)
-        return motion_service.status(mid, video_path, segments, calibrations)
+    def get_camera_motion(match_id: UUID, rally_log: OpenLog) -> CameraMotionOut:
+        mid, video_path, segments, calibrations = rally_log.motion_inputs(match_id)
+        return rally_log.motion.status(mid, video_path, segments, calibrations)
 
     @app.post("/api/matches/{match_id}/camera-motion/track", operation_id="trackCameraMotion")
-    def track_camera_motion(match_id: UUID, wait: bool = False) -> CameraMotionOut:
+    def track_camera_motion(
+        match_id: UUID, rally_log: OpenLog, wait: bool = False
+    ) -> CameraMotionOut:
         """Tracks and caches Camera Motion for any uncached Calibration spans of the Match."""
-        mid, video_path, segments, calibrations = lookup_motion_inputs(match_id)
-        return motion_service.trigger(mid, video_path, segments, calibrations, wait=wait)
+        mid, video_path, segments, calibrations = rally_log.motion_inputs(match_id)
+        return rally_log.motion.trigger(mid, video_path, segments, calibrations, wait=wait)
 
     @app.get("/api/matches/{match_id}/camera-motion/frames", operation_id="getCameraMotionFrames")
     def get_camera_motion_frames(
         match_id: UUID,
+        rally_log: OpenLog,
         start_frame: int = Query(ge=0),
         end_frame: int = Query(ge=0),
     ) -> CameraMotionFramesOut:
         """Per-frame court-to-image matrices across an inclusive frame window."""
-        _mid, video_path, segments, calibrations = lookup_motion_inputs(match_id)
+        _mid, video_path, segments, calibrations = rally_log.motion_inputs(match_id)
         try:
-            return motion_service.frames(video_path, segments, calibrations, start_frame, end_frame)
+            return rally_log.motion.frames(
+                video_path, segments, calibrations, start_frame, end_frame
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 

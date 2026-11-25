@@ -21,14 +21,15 @@ class FrontEndNotBuiltError(RuntimeError):
 
 
 def serve(
-    db_path: Path,
+    db_path: Path | None,
     *,
     port: int,
     open_browser: bool,
     static_dir: Path | None = None,
     on_started: Callable[[], object] | None = None,
 ) -> None:
-    """Serves the app until interrupted. Never builds the front end itself."""
+    """Serves the app until interrupted, on `db_path` or, if None, on no Rally Log until one is
+    chosen in the app. Never builds the front end itself."""
     static_dir = STATIC_DIR if static_dir is None else static_dir
     if not (static_dir / "index.html").is_file():
         raise FrontEndNotBuiltError(
