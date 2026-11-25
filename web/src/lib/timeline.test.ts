@@ -4,10 +4,14 @@ import {
   followFrame,
   frameAt,
   fullView,
+  lockWheelAxis,
   MIN_SPAN,
   reconcileView,
   rulerTicks,
   toPercent,
+  type WheelAxisLock,
+  wheelToView,
+  ZOOM_STEP,
   zoomView,
 } from "./timeline";
 
@@ -80,6 +84,134 @@ describe("zoomView", () => {
   it("zooms around the nearest edge when the anchor is off screen", () => {
     const zoomed = zoomView({ start: 0, end: 1000 }, 0.5, 2000, 10_000);
     expect(zoomed).toEqual({ start: 1500, end: 2000 });
+  });
+});
+
+describe("wheelToView", () => {
+  const view = { start: 400, end: 1000 };
+  const context = {
+    laneWidth: 600,
+    pageHeight: 200,
+    pointerFraction: 0.25,
+    playing: false,
+    frame: 800,
+    totalFrames: 3000,
+    overview: false,
+  };
+  const wheel = {
+    deltaMode: 0,
+    deltaX: 0,
+    deltaY: 0,
+    shiftKey: false,
+    ctrlKey: false,
+    timeStamp: 10,
+  };
+  const horizontalLock: WheelAxisLock = { axis: "x", timeStamp: 0 };
+  const verticalLock: WheelAxisLock = { axis: "y", timeStamp: 0 };
+  const apply = (
+    input: Partial<typeof wheel>,
+    options?: Partial<Parameters<typeof wheelToView>[2]>,
+    lock?: WheelAxisLock,
+  ) => wheelToView(view, { ...wheel, ...input }, { ...context, ...options }, lock).view;
+
+  it.each([
+    { deltaMode: 1, deltaX: 2, deltaY: 0, pixelsX: 32, pixelsY: 0 },
+    { deltaMode: 1, deltaX: 0, deltaY: -2, pixelsX: 0, pixelsY: -32 },
+    { deltaMode: 2, deltaX: 0.5, deltaY: 0, pixelsX: 300, pixelsY: 0 },
+    { deltaMode: 2, deltaX: 0, deltaY: 0.25, pixelsX: 0, pixelsY: 50 },
+  ])("converts delta mode $deltaMode to pixels ($pixelsX, $pixelsY)", (test) => {
+    const { deltaMode, deltaX, deltaY, pixelsX, pixelsY } = test;
+    expect(apply({ deltaMode, deltaX, deltaY })).toEqual(
+      apply({ deltaX: pixelsX, deltaY: pixelsY }),
+    );
+  });
+
+  it("zooms one step per notch, with positive deltas zooming out", () => {
+    expect(apply({ deltaY: 100 })).toEqual({ start: 325, end: 1225 });
+    expect(apply({ deltaY: -100 })).toEqual({ start: 450, end: 850 });
+    const halfNotch = apply({ deltaY: 50 });
+    expect(halfNotch.end - halfNotch.start).toBeCloseTo(600 * ZOOM_STEP ** 0.5);
+  });
+
+  it("uses an exponential factor for pinches, even during a horizontal scroll lock", () => {
+    const pinched = apply({ deltaY: 20, ctrlKey: true }, undefined, horizontalLock);
+    expect(pinched.end - pinched.start).toBeCloseTo(600 * Math.exp(0.2));
+  });
+
+  it.each([false, true])("caps each wheel event at one step (pinch: %s)", (ctrlKey) => {
+    expect(apply({ deltaY: 900, ctrlKey })).toEqual({ start: 325, end: 1225 });
+    expect(apply({ deltaY: -900, ctrlKey })).toEqual({ start: 450, end: 850 });
+  });
+
+  it("keeps the same point under the pointer while paused", () => {
+    const pointerFraction = 0.251;
+    const pointerFrame = view.start + pointerFraction * (view.end - view.start);
+    const zoomed = apply({ deltaY: -100 }, { pointerFraction });
+    expect(toPercent(zoomed, pointerFrame)).toBeCloseTo(pointerFraction * 100);
+  });
+
+  it("anchors at the playhead during playback and over the headers", () => {
+    const zoomed = { start: 200, end: 1100 };
+    expect(apply({ deltaY: 100 }, { playing: true })).toEqual(zoomed);
+    expect(apply({ deltaY: 100 }, { pointerFraction: undefined })).toEqual(zoomed);
+  });
+
+  it("pans by the same distance over the lanes, headers, and Overview bar", () => {
+    const panned = { start: 500, end: 1100 };
+    expect(apply({ deltaX: 100 })).toEqual(panned);
+    expect(apply({ deltaY: 100, shiftKey: true }, { pointerFraction: undefined })).toEqual(panned);
+    expect(apply({ deltaX: 100, shiftKey: true })).toEqual(panned);
+    expect(apply({ deltaX: 100 }, { overview: true })).toEqual(panned);
+    expect(apply({ deltaY: 100, ctrlKey: true }, { overview: true })).toEqual(panned);
+    expect(apply({ deltaX: -100 })).toEqual({ start: 300, end: 900 });
+    expect(apply({ deltaY: -100 }, { overview: true })).toEqual({ start: 300, end: 900 });
+    expect(apply({ deltaX: 100 }, { laneWidth: 300 })).toEqual({ start: 600, end: 1200 });
+  });
+
+  it("ignores deltas on the other axis during a locked scroll", () => {
+    expect(apply({ deltaX: 15, deltaY: 100 }, undefined, horizontalLock)).toEqual({
+      start: 415,
+      end: 1015,
+    });
+    expect(apply({ deltaX: 100, deltaY: 10 }, undefined, verticalLock)).toEqual(
+      apply({ deltaY: 10 }),
+    );
+    expect(apply({ deltaY: 100 }, undefined, horizontalLock)).toBe(view);
+  });
+
+  it("keeps pans inside the video and respects the zoom bounds", () => {
+    expect(apply({ deltaX: -500 })).toEqual({ start: 0, end: 600 });
+    expect(apply({ deltaX: 2500 })).toEqual({ start: 2400, end: 3000 });
+    const { view: zoomIn } = wheelToView(
+      { start: 500, end: 518 },
+      { ...wheel, deltaY: -100 },
+      context,
+    );
+    expect(zoomIn.end - zoomIn.start).toBe(MIN_SPAN);
+    expect(apply({ deltaY: 100 }, { totalFrames: 1000 })).toEqual({ start: 100, end: 1000 });
+    expect(apply({ deltaY: 100 }, { totalFrames: 800 })).toEqual(fullView(800));
+  });
+});
+
+describe("lockWheelAxis", () => {
+  it("locks to the first dominant axis until 150 ms after the last event", () => {
+    const first = lockWheelAxis(undefined, { x: 20, y: 4, timeStamp: 0 });
+    expect(first).toEqual({ axis: "x", timeStamp: 0 });
+
+    const second = lockWheelAxis(first, { x: 0, y: 20, timeStamp: 100 });
+    expect(second).toEqual({ axis: "x", timeStamp: 100 });
+
+    const third = lockWheelAxis(second, { x: 0, y: 20, timeStamp: 200 });
+    expect(third).toEqual({ axis: "x", timeStamp: 200 });
+
+    expect(lockWheelAxis(third, { x: 4, y: 20, timeStamp: 350 })).toEqual({
+      axis: "y",
+      timeStamp: 350,
+    });
+  });
+
+  it("waits for a nonzero delta to pick an axis", () => {
+    expect(lockWheelAxis(undefined, { x: 0, y: 0, timeStamp: 0 })).toBeUndefined();
   });
 });
 

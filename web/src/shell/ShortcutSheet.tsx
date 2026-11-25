@@ -17,6 +17,12 @@ const GROUPS: [string, [string[], string][]][] = [
     "Timeline",
     [
       [["-", "="], "Zoom out / in around the playhead"],
+      [
+        ["Scroll ↑ / ↓", "Pinch"],
+        "Zoom at the pointer when paused, or at the playhead while playing or over track headers",
+      ],
+      [["⇧Scroll", "Swipe ↔"], "Pan the Timeline"],
+      [["Scroll on Overview"], "Move the visible window"],
       [["Drag"], "Scrub on the ruler or tracks"],
     ],
   ],
@@ -53,7 +59,7 @@ const GROUPS: [string, [string[], string][]][] = [
   ],
 ];
 
-/** Every key that works today. Rally and Shot keys are added as those features land. */
+/** The shortcuts and Timeline gestures that work today. */
 export function ShortcutSheet({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {

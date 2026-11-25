@@ -11,6 +11,16 @@ export interface FrameRange {
 /** The narrowest view, in frames: a quarter second. */
 export const MIN_SPAN = 15;
 
+/** The zoom factor for one keypress, button click, or wheel notch. */
+export const ZOOM_STEP = 1.5;
+
+// Use a fixed 16 CSS px approximation for browsers that report deltas in lines.
+const WHEEL_LINE_PIXELS = 16;
+// A typical mouse wheel notch reports about 100 CSS pixels.
+const WHEEL_NOTCH_PIXELS = 100;
+// Keep momentum events in the same gesture until wheel input pauses.
+const WHEEL_GESTURE_GAP_MS = 150;
+
 /** Tick spacings the ruler may use, in frames: from 1 frame to 10 minutes. */
 const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 18000, 36000];
 
@@ -72,6 +82,99 @@ export function zoomView(
   const rel = span > 0 ? (anchor - view.start) / span : 0.5;
   const at = Math.min(1, Math.max(0, rel));
   return clampView({ start: anchor - next * at, end: anchor + next * (1 - at) }, totalFrames);
+}
+
+interface WheelDeltas {
+  deltaMode: number;
+  deltaX: number;
+  deltaY: number;
+}
+
+interface WheelDimensions {
+  laneWidth: number;
+  pageHeight: number;
+}
+
+type WheelAxis = "x" | "y";
+
+export interface WheelAxisLock {
+  axis: WheelAxis;
+  timeStamp: number;
+}
+
+function wheelPixels(
+  { deltaMode, deltaX, deltaY }: WheelDeltas,
+  { laneWidth, pageHeight }: WheelDimensions,
+): { x: number; y: number } {
+  switch (deltaMode) {
+    case 1: // DOM_DELTA_LINE
+      return { x: deltaX * WHEEL_LINE_PIXELS, y: deltaY * WHEEL_LINE_PIXELS };
+    case 2: // DOM_DELTA_PAGE
+      return { x: deltaX * laneWidth, y: deltaY * pageHeight };
+    default:
+      return { x: deltaX, y: deltaY };
+  }
+}
+
+function dominantAxis(x: number, y: number): WheelAxis {
+  return Math.abs(x) > Math.abs(y) ? "x" : "y";
+}
+
+/** Keep a scroll on its first dominant axis through any remaining diagonal deltas. */
+export function lockWheelAxis(
+  previous: WheelAxisLock | undefined,
+  { x, y, timeStamp }: { x: number; y: number; timeStamp: number },
+): WheelAxisLock | undefined {
+  if (previous && timeStamp - previous.timeStamp < WHEEL_GESTURE_GAP_MS) {
+    return { axis: previous.axis, timeStamp };
+  }
+  if (x === 0 && y === 0) return undefined;
+  return { axis: dominantAxis(x, y), timeStamp };
+}
+
+interface WheelViewContext extends WheelDimensions {
+  pointerFraction?: number;
+  playing: boolean;
+  frame: number;
+  totalFrames: number;
+  overview: boolean;
+}
+
+/** Apply a Timeline wheel event and return the view and lock for the next event. */
+export function wheelToView(
+  view: FrameRange,
+  wheel: WheelDeltas & { shiftKey: boolean; ctrlKey: boolean; timeStamp: number },
+  context: WheelViewContext,
+  previousLock?: WheelAxisLock,
+): { view: FrameRange; lock: WheelAxisLock | undefined } {
+  const { laneWidth, pointerFraction, playing, frame, totalFrames, overview } = context;
+  if (laneWidth <= 0) return { view, lock: previousLock };
+
+  const { x, y } = wheelPixels(wheel, context);
+  const { ctrlKey, shiftKey, timeStamp } = wheel;
+  const eitherAxisPans = overview || (shiftKey && !ctrlKey);
+  const lock =
+    eitherAxisPans || ctrlKey ? undefined : lockWheelAxis(previousLock, { x, y, timeStamp });
+  const span = view.end - view.start;
+  if (eitherAxisPans || lock?.axis === "x") {
+    const axis = lock?.axis ?? dominantAxis(x, y);
+    const delta = axis === "x" ? x : y;
+    const shift = (delta / laneWidth) * span;
+    if (shift === 0) return { view, lock };
+    return {
+      view: clampView({ start: view.start + shift, end: view.end + shift }, totalFrames),
+      lock,
+    };
+  }
+  if (y === 0) return { view, lock };
+
+  const notches = y / WHEEL_NOTCH_PIXELS;
+  const factor = ctrlKey ? Math.exp(notches) : ZOOM_STEP ** notches;
+  // Cap each event at one zoom step so large deltas cannot overshoot.
+  const limitedFactor = Math.max(1 / ZOOM_STEP, Math.min(ZOOM_STEP, factor));
+  const anchor =
+    playing || pointerFraction === undefined ? frame : view.start + span * pointerFraction;
+  return { view: zoomView(view, limitedFactor, anchor, totalFrames), lock };
 }
 
 /**
