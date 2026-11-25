@@ -60,6 +60,7 @@ class FootageJobOut(BaseModel):
     hint: str | None
     stderr_tail: str | None
     cookies_from_browser: str | None
+    requested_url: str | None = None
 
 
 class FetchFootageIn(BaseModel):
@@ -221,13 +222,29 @@ class FootageJobService:
                 convert_source=convert_source,
                 cookies_from_browser=cookies_from_browser,
             )
-            self._jobs[match_id] = job
-            self._queue.append(job)
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._worker_loop, daemon=True)
                 self._worker.start()
+            self._jobs[match_id] = job
+            self._queue.append(job)
             self._cond.notify()
             return self._to_out_locked(job, cookies_remembered)
+
+    def record_enqueue_error(self, match_id: MatchId, url: str, message: str) -> None:
+        """Shows a fetch setup failure for a newly created Match in its footage panel."""
+        with self._lock:
+            self._jobs.setdefault(
+                match_id,
+                _FootageJob(
+                    match_id=match_id,
+                    url=url,
+                    convert_source=None,
+                    cookies_from_browser=None,
+                    state=FootageJobState.ERROR,
+                    error=message,
+                    hint=footage_error_hint(message),
+                ),
+            )
 
     def cancel(self, match_id: MatchId) -> FootageJobOut:
         """Cancels a running job, removes a queued one, or clears a previous error."""
@@ -272,6 +289,7 @@ class FootageJobService:
             hint=job.hint,
             stderr_tail=job.stderr_tail,
             cookies_from_browser=cookies,
+            requested_url=job.url,
         )
 
     def _worker_loop(self) -> None:

@@ -8,14 +8,14 @@ Statistics on professional side-out-scored doubles pickleball (PPA, APP, MLP), d
 
 ![The annotation app's Calibrate workspace: the court template fitted over a video on the Monitor, the Landmark checklist on the right, and Play Segments on the Timeline](docs/images/annotation-app.png)
 
-You download a broadcast, set up the Match from a Roster File, then annotate it Rally by Rally in a local web app. Every Rally ends up in a Rally Log (a DuckDB file), and stats are derived from the Rally Log by rule. The words used throughout (Match, Rally, Play Segment, Calibration…) are defined in the [Glossary](GLOSSARY.md).
+Create a Match in the local annotation app, fetch its broadcast, and annotate it Rally by Rally. Every Rally ends up in a Rally Log (a DuckDB file), and stats are derived from the Rally Log by rule. The words used throughout (Match, Rally, Play Segment, Calibration…) are defined in the [Glossary](GLOSSARY.md).
 
 ## Status
 
 Works today:
 
 - **Footage**: download a broadcast with `yt-dlp` and convert it to constant 60 fps for frame-exact seeking.
-- **Matches**: set up a Match, with its Tournament, Teams and MLP Franchises, from a hand-written Roster File.
+- **Matches**: set up a Match, with its Tournament, Teams and MLP Franchises, in the annotation app or from a Roster File.
 - **Annotation app**: list Matches and open each in a Premiere-style workspace with frame-by-frame playback, a zoomable Timeline and keyboard controls.
 - **Calibrate**: mark Play Segments and their Camera View, fit the court from up to 12 Landmarks, and follow Camera Motion through each Play Segment.
 
@@ -51,21 +51,17 @@ uv run pb-tokei dev update
 
 Run `uv run pb-tokei dev update` again after `git pull` or `git switch`.
 
-Write a Roster File template.
+Start the annotation app.
 
 ```bash
-mkdir -p rosters
-uv run pb-tokei match new rosters/example.toml
+uv run pb-tokei annotate
 ```
 
-Fill in the Tournament and the four Players in `rosters/example.toml`, then create the Match in a new Rally Log and open the annotation app. Click the Match, paste the broadcast URL and click **Fetch** to download and convert it to 60 fps.
+1. If the Rally Log picker opens, enter `rally_log.duckdb` and click **New Rally Log**.
+2. Click **New Match**. Enter the Tournament and the four Players, and paste the YouTube broadcast URL into **Footage URL**.
+3. Click **Create Match**. The Workspace opens and shows download and conversion progress. Once the footage is ready, it plays at a constant 60 fps.
 
-```bash
-uv run pb-tokei match add rosters/example.toml --db rally_log.duckdb
-uv run pb-tokei annotate --db rally_log.duckdb
-```
-
-`annotate` remembers this Rally Log so later commands can omit `--db`.
+`annotate` remembers the Rally Log for the next session.
 
 ## Usage
 
@@ -106,7 +102,7 @@ uv run pb-tokei annotate [--db <path>] [--port 8000] [--no-browser]
 
 The app serves on `127.0.0.1` only, opens your browser, and shows the open Rally Log's filename in the header (full path on hover). `annotate` remembers the Rally Log it opens, and relative video paths are resolved relative to the Rally Log's directory ([ADR 0007](docs/adr/0007-relative-video-paths-follow-the-rally-log.md)), so `uv run pb-tokei annotate` reopens it from any directory with its videos playing. If a Match has no playable video, you can fetch and convert it from the app — or run the equivalent terminal command shown underneath ([ADR 0009](docs/adr/0009-the-annotation-app-may-fetch-footage.md)).
 
-Click the Rally Log's name in the header to switch Rally Log without restarting: pick one of the last 10 opened (missing files are listed but greyed out), type a path and **Open**, or type a path and **New Rally Log** to make an empty one there (`.duckdb` is added if missing; add Matches with `match add --db <path>`). A relative path starts from the open Rally Log's folder. Unsaved edits are saved before the switch, which is refused while a save is failing. The app then goes Home on the new Rally Log and remembers it as the last one. When `annotate` finds no Rally Log at all (no `--db`, nothing remembered, no `./rally_log.duckdb`), it starts anyway and opens this picker. A `--db` path that doesn't exist is still an error.
+Click the Rally Log's name in the header to switch Rally Log without restarting: pick one of the last 10 opened (missing files are listed but greyed out), type a path and **Open**, or type a path and **New Rally Log** to make an empty one there (`.duckdb` is added if missing). The Match list has a **New Match** button. A relative path starts from the open Rally Log's folder. Unsaved edits are saved before the switch, which is refused while a save is failing. The app then goes Home on the new Rally Log and remembers it as the last one. When `annotate` finds no Rally Log at all (no `--db`, nothing remembered, no `./rally_log.duckdb`), it starts anyway and opens this picker. A `--db` path that doesn't exist is still an error.
 
 The server has one Rally Log open at a time ([ADR 0008](docs/adr/0008-one-rally-log-per-annotation-server.md)). Other tabs still on the old Rally Log can't save to it any more. Their header shows **Rally Log switched elsewhere: reload**.
 

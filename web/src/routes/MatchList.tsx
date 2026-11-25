@@ -46,13 +46,16 @@ export function MatchList() {
   return (
     <main className="home">
       <div className="home-head">
-        <h1>Matches</h1>
-        <span className="mono">{matches.data.length} Matches</span>
+        <div className="match-list-title">
+          <h1>Matches</h1>
+          <span className="mono">{matches.data.length}</span>
+        </div>
+        <Link to="/matches/new" className="button primary">
+          New Match
+        </Link>
       </div>
       {matches.data.length === 0 ? (
-        <p className="notice">
-          No Matches yet. Add one with <code>pb-tokei match add &lt;roster file&gt;</code>.
-        </p>
+        <p className="notice">No Matches yet.</p>
       ) : (
         <div className="match-table">
           <div className="tr thead">

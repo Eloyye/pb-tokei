@@ -382,11 +382,15 @@ def _run_yt_dlp(
 
 
 def validate_url(url: str) -> None:
+    error = f"Expected an http(s) URL, got: {url!r}"
     if not url or any(ch.isspace() for ch in url):
-        raise FootageDownloadError(f"Expected an http(s) URL, got: {url!r}")
-    parsed = urlparse(url)
+        raise FootageDownloadError(error)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        raise FootageDownloadError(error) from None
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise FootageDownloadError(f"Expected an http(s) URL, got: {url!r}")
+        raise FootageDownloadError(error)
 
 
 def _validate_video_id(video_id: str) -> None:

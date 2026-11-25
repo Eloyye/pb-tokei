@@ -467,6 +467,7 @@ class MatchSummary:
     franchise_a: str | None
     franchise_b: str | None
     source_video: SourceVideo | None
+    franchise_match_id: FranchiseMatchId | None = None
 
     @property
     def has_video(self) -> bool:

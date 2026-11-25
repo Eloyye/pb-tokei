@@ -150,8 +150,7 @@ export function RallyLogPicker({
           </div>
           <p className="picker-hint">
             A relative path starts from the open Rally Log's folder. New Rally Log makes an empty
-            one at the path (adding <code>.duckdb</code>); add Matches to it with{" "}
-            <code>pb-tokei match add</code>.
+            one at the path and adds <code>.duckdb</code> if needed.
           </p>
         </form>
         {error && (

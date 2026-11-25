@@ -92,4 +92,32 @@ describe("the tab's Rally Log", () => {
 
     expect(client.getTabRallyLog()).toBe(ONE);
   });
+
+  it("keeps a New Match form bound to the Rally Log its roster came from", async () => {
+    const client = await freshClient();
+    await client.getRallyLog();
+    await client.getRoster(ONE);
+
+    rallyLogPath = TWO;
+    await client.openRallyLog(TWO, false);
+    await client.createMatch(
+      {
+        tournament: "Atlanta Open",
+        tour: "ppa",
+        team_a: [
+          { name: "A1", handedness: "right" },
+          { name: "A2", handedness: "right" },
+        ],
+        team_b: [
+          { name: "B1", handedness: "left" },
+          { name: "B2", handedness: "right" },
+        ],
+      },
+      ONE,
+    );
+
+    expect(requests[1]!.headers.get("X-Rally-Log")).toBe(encodeURIComponent(ONE));
+    expect(requests.at(-1)!.headers.get("X-Rally-Log")).toBe(encodeURIComponent(ONE));
+    expect(client.getTabRallyLog()).toBe(TWO);
+  });
 });

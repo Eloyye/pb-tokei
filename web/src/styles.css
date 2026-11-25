@@ -254,6 +254,12 @@ h1 {
   color: var(--dim);
 }
 
+.match-list-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
 .match-table {
   min-width: 760px;
   overflow: hidden;
@@ -317,6 +323,176 @@ h1 {
 
 .swatch.team-b {
   background: var(--team-b);
+}
+
+/* --- New Match ------------------------------------------------------------------------ */
+
+.new-match {
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 16px;
+}
+
+.new-match-content {
+  max-width: 820px;
+  margin: 0 auto;
+}
+
+.new-match h1 {
+  margin-bottom: 18px;
+  font-size: 20px;
+}
+
+.new-match h2,
+.new-match legend {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.new-match-fields,
+.new-match-franchises {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+}
+
+.new-match-fields {
+  border: 0;
+  padding: 0;
+}
+
+.new-match-tournament,
+.new-match-teams,
+.new-match-player {
+  display: grid;
+  align-items: start;
+  gap: 12px;
+}
+
+.new-match-tournament,
+.new-match-player {
+  grid-template-columns: minmax(0, 1fr) minmax(105px, 28%);
+}
+
+.new-match-teams {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.new-match-team,
+.new-match-franchises {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+}
+
+.new-match-team legend {
+  padding: 0 4px;
+}
+
+.new-match-team .new-match-player + .new-match-player {
+  margin-top: 12px;
+}
+
+.new-match-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--dim);
+}
+
+.new-match-field input,
+.new-match-field select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--app);
+  color: var(--text);
+  font: inherit;
+}
+
+.new-match-field select:disabled,
+.new-match-optional {
+  color: var(--dim);
+}
+
+.name-field {
+  position: relative;
+}
+
+.name-options {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  inset-inline: 0;
+  margin: 3px 0 0;
+  padding: 3px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--header);
+  color: var(--text);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 30%);
+}
+
+.name-options button {
+  display: block;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  background: none;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.name-options button:hover,
+.name-options [aria-selected="true"] {
+  background: var(--accent-soft);
+}
+
+.name-hint {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.name-hint button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.new-match-error {
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  border: 1px solid var(--fail);
+  border-radius: 3px;
+  background: var(--fail-soft);
+}
+
+.new-match-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.new-match-actions .button {
+  padding: 6px 12px;
+}
+
+@media (max-width: 650px) {
+  .new-match-teams {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .pill {

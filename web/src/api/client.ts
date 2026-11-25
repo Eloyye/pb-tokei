@@ -2,6 +2,7 @@ import createClient from "openapi-fetch";
 import type { components, paths } from "./schema";
 
 const api = createClient<paths>();
+const RALLY_LOG_HEADER = "X-Rally-Log";
 
 /**
  * The Rally Log this tab loaded its data from, named in every request so that once the app has
@@ -13,7 +14,9 @@ const tabRallyLogListeners = new Set<() => void>();
 
 api.use({
   onRequest({ request }) {
-    if (tabRallyLog !== null) request.headers.set("X-Rally-Log", encodeURIComponent(tabRallyLog));
+    if (tabRallyLog !== null && !request.headers.has(RALLY_LOG_HEADER)) {
+      request.headers.set(RALLY_LOG_HEADER, encodeURIComponent(tabRallyLog));
+    }
     return request;
   },
 });
@@ -37,6 +40,8 @@ export type RallyLogInfo = Schemas["RallyLogOut"];
 export type RecentRallyLog = Schemas["RecentRallyLogOut"];
 export type Match = Awaited<ReturnType<typeof listMatches>>[number];
 export type MatchDetail = Awaited<ReturnType<typeof getMatch>>;
+export type CreateMatchIn = Schemas["CreateMatchIn"];
+export type Roster = Awaited<ReturnType<typeof getRoster>>;
 
 /** The Rally Log the app has open. A tab that hasn't loaded one yet takes it as its own. */
 export async function getRallyLog(): Promise<RallyLogInfo> {
@@ -56,6 +61,23 @@ export async function openRallyLog(path: string, create: boolean): Promise<Rally
 
 export async function listMatches() {
   const { data, error, response } = await api.GET("/api/matches");
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getRoster(rallyLog: string) {
+  const { data, error, response } = await api.GET("/api/roster", {
+    headers: { [RALLY_LOG_HEADER]: encodeURIComponent(rallyLog) },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function createMatch(body: CreateMatchIn, rallyLog: string) {
+  const { data, error, response } = await api.POST("/api/matches", {
+    body,
+    headers: { [RALLY_LOG_HEADER]: encodeURIComponent(rallyLog) },
+  });
   if (data === undefined) throw apiError(response, error);
   return data;
 }

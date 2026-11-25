@@ -33,6 +33,7 @@ from pb_tokei.annotate.footage_jobs import (
     FootageJobSummaryOut,
 )
 from pb_tokei.annotate.frontend import STATIC_DIR
+from pb_tokei.annotate.match_setup import CreatedMatchOut, CreateMatchIn, RosterOut, roster_catalog
 from pb_tokei.annotate.motion import (
     CameraMotionFramesOut,
     CameraMotionOut,
@@ -61,6 +62,7 @@ from pb_tokei.rally_log import (
     SourceVideo,
     resolve_video_path,
 )
+from pb_tokei.roster import set_up_match
 from pb_tokei.state import (
     read_cookies_from_browser,
     read_recent_rally_logs,
@@ -627,6 +629,25 @@ def create_app(
             job = rally_log.footage.summary(s.id, ready_url=video.ready_url)
             out.append(MatchOut.from_summary(s, video.status, job))
         return out
+
+    @app.get("/api/roster", operation_id="getRoster")
+    def get_roster(rally_log: OpenLog) -> RosterOut:
+        """The records used to fill in the New Match form for this Rally Log."""
+        return rally_log.run(roster_catalog)
+
+    @app.post("/api/matches", operation_id="createMatch", status_code=201)
+    def create_match(body: CreateMatchIn, rally_log: OpenLog) -> CreatedMatchOut:
+        """Sets up a Match and optionally starts fetching its footage after it is saved."""
+        match = rally_log.run(lambda log: set_up_match(log, body.to_roster()))
+        if url := (body.footage_url or "").strip():
+            try:
+                validate_url(url)
+                rally_log.footage.enqueue(
+                    match.id, url=url, cookies_from_browser=read_cookies_from_browser()
+                )
+            except (FootageDownloadError, RuntimeError) as exc:
+                rally_log.footage.record_enqueue_error(match.id, url, str(exc))
+        return CreatedMatchOut(id=match.id)
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
     def get_match(match_id: UUID, rally_log: OpenLog) -> MatchDetailOut:

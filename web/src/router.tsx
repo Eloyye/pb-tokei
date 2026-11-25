@@ -8,6 +8,7 @@ import {
 import { isWorkspace } from "./lib/workspaces";
 import { MatchList } from "./routes/MatchList";
 import { MatchPage } from "./routes/MatchPage";
+import { NewMatchPage } from "./routes/NewMatchPage";
 import { AppShell } from "./shell/AppShell";
 
 const rootRoute = createRootRoute({
@@ -19,6 +20,12 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: MatchList,
+});
+
+const newMatchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/matches/new",
+  component: NewMatchPage,
 });
 
 /** A Match opens in Annotate. */
@@ -44,7 +51,7 @@ const workspaceRoute = createRoute({
 });
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute, matchRoute, workspaceRoute]),
+  routeTree: rootRoute.addChildren([indexRoute, newMatchRoute, matchRoute, workspaceRoute]),
 });
 
 declare module "@tanstack/react-router" {

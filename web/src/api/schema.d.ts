@@ -14,7 +14,11 @@ export interface paths {
     /** List Matches */
     get: operations["listMatches"];
     put?: never;
-    post?: never;
+    /**
+     * Create Match
+     * @description Sets up a Match and optionally starts fetching its footage after it is saved.
+     */
+    post: operations["createMatch"];
     delete?: never;
     options?: never;
     head?: never;
@@ -251,6 +255,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/roster": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Roster
+     * @description The records used to fill in the New Match form for this Rally Log.
+     */
+    get: operations["getRoster"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -376,6 +400,27 @@ export interface components {
      * @enum {string}
      */
     CameraView: "main" | "sideline";
+    /** CreateMatchIn */
+    CreateMatchIn: {
+      /** Footage Url */
+      footage_url?: string | null;
+      franchise_match?: components["schemas"]["FranchiseMatchIn"] | null;
+      /** Team A */
+      team_a: [components["schemas"]["RosterPlayer"], components["schemas"]["RosterPlayer"]];
+      /** Team B */
+      team_b: [components["schemas"]["RosterPlayer"], components["schemas"]["RosterPlayer"]];
+      tour: components["schemas"]["Tour"];
+      /** Tournament */
+      tournament: string;
+    };
+    /** CreatedMatchOut */
+    CreatedMatchOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+    };
     /**
      * FetchFootageIn
      * @description Parameters to start fetching or converting footage for a Match.
@@ -403,6 +448,8 @@ export interface components {
       percent: number | null;
       /** Queue Position */
       queue_position: number | null;
+      /** Requested Url */
+      requested_url?: string | null;
       /** Speed */
       speed: string | null;
       state: components["schemas"]["FootageJobState"];
@@ -425,11 +472,63 @@ export interface components {
       queue_position: number | null;
       state: components["schemas"]["FootageJobState"];
     };
+    /** Franchise */
+    Franchise: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+    };
+    /**
+     * FranchiseMatchIn
+     * @description Omit `id` for Roster File matching, or send null to create a new Franchise Match.
+     */
+    FranchiseMatchIn: {
+      /** Franchise A */
+      franchise_a: string;
+      /** Franchise B */
+      franchise_b: string;
+      /** Id */
+      id?: string | null;
+    };
+    /** FranchiseMatchOut */
+    FranchiseMatchOut: {
+      /**
+       * Franchise A Id
+       * Format: uuid
+       */
+      franchise_a_id: string;
+      /**
+       * Franchise B Id
+       * Format: uuid
+       */
+      franchise_b_id: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Matches */
+      matches: components["schemas"]["MatchTeams"][];
+      /**
+       * Tournament Id
+       * Format: uuid
+       */
+      tournament_id: string;
+    };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
       detail?: components["schemas"]["ValidationError"][];
     };
+    /**
+     * Handedness
+     * @enum {string}
+     */
+    Handedness: "left" | "right";
     /**
      * ImagePointIO
      * @description A point in normalised image coordinates; mapped clicks may fall outside 0..1.
@@ -530,6 +629,13 @@ export interface components {
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
     };
+    /** MatchTeams */
+    MatchTeams: {
+      /** Team A */
+      team_a: [string, string];
+      /** Team B */
+      team_b: [string, string];
+    };
     /**
      * OpenRallyLogIn
      * @description A Rally Log to switch to, or with `create`, a new empty one to make and switch to.
@@ -591,6 +697,39 @@ export interface components {
       /** Path */
       path: string;
     };
+    /** RosterOut */
+    RosterOut: {
+      /** Franchise Matches */
+      franchise_matches: components["schemas"]["FranchiseMatchOut"][];
+      /** Franchises */
+      franchises: components["schemas"]["Franchise"][];
+      /** Players */
+      players: components["schemas"]["RosterPlayer"][];
+      /** Tournaments */
+      tournaments: components["schemas"]["Tournament"][];
+    };
+    /** RosterPlayer */
+    RosterPlayer: {
+      handedness: components["schemas"]["Handedness"];
+      /** Name */
+      name: string;
+    };
+    /**
+     * Tour
+     * @enum {string}
+     */
+    Tour: "ppa" | "app" | "mlp";
+    /** Tournament */
+    Tournament: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      tour: components["schemas"]["Tour"];
+    };
     /**
      * UnmappedRangeOut
      * @description An inclusive stretch of frames in a Play Segment that could not be registered.
@@ -645,6 +784,39 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MatchOut"][];
+        };
+      };
+    };
+  };
+  createMatch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateMatchIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CreatedMatchOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
     };
@@ -1097,6 +1269,26 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getRoster: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RosterOut"];
         };
       };
     };

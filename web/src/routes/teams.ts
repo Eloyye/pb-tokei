@@ -1,6 +1,6 @@
 import type { Match } from "../api/client";
 
-export function teamsLabel(match: Match): string {
+export function teamsLabel(match: Pick<Match, "team_a" | "team_b">): string {
   return `${match.team_a.join(" / ")} vs ${match.team_b.join(" / ")}`;
 }
 

@@ -1,17 +1,26 @@
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError
 from uuid import UUID, uuid4
 
 import pytest
 
 from pb_tokei import main
 from pb_tokei.rally_log import (
+    Franchise,
+    FranchiseId,
     Game,
     Handedness,
     MatchId,
+    Player,
+    PlayerId,
     RallyLog,
     Tour,
+    Tournament,
+    TournamentId,
 )
 from pb_tokei.roster import RosterError, parse_roster, roster_template, set_up_match
 
@@ -245,6 +254,42 @@ def test_handedness_mismatch_fails_without_writing(tmp_path: Path) -> None:
         assert anna.handedness is Handedness.RIGHT
 
 
+def test_concurrent_match_setup_reuses_roster_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "log.duckdb"
+    with RallyLog.open(db):
+        pass
+    start = Barrier(2)
+    reads = Barrier(2)
+    list_players = RallyLog.list_players
+
+    def read_players_together(log: RallyLog) -> list[Player]:
+        players = list_players(log)
+        # Without the setup lock, both connections see the empty roster before either writes.
+        # With the lock, the first reader continues on timeout and commits before the second.
+        with suppress(BrokenBarrierError):
+            reads.wait(timeout=1.0)
+        return players
+
+    monkeypatch.setattr(RallyLog, "list_players", read_players_together)
+
+    def create() -> MatchId:
+        with RallyLog.open(db) as log:
+            start.wait(timeout=5)
+            return set_up_match(log, parse_roster(roster_toml())).id
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(create)
+        second = pool.submit(create)
+        assert first.result() != second.result()
+
+    with RallyLog.open(db) as log:
+        assert len(log.list_matches()) == 2
+        assert len(log.list_tournaments()) == 1
+        assert len(log.list_players()) == 4
+
+
 def test_existing_match_is_refused_and_its_games_kept(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -267,6 +312,93 @@ def test_existing_match_is_refused_and_its_games_kept(
 
 MLP = {"name": "MLP Dallas 2026", "tour": "mlp"}
 DALLAS_VS_MIAMI = {"franchise_a": "Dallas Flash", "franchise_b": "Miami Pickleball Club"}
+
+
+def test_roster_trims_outer_whitespace_and_reuses_records(tmp_path: Path) -> None:
+    first = parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+    padded = parse_roster(
+        roster_toml(
+            tournament={**MLP, "name": " MLP Dallas 2026 "},
+            team_a=(("Anna Bright ", "right"), (" Ben Johns", "right")),
+            franchise_match={**DALLAS_VS_MIAMI, "franchise_a": "Dallas Flash "},
+        )
+    )
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        match = set_up_match(log, first)
+        reused = set_up_match(log, padded)
+
+        assert replace(reused, id=match.id) == match
+
+
+@pytest.mark.parametrize(
+    ("tournament", "team_a", "franchise_match", "suggestion"),
+    [
+        (
+            MLP,
+            (("  anna  BRIGHT ", "right"), ("Ben Johns", "right")),
+            DALLAS_VS_MIAMI,
+            "Anna Bright",
+        ),
+        (
+            MLP,
+            (("Anna Bright", "right"), ("Ben Johns", "right")),
+            {**DALLAS_VS_MIAMI, "franchise_a": "dallas   flash"},
+            "Dallas Flash",
+        ),
+        (
+            {"name": "mlp  dallas 2026", "tour": "app"},
+            (("Anna Bright", "right"), ("Ben Johns", "right")),
+            None,
+            MLP["name"],
+        ),
+    ],
+)
+def test_normalized_names_suggest_the_existing_spelling(
+    tmp_path: Path,
+    tournament: dict[str, str],
+    team_a: tuple[tuple[str, str], ...],
+    franchise_match: dict[str, str] | None,
+    suggestion: str,
+) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        set_up_match(
+            log, parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        )
+        roster = parse_roster(
+            roster_toml(tournament=tournament, team_a=team_a, franchise_match=franchise_match)
+        )
+        with pytest.raises(RosterError, match=f"did you mean '{suggestion}'"):
+            set_up_match(log, roster)
+        assert not log.has_match(roster.match_id)
+
+
+def test_tournament_name_cannot_be_reused_on_another_tour(tmp_path: Path) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        set_up_match(log, parse_roster(roster_toml()))
+        roster = parse_roster(roster_toml(tournament={**PPA, "tour": "app"}))
+        with pytest.raises(RosterError, match="is on the PPA Tour"):
+            set_up_match(log, roster)
+
+
+def test_exact_match_wins_over_legacy_duplicates(tmp_path: Path) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        following = parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        first = set_up_match(
+            log, parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+        )
+        log.save_player(Player(PlayerId(uuid4()), "ANNA BRIGHT", Handedness.LEFT))
+        log.save_tournament(Tournament(TournamentId(uuid4()), MLP["name"], Tour.APP))
+        log.save_tournament(Tournament(TournamentId(uuid4()), MLP["name"].upper(), Tour.MLP))
+        log.save_franchise(Franchise(FranchiseId(uuid4()), "DALLAS FLASH"))
+
+        reused = set_up_match(log, following)
+
+        assert reused.tournament_id == first.tournament_id
+        assert reused.team_a_id == first.team_a_id
+        assert reused.franchise_match_id == first.franchise_match_id
+        assert len(log.list_players()) == 5
+        assert len(log.list_tournaments()) == 3
+        assert len(log.list_franchises()) == 3
 
 
 def test_mlp_matches_share_one_franchise_match(
@@ -316,9 +448,12 @@ def test_mlp_listing_names_franchises(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "(Dallas Flash vs Miami Pickleball Club)  no video" in out
 
 
-def test_second_meeting_needs_a_pinned_franchise_match(tmp_path: Path) -> None:
+def test_second_meeting_needs_a_pinned_franchise_match(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     group, final = uuid4(), uuid4()
-    with RallyLog.open(tmp_path / "log.duckdb") as log:
+    db = tmp_path / "log.duckdb"
+    with RallyLog.open(db) as log:
         for pinned in (group, final):
             set_up_match(
                 log,
@@ -346,6 +481,12 @@ def test_second_meeting_needs_a_pinned_franchise_match(tmp_path: Path) -> None:
             ),
         )
         assert pinned_final.franchise_match_id == final
+
+    unpinned = write(tmp_path, roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
+    code, _, err = run(capsys, "match", "add", str(unpinned), "--db", str(db))
+    assert code == 1
+    assert str(group) in err and str(final) in err
+    assert "Give [franchise_match] id to pick one" in err
 
 
 def test_pinned_franchise_match_must_agree(tmp_path: Path) -> None:
@@ -401,8 +542,8 @@ def test_failed_write_rolls_back_the_whole_setup(
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        (roster_toml(tournament=MLP), "needs a \\[franchise_match\\]"),
-        (roster_toml(franchise_match=DALLAS_VS_MIAMI), "only for MLP"),
+        (roster_toml(tournament=MLP), "needs a Franchise Match"),
+        (roster_toml(franchise_match=DALLAS_VS_MIAMI), "only MLP Matches"),
         (roster_toml(team_a=(("Solo", "right"),)), "exactly two"),
         (
             roster_toml(team_b=(("Anna Bright", "right"), ("Dan Kim", "right"))),
@@ -419,7 +560,7 @@ def test_failed_write_rolls_back_the_whole_setup(
         (
             roster_toml(
                 tournament=MLP,
-                franchise_match={"franchise_a": "Dallas Flash", "franchise_b": "Dallas Flash"},
+                franchise_match={"franchise_a": "Dallas Flash", "franchise_b": "Dallas Flash "},
             ),
             "can't play itself",
         ),
