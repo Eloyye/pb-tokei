@@ -29,6 +29,7 @@ import {
   skipLandmark,
   unmappedRangeAt,
 } from "./calibrations";
+import LENS_GOLDEN from "./lens-golden.json";
 
 function cal(
   view: CameraView,
@@ -410,6 +411,16 @@ describe("project", () => {
 });
 
 describe("distort", () => {
+  it("matches the server's Lens.distort on the shared golden fixture", () => {
+    // Generated from `Lens.distort` in src/pb_tokei/calibration.py and asserted by pytest too.
+    expect(LENS_GOLDEN.length).toBeGreaterThanOrEqual(20);
+    for (const { k1, aspect, point, distorted } of LENS_GOLDEN) {
+      const got = distort({ x: point[0]!, y: point[1]! }, { k1, aspect });
+      expect(got.x).toBeCloseTo(distorted[0]!, 12);
+      expect(got.y).toBeCloseTo(distorted[1]!, 12);
+    }
+  });
+
   it("inverts the server's undistortion across the frame", () => {
     const lens = { k1: 0.12, aspect: 16 / 9 };
     for (const x of [0, 0.2, 0.5, 0.8, 1]) {

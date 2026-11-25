@@ -41,6 +41,14 @@ ERROR_WARNING_FT = 0.5
 
 _MAX_CONDITION = 1e12
 
+# `Lens.distort` solves for the radial scale by fixed-point iteration: this many steps, with the
+# scale clamped to this range and its denominator floored, so far off-frame points stay finite.
+# The overlay's `distort` (web/src/lib/calibrations.ts) uses the same numbers; both are checked
+# against web/src/lib/lens-golden.json.
+DISTORT_ITERATIONS = 12
+DISTORT_SCALE_RANGE = (0.2, 5.0)
+DISTORT_MIN_DENOMINATOR = 1e-3
+
 _ALL_LANDMARK_COURT_POINTS = np.array(
     [[lm.court_point.x, lm.court_point.y] for lm in Landmark], dtype=np.float64
 )
@@ -82,8 +90,10 @@ class Lens:
             return points
         ru2 = self.radius2(points)
         s = np.ones(len(points))
-        for _ in range(12):
-            s = np.clip(1.0 / np.maximum(1.0 + self.k1 * ru2 * s * s, 1e-3), 0.2, 5.0)
+        low, high = DISTORT_SCALE_RANGE
+        for _ in range(DISTORT_ITERATIONS):
+            denominator = np.maximum(1.0 + self.k1 * ru2 * s * s, DISTORT_MIN_DENOMINATOR)
+            s = np.clip(1.0 / denominator, low, high)
         return 0.5 + (points - 0.5) * s[:, None]
 
 

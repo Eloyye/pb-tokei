@@ -728,6 +728,12 @@ export function project(matrix: number[][], point: Point, lens?: Lens | null): P
   return lens ? distort(at, lens) : at;
 }
 
+// `distort`'s fixed-point iteration, matching `Lens.distort` in src/pb_tokei/calibration.py: both
+// are checked against lens-golden.json, which pytest asserts against the server's model.
+const DISTORT_ITERATIONS = 12;
+const DISTORT_SCALE_RANGE = [0.2, 5] as const;
+const DISTORT_MIN_DENOMINATOR = 1e-3;
+
 /**
  * Where an undistorted normalised image point appears in the frame through a broadcast lens.
  *
@@ -741,9 +747,11 @@ export function distort(point: Point, lens: Lens): Point {
   const dy = point.y - 0.5;
   const a2 = lens.aspect * lens.aspect;
   const ru2 = (4 * (dx * dx * a2 + dy * dy)) / (a2 + 1);
+  const [low, high] = DISTORT_SCALE_RANGE;
   let s = 1;
-  for (let i = 0; i < 12; i++) {
-    s = Math.min(5, Math.max(0.2, 1 / Math.max(1 + lens.k1 * ru2 * s * s, 1e-3)));
+  for (let i = 0; i < DISTORT_ITERATIONS; i++) {
+    const denominator = Math.max(1 + lens.k1 * ru2 * s * s, DISTORT_MIN_DENOMINATOR);
+    s = Math.min(high, Math.max(low, 1 / denominator));
   }
   return { x: 0.5 + dx * s, y: 0.5 + dy * s };
 }
