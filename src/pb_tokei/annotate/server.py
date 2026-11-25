@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 import webbrowser
@@ -10,10 +11,10 @@ from pathlib import Path
 
 import uvicorn
 
-from pb_tokei.annotate.app import STATIC_DIR, create_app
+from pb_tokei.annotate.app import create_app
+from pb_tokei.annotate.frontend import STATIC_DIR, UPDATE_COMMAND, WEB_DIR, bundle_is_current
 
 HOST = "127.0.0.1"
-WEB_DIR = Path(__file__).resolve().parents[3] / "web"
 
 
 class FrontEndNotBuiltError(RuntimeError):
@@ -26,16 +27,20 @@ def serve(
     port: int,
     open_browser: bool,
     static_dir: Path | None = None,
+    web_dir: Path | None = None,
     on_started: Callable[[], object] | None = None,
 ) -> None:
     """Serves the app until interrupted, on `db_path` or, if None, on no Rally Log until one is
     chosen in the app. Never builds the front end itself."""
     static_dir = STATIC_DIR if static_dir is None else static_dir
+    web_dir = WEB_DIR if web_dir is None else web_dir
     if not (static_dir / "index.html").is_file():
         raise FrontEndNotBuiltError(
             f"the web front end is not built ({static_dir} has no index.html). "
-            f"Run `bun install && bun run build` in {WEB_DIR}"
+            f"Run `{UPDATE_COMMAND}`."
         )
+    if web_dir.is_dir() and not bundle_is_current(web_dir, static_dir):
+        print(f"warning: the built front end is stale. Run `{UPDATE_COMMAND}`.", file=sys.stderr)
     app = create_app(db_path, static_dir=static_dir)
     server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=port, log_level="info"))
     watcher: threading.Thread | None = None
