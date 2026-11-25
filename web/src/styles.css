@@ -263,7 +263,7 @@ h1 {
 
 .match-table .tr {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(140px, 1.2fr) 120px;
+  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(140px, 1.2fr) 136px;
   gap: 16px;
   align-items: center;
   padding: 7px 12px;
@@ -346,6 +346,21 @@ h1 {
 .pill-missing {
   background: var(--warn-soft);
   color: var(--warn);
+}
+
+.pill-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.pill-queued {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.pill-error {
+  background: var(--fail-soft);
+  color: var(--fail);
 }
 
 /* --- Workspace grid --------------------------------------------------------------------- */
@@ -712,6 +727,7 @@ fieldset.transport-group {
   place-content: center;
   gap: 10px;
   padding: 24px;
+  overflow: auto;
   color: var(--dim);
   text-align: center;
 }
@@ -725,6 +741,194 @@ fieldset.transport-group {
   color: var(--text);
   text-align: left;
   user-select: all;
+}
+
+.fetch-panel {
+  place-items: center;
+  text-align: left;
+}
+
+.fetch-card {
+  width: min(540px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.fetch-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.fetch-title {
+  color: var(--text);
+}
+
+.fetch-form {
+  display: grid;
+  gap: 10px;
+}
+
+.fetch-field {
+  display: grid;
+  gap: 4px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.fetch-cookies {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.2fr);
+  gap: 10px;
+}
+
+.fetch-select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--app);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  font: inherit;
+  outline: none;
+}
+
+.fetch-select:focus {
+  border-color: var(--accent);
+}
+
+.fetch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.button.primary:disabled,
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fetch-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.fetch-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.fetch-phase {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fetch-meta {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.fetch-bar {
+  display: block;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  appearance: none;
+  background: var(--app);
+  accent-color: var(--accent);
+}
+
+.fetch-bar::-webkit-progress-bar {
+  background: var(--app);
+  border-radius: 3px;
+}
+
+.fetch-bar::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 150ms linear;
+}
+
+.fetch-bar::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.fetch-error {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--fail-soft);
+  border: 1px solid rgb(236 76 86 / 35%);
+  border-radius: 4px;
+}
+
+.fetch-error-message {
+  margin: 0;
+  color: var(--fail);
+  overflow-wrap: anywhere;
+}
+
+.fetch-hint {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.fetch-hint a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.fetch-stderr {
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.fetch-stderr summary {
+  cursor: pointer;
+}
+
+.fetch-stderr pre {
+  margin-top: 6px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.fetch-terminal {
+  display: grid;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.fetch-terminal-label {
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* --- Court -------------------------------------------------------------------------------- */

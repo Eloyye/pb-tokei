@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, isRetryable, listMatches } from "../api/client";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
-import { franchisesLabel, VIDEO_STATUS_LABELS } from "./teams";
+import { franchisesLabel, videoPill } from "./teams";
+
+const POLL_MS = 1000;
 
 export function MatchList() {
   const openPicker = useOpenRallyLogPicker();
@@ -10,6 +12,16 @@ export function MatchList() {
     queryKey: ["matches"],
     queryFn: listMatches,
     retry: (failures, error) => failures < 3 && isRetryable(error),
+    refetchInterval: (query) =>
+      query.state.data?.some(
+        (m) =>
+          m.footage_job &&
+          (m.footage_job.state === "queued" ||
+            m.footage_job.state === "downloading" ||
+            m.footage_job.state === "converting"),
+      )
+        ? POLL_MS
+        : false,
   });
 
   if (matches.isPending) return <p className="notice">Loading Matches…</p>;
@@ -49,29 +61,30 @@ export function MatchList() {
             <span>Franchise Match</span>
             <span>Video</span>
           </div>
-          {matches.data.map((match) => (
-            <Link
-              key={match.id}
-              to="/matches/$matchId/$workspace"
-              params={{ matchId: match.id, workspace: "annotate" }}
-              className="tr"
-            >
-              <span className="dimmed">{match.tournament}</span>
-              <span className="teams-cell">
-                <span className="swatch team-a" />
-                {match.team_a.join(" / ")}
-                <span className="vs">vs</span>
-                <span className="swatch team-b" />
-                {match.team_b.join(" / ")}
-              </span>
-              <span className="dimmed">{franchisesLabel(match) ?? "—"}</span>
-              <span>
-                <span className={`pill pill-${match.video_status}`}>
-                  {VIDEO_STATUS_LABELS[match.video_status]}
+          {matches.data.map((match) => {
+            const pill = videoPill(match);
+            return (
+              <Link
+                key={match.id}
+                to="/matches/$matchId/$workspace"
+                params={{ matchId: match.id, workspace: "annotate" }}
+                className="tr"
+              >
+                <span className="dimmed">{match.tournament}</span>
+                <span className="teams-cell">
+                  <span className="swatch team-a" />
+                  {match.team_a.join(" / ")}
+                  <span className="vs">vs</span>
+                  <span className="swatch team-b" />
+                  {match.team_b.join(" / ")}
                 </span>
-              </span>
-            </Link>
-          ))}
+                <span className="dimmed">{franchisesLabel(match) ?? "—"}</span>
+                <span>
+                  <span className={pill.className}>{pill.label}</span>
+                </span>
+              </Link>
+            );
+          })}
         </div>
       )}
     </main>

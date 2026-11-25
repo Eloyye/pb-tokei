@@ -127,7 +127,8 @@ def test_convert_footage_builds_expected_ffmpeg_command_for_non_aac_audio(tmp_pa
     assert len(fake.encode_calls) == 1
     cmd = fake.encode_calls[0]
     assert cmd[0] == "ffmpeg"
-    assert "-stats" in cmd
+    assert "-nostats" in cmd
+    assert cmd[cmd.index("-progress") + 1] == "pipe:1"
     assert cmd[cmd.index("-i") + 1] == str(source)
     assert cmd[cmd.index("-r") + 1] == str(TARGET_FPS)
     assert cmd[cmd.index("-fps_mode") + 1] == "cfr"
@@ -386,21 +387,31 @@ def test_convert_footage_raises_clear_error_when_ffmpeg_or_ffprobe_missing(
 ) -> None:
     source = tmp_path / "match1.mkv"
     source.write_bytes(b"original")
+    real_popen = subprocess.Popen
 
-    def missing_ffprobe(args: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def missing_ffprobe(args: Sequence[str], **kwargs: object) -> subprocess.Popen[bytes]:
         raise FileNotFoundError(f"No such file or directory: {args[0]!r}")
 
-    monkeypatch.setattr(subprocess, "run", missing_ffprobe)
+    monkeypatch.setattr(subprocess, "Popen", missing_ffprobe)
     with pytest.raises(FootageConversionError, match="install ffmpeg"):
         convert_footage(source)
 
-    def missing_ffmpeg(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
-        raise FileNotFoundError("No such file or directory: 'ffmpeg'")
+    def missing_ffmpeg(args: Sequence[str], **_kwargs: object) -> subprocess.Popen[bytes]:
+        if args[0] == "ffmpeg":
+            raise FileNotFoundError("No such file or directory: 'ffmpeg'")
+        import sys
 
-    def ok_ffprobe(args: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(list(args), 0, stdout="aac\n", stderr="")
+        return real_popen(
+            [
+                sys.executable,
+                "-c",
+                'print(\'{"streams": [{"codec_type": "audio", "codec_name": "aac"}]}\')',
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-    monkeypatch.setattr(subprocess, "run", ok_ffprobe)
     monkeypatch.setattr(subprocess, "Popen", missing_ffmpeg)
     with pytest.raises(FootageConversionError, match="ffmpeg is not installed"):
         convert_footage(source)
@@ -652,9 +663,10 @@ def test_real_ffmpeg_conversion_resets_nonzero_start_times_to_zero(
         check=True,
     )
 
-    result = convert_footage(source)
-    captured = capsys.readouterr()
-    assert "frame=" in captured.err
+    progress_updates: list[float | None] = []
+    result = convert_footage(source, on_progress=lambda p: progress_updates.append(p.percent))
+    assert any(p is not None and p > 0 for p in progress_updates)
+    assert progress_updates[-1] == 100.0
 
     # Check both default ffprobe (honoring edit lists) and -ignore_editlist 1 so frame 0 is
     # guaranteed to have literal pts=0 in the MP4 without depending on an edit list.

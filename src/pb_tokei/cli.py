@@ -12,11 +12,13 @@ from uuid import UUID
 
 import duckdb
 
-from pb_tokei.convert import FootageConversionError, convert_footage
+from pb_tokei.convert import ConvertProgress, FootageConversionError, convert_footage
 from pb_tokei.footage import (
     DEFAULT_FOOTAGE_DIR,
     CommandRunner,
+    DownloadProgress,
     FootageDownloadError,
+    StreamRunner,
     download_footage,
 )
 from pb_tokei.rally_log import (
@@ -162,7 +164,7 @@ def _resolve_cli_db(explicit: Path | None, *, allow_create: bool = False) -> Pat
 def main(
     argv: Sequence[str] | None = None,
     *,
-    run: CommandRunner | None = None,
+    run: CommandRunner | StreamRunner | None = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -179,11 +181,53 @@ def main(
     parser.error(f"Unknown command: {args.command}")
 
 
+class _CliProgressLine:
+    """Prints a single updating progress line to stderr, emitting nothing if no updates arrive."""
+
+    def __init__(self) -> None:
+        self._width = 0
+        self._active = False
+
+    def update(self, text: str) -> None:
+        pad = max(0, self._width - len(text))
+        sys.stderr.write(f"\r{text}{' ' * pad}")
+        sys.stderr.flush()
+        self._width = max(self._width, len(text))
+        self._active = True
+
+    def finish(self) -> None:
+        if self._active:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+            self._width = 0
+            self._active = False
+
+
+def _format_download_progress(progress: DownloadProgress) -> str:
+    pct = f"{progress.percent:.1f}%" if progress.percent is not None else "..."
+    details = [
+        part
+        for part in (
+            progress.speed,
+            f"ETA {progress.eta}" if progress.eta is not None else None,
+        )
+        if part is not None
+    ]
+    if details:
+        return f"Downloading {pct} ({', '.join(details)})"
+    return f"Downloading {pct}"
+
+
+def _format_convert_progress(progress: ConvertProgress) -> str:
+    pct = f"{progress.percent:.1f}%" if progress.percent is not None else "..."
+    return f"Converting {pct}"
+
+
 def _run_download(
     args: argparse.Namespace,
     *,
     parser: argparse.ArgumentParser,
-    run: CommandRunner | None,
+    run: CommandRunner | StreamRunner | None,
 ) -> int:
     if args.db is not None and args.match_id is None:
         parser.error("--db requires --match")
@@ -208,6 +252,7 @@ def _run_download(
     else:
         footage_dir = DEFAULT_FOOTAGE_DIR if args.footage_dir is None else args.footage_dir
 
+    progress_line = _CliProgressLine()
     try:
         result = download_footage(
             args.url,
@@ -215,8 +260,10 @@ def _run_download(
             cookies=args.cookies,
             cookies_from_browser=args.cookies_from_browser,
             run=run,
+            on_progress=lambda p: progress_line.update(_format_download_progress(p)),
         )
     except FootageDownloadError as exc:
+        progress_line.finish()
         print(f"error: {exc}", file=sys.stderr)
         if (
             args.cookies is None
@@ -230,6 +277,8 @@ def _run_download(
                 file=sys.stderr,
             )
         return 1
+    finally:
+        progress_line.finish()
 
     if match_id is not None and db_path is not None:
         recorded_video = replace(
@@ -244,8 +293,13 @@ def _run_download(
             return 1
 
     try:
-        converted = convert_footage(result.source_video.path, run=run)
+        converted = convert_footage(
+            result.source_video.path,
+            run=run,
+            on_progress=lambda p: progress_line.update(_format_convert_progress(p)),
+        )
     except FootageConversionError as exc:
+        progress_line.finish()
         retry_path = shlex.quote(str(result.source_video.path))
         print(f"error: {exc}", file=sys.stderr)
         print(
@@ -254,6 +308,8 @@ def _run_download(
             file=sys.stderr,
         )
         return 1
+    finally:
+        progress_line.finish()
 
     print(converted.output_path)
     return 0
@@ -267,13 +323,22 @@ def _needs_cookies_hint(message: str) -> bool:
 def _run_convert(
     args: argparse.Namespace,
     *,
-    run: CommandRunner | None,
+    run: CommandRunner | StreamRunner | None,
 ) -> int:
+    progress_line = _CliProgressLine()
     try:
-        converted = convert_footage(args.path, force=args.force, run=run)
+        converted = convert_footage(
+            args.path,
+            force=args.force,
+            run=run,
+            on_progress=lambda p: progress_line.update(_format_convert_progress(p)),
+        )
     except FootageConversionError as exc:
+        progress_line.finish()
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        progress_line.finish()
 
     print(converted.output_path)
     return 0

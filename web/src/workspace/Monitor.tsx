@@ -6,8 +6,8 @@ import { SPEEDS } from "../lib/keymap";
 import { VIEW_LABELS } from "../lib/segments";
 import type { PlayerControls, PlayerState } from "../player/usePlayer";
 import { Icon } from "./icons";
+import { FetchPanel } from "./FetchPanel";
 import { Panel, PanelTitle } from "./Panel";
-import { VIDEO_STATUS_LABELS } from "../routes/teams";
 
 function cameraTag(view: CameraView | "none"): string {
   return view === "none" ? "NOT A PLAY SEGMENT" : VIEW_LABELS[view].toUpperCase();
@@ -99,15 +99,7 @@ export function Monitor({
             )}
           </>
         ) : (
-          <div className="fix">
-            <p>
-              <span className={`pill pill-${match.video_status}`}>
-                {VIDEO_STATUS_LABELS[match.video_status]}
-              </span>{" "}
-              This Match has no playable 60 fps video yet. Run this, then come back:
-            </p>
-            {match.fix_command && <pre>{match.fix_command}</pre>}
-          </div>
+          <FetchPanel match={match} />
         )}
       </div>
       <Transport state={state} controls={controls} disabled={!src} />

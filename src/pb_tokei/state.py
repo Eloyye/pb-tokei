@@ -1,4 +1,5 @@
-"""Per-user state (the last-opened and recent Rally Logs) and Rally Log path resolution."""
+"""Per-user state (the last-opened and recent Rally Logs, and app settings) and Rally Log path
+resolution."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import platformdirs
@@ -18,6 +20,8 @@ STATE_FILENAME = "state.json"
 APP_NAME = "pb-tokei"
 RECENT_LIMIT = 10
 """How many Rally Logs the recent list keeps, most recent first."""
+
+_state_lock = threading.Lock()
 
 
 class RallyLogNotFoundError(FileNotFoundError):
@@ -45,12 +49,48 @@ def _read_state_dict(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
+def _write_state_dict(target: Path, payload: dict[str, object]) -> bool:
+    encoded = json.dumps(payload, indent=2) + "\n"
+    tmp_path: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{STATE_FILENAME}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(encoded)
+            tmp.flush()
+        os.replace(tmp_path, target)
+    except OSError as exc:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
+        print(f"warning: could not save Rally Log state to {target}: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def _absolute_path(value: object) -> Path | None:
     """A remembered path, or None unless it is a usable absolute path string."""
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         return None
     candidate = Path(value)
     return candidate if candidate.is_absolute() else None
+
+
+def _cookies_spec(value: object) -> str | None:
+    """A remembered `--cookies-from-browser` spec, or None unless it is a usable string."""
+    if not isinstance(value, str):
+        return None
+    spec = value.strip(" ")
+    if not spec or spec.startswith("-") or any(ord(ch) < 32 or ord(ch) == 127 for ch in spec):
+        return None
+    return spec
 
 
 def read_last_rally_log() -> Path | None:
@@ -83,34 +123,32 @@ def write_last_rally_log(db_path: Path) -> bool:
     """
     target = state_file()
     resolved = db_path.resolve()
-    recent = [resolved, *(p for p in read_recent_rally_logs() if p != resolved)]
-    payload = _read_state_dict(target)
-    payload["last_rally_log"] = str(resolved)
-    payload["recent_rally_logs"] = [str(p) for p in recent[:RECENT_LIMIT]]
-    encoded = json.dumps(payload, indent=2) + "\n"
+    with _state_lock:
+        recent = [resolved, *(p for p in read_recent_rally_logs() if p != resolved)]
+        payload = _read_state_dict(target)
+        payload["last_rally_log"] = str(resolved)
+        payload["recent_rally_logs"] = [str(p) for p in recent[:RECENT_LIMIT]]
+        return _write_state_dict(target, payload)
 
-    tmp_path: Path | None = None
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=target.parent,
-            prefix=f".{STATE_FILENAME}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
-            tmp.write(encoded)
-            tmp.flush()
-        os.replace(tmp_path, target)
-    except OSError as exc:
-        if tmp_path is not None:
-            with contextlib.suppress(OSError):
-                tmp_path.unlink(missing_ok=True)
-        print(f"warning: could not save Rally Log state to {target}: {exc}", file=sys.stderr)
-        return False
-    return True
+
+def read_cookies_from_browser() -> str | None:
+    """Returns the remembered browser cookie spec for the annotation app, or None."""
+    return _cookies_spec(_read_state_dict(state_file()).get("cookies_from_browser"))
+
+
+def write_cookies_from_browser(spec: str | None) -> bool:
+    """Atomically records the annotation app's `cookies_from_browser` choice in `state.json`.
+
+    Shared across every Rally Log; never read by the CLI.
+    """
+    normalized = None if spec is None else _cookies_spec(spec)
+    if spec is not None and normalized is None:
+        raise ValueError(f"Invalid cookies_from_browser value: {spec!r}")
+    target = state_file()
+    with _state_lock:
+        payload = _read_state_dict(target)
+        payload["cookies_from_browser"] = normalized
+        return _write_state_dict(target, payload)
 
 
 def resolve_rally_log(

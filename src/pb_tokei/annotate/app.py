@@ -11,7 +11,8 @@ from __future__ import annotations
 import math
 import shlex
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -19,11 +20,18 @@ from urllib.parse import unquote
 from uuid import UUID
 
 import duckdb
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from pb_tokei.annotate.footage_jobs import (
+    FetchFootageIn,
+    FootageJobConflictError,
+    FootageJobOut,
+    FootageJobService,
+    FootageJobSummaryOut,
+)
 from pb_tokei.annotate.motion import (
     CameraMotionFramesOut,
     CameraMotionOut,
@@ -32,6 +40,13 @@ from pb_tokei.annotate.motion import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.footage import (
+    CommandRunner,
+    FootageDownloadError,
+    StreamRunner,
+    validate_cookies_from_browser,
+    validate_url,
+)
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
@@ -45,17 +60,38 @@ from pb_tokei.rally_log import (
     SourceVideo,
     resolve_video_path,
 )
-from pb_tokei.state import read_recent_rally_logs, write_last_rally_log
+from pb_tokei.state import (
+    read_cookies_from_browser,
+    read_recent_rally_logs,
+    write_cookies_from_browser,
+    write_last_rally_log,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 # The server binds 127.0.0.1 only. Checking the Host header as well stops DNS rebinding: a page
 # whose domain re-resolves to 127.0.0.1 would otherwise be same-origin with the app.
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+MUTATING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
 
 # Names the Rally Log a request means; see `_open_rally_log`.
 RALLY_LOG_HEADER = "X-Rally-Log"
 RALLY_LOG_SUFFIX = ".duckdb"
+
+
+def _allowed_origins_for_host(host_header: str) -> frozenset[str]:
+    """Origins allowed to make mutating requests to `host_header` (`127.0.0.1` or `localhost` on
+    the same port)."""
+    host, sep, port = host_header.strip().lower().partition(":")
+    if host not in ALLOWED_HOSTS:
+        return frozenset()
+    if sep:
+        if not port.isdigit():
+            return frozenset()
+        suffix = "" if port == "80" else f":{port}"
+    else:
+        suffix = ""
+    return frozenset(f"http://{allowed}{suffix}" for allowed in ALLOWED_HOSTS)
 
 
 class VideoStatus(StrEnum):
@@ -101,9 +137,15 @@ class MatchOut(BaseModel):
     franchise_a: str | None
     franchise_b: str | None
     video_status: VideoStatus
+    footage_job: FootageJobSummaryOut | None = None
 
     @classmethod
-    def from_summary(cls, summary: MatchSummary, video_status: VideoStatus) -> MatchOut:
+    def from_summary(
+        cls,
+        summary: MatchSummary,
+        video_status: VideoStatus,
+        footage_job: FootageJobSummaryOut | None = None,
+    ) -> MatchOut:
         return MatchOut(
             id=summary.id,
             tournament=summary.tournament,
@@ -112,17 +154,32 @@ class MatchOut(BaseModel):
             franchise_a=summary.franchise_a,
             franchise_b=summary.franchise_b,
             video_status=video_status,
+            footage_job=footage_job,
         )
 
 
 class MatchDetailOut(MatchOut):
-    """A Match, plus the CLI command that makes its video playable when it isn't yet."""
+    """A Match, plus its recorded video metadata and the CLI command that makes it playable."""
 
     fix_command: str | None
+    source_url: str | None
+    original_present: bool
 
     @classmethod
-    def from_match(cls, match: MatchOut, fix_command: str | None) -> MatchDetailOut:
-        return MatchDetailOut(**match.model_dump(), fix_command=fix_command)
+    def from_match(
+        cls,
+        match: MatchOut,
+        fix_command: str | None,
+        *,
+        source_url: str | None,
+        original_present: bool,
+    ) -> MatchDetailOut:
+        return MatchDetailOut(
+            **match.model_dump(),
+            fix_command=fix_command,
+            source_url=source_url,
+            original_present=original_present,
+        )
 
 
 class PlaySegmentIO(BaseModel):
@@ -276,25 +333,50 @@ class _VideoState:
             VideoStatus.READY if self.converted_path.is_file() else VideoStatus.NOT_CONVERTED
         )
 
+    @property
+    def original_present(self) -> bool:
+        return (
+            self.source_video is not None
+            and self.source_path is not None
+            and self.source_path.is_file()
+        )
+
+    @property
+    def ready_url(self) -> str | None:
+        if self.status is VideoStatus.READY and self.source_video is not None:
+            return self.source_video.url
+        return None
+
     def fix_command(self, match_id: MatchId, db_file: Path) -> str | None:
         if self.status is VideoStatus.READY:
             return None
-        if self.source_video is None or self.source_path is None or not self.source_path.is_file():
+        if not self.original_present or self.source_path is None:
             url = "<url>" if self.source_video is None else shlex.quote(self.source_video.url)
             return f"pb-tokei download {url} --match {match_id} --db {shlex.quote(str(db_file))}"
         return f"pb-tokei convert {shlex.quote(str(self.source_path))}"
 
 
 class _OpenRallyLog:
-    """The Rally Log the app is serving, with the Camera Motion service for its Matches.
+    """The Rally Log the app is serving, with the Camera Motion and footage services for its
+    Matches.
 
     A request takes this once and uses it throughout, so switching Rally Log mid-request never
     splits one request across two files.
     """
 
-    def __init__(self, db_file: Path) -> None:
+    def __init__(
+        self,
+        db_file: Path,
+        *,
+        footage_runner: CommandRunner | StreamRunner | None = None,
+    ) -> None:
         self.db_file = db_file
         self.motion = CameraMotionService(default_cache_dir(db_file))
+        self.footage = FootageJobService(db_file, runner=footage_runner)
+
+    def close(self) -> None:
+        self.motion.close()
+        self.footage.close()
 
     def video(self, source_video: SourceVideo | None) -> _VideoState:
         return _VideoState(source_video, self.db_file)
@@ -359,23 +441,37 @@ class _RallyLogs:
     """Which Rally Log the app serves (one at a time, or none yet); switching swaps it for every
     later request."""
 
-    def __init__(self, db_file: Path | None) -> None:
+    def __init__(
+        self,
+        db_file: Path | None,
+        *,
+        footage_runner: CommandRunner | StreamRunner | None = None,
+    ) -> None:
         self._lock = threading.Lock()
-        self._current = None if db_file is None else _OpenRallyLog(db_file)
+        self._footage_runner = footage_runner
+        self._current = (
+            None if db_file is None else _OpenRallyLog(db_file, footage_runner=footage_runner)
+        )
 
     @property
     def current(self) -> _OpenRallyLog | None:
         return self._current
 
     def switch(self, db_file: Path) -> None:
-        """Serves `db_file` from now on, cancelling the old Rally Log's Camera Motion jobs."""
+        """Serves `db_file` from now on, cancelling the old Rally Log's background jobs."""
         with self._lock:
             old = self._current
             if old is not None and old.db_file == db_file:
                 return
-            self._current = _OpenRallyLog(db_file)
+            self._current = _OpenRallyLog(db_file, footage_runner=self._footage_runner)
         if old is not None:
-            old.motion.close()
+            old.close()
+
+    def close(self) -> None:
+        with self._lock:
+            old = self._current
+        if old is not None:
+            old.close()
 
 
 def _open_rally_log(request: Request) -> _OpenRallyLog:
@@ -421,14 +517,48 @@ def _check_is_rally_log(path: Path) -> None:
         raise HTTPException(status_code=422, detail=f"Not a Rally Log: {path}")
 
 
-def create_app(db_path: Path | None, *, static_dir: Path = STATIC_DIR) -> FastAPI:
+def create_app(
+    db_path: Path | None,
+    *,
+    static_dir: Path = STATIC_DIR,
+    footage_runner: CommandRunner | StreamRunner | None = None,
+) -> FastAPI:
     """Builds the app, serving the Rally Log at `db_path`, or none until one is chosen in the app.
 
     Relative `SourceVideo.path` values are resolved against the Rally Log's directory (ADR 0007).
     """
-    rally_logs = _RallyLogs(None if db_path is None else db_path.resolve())
-    app = FastAPI(title="pb-tokei annotate")
+    rally_logs = _RallyLogs(
+        None if db_path is None else db_path.resolve(),
+        footage_runner=footage_runner,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+        try:
+            yield
+        finally:
+            rally_logs.close()
+
+    app = FastAPI(title="pb-tokei annotate", lifespan=lifespan)
     app.state.rally_logs = rally_logs
+
+    # Reject cross-site mutating requests (POST, PUT, DELETE, PATCH) from other pages open in the
+    # browser. Added before TrustedHostMiddleware so Host is checked outermost first.
+    @app.middleware("http")
+    async def check_same_origin(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if request.method in MUTATING_METHODS:
+            origin = request.headers.get("origin")
+            host = request.headers.get("host", "")
+            if origin not in _allowed_origins_for_host(host):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Cross-site request blocked: invalid Origin"},
+                )
+        return await call_next(request)
+
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
 
     @app.exception_handler(duckdb.Error)
@@ -492,15 +622,102 @@ def create_app(db_path: Path | None, *, static_dir: Path = STATIC_DIR) -> FastAP
     @app.get("/api/matches", operation_id="listMatches")
     def list_matches(rally_log: OpenLog) -> list[MatchOut]:
         summaries = rally_log.run(lambda log: log.list_matches())
-        return [MatchOut.from_summary(s, rally_log.video(s.source_video).status) for s in summaries]
+        out: list[MatchOut] = []
+        for s in summaries:
+            video = rally_log.video(s.source_video)
+            job = rally_log.footage.summary(s.id, ready_url=video.ready_url)
+            out.append(MatchOut.from_summary(s, video.status, job))
+        return out
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
     def get_match(match_id: UUID, rally_log: OpenLog) -> MatchDetailOut:
         summary, video = rally_log.lookup(match_id)
+        job = rally_log.footage.summary(summary.id, ready_url=video.ready_url)
         return MatchDetailOut.from_match(
-            MatchOut.from_summary(summary, video.status),
+            MatchOut.from_summary(summary, video.status, job),
             video.fix_command(summary.id, rally_log.db_file),
+            source_url=None if summary.source_video is None else summary.source_video.url,
+            original_present=video.original_present,
         )
+
+    @app.get("/api/matches/{match_id}/footage", operation_id="getMatchFootage")
+    def get_match_footage(match_id: UUID, rally_log: OpenLog) -> FootageJobOut:
+        summary, video = rally_log.lookup(match_id)
+        return rally_log.footage.status(summary.id, ready_url=video.ready_url)
+
+    @app.post("/api/matches/{match_id}/footage/fetch", operation_id="fetchMatchFootage")
+    def fetch_match_footage(
+        match_id: UUID,
+        body: FetchFootageIn,
+        rally_log: OpenLog,
+    ) -> FootageJobOut:
+        """Queues a background download and/or 60 fps conversion for a Match (ADR 0009)."""
+        summary, video = rally_log.lookup(match_id)
+
+        if "cookies_from_browser" in body.model_fields_set:
+            raw_cookies = body.cookies_from_browser
+            if raw_cookies is None or not raw_cookies.strip():
+                cookies_spec: str | None = None
+            else:
+                try:
+                    cookies_spec = validate_cookies_from_browser(raw_cookies)
+                except FootageDownloadError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from None
+            write_cookies_from_browser(cookies_spec)
+        else:
+            cookies_spec = read_cookies_from_browser()
+
+        raw_url = None if body.url is None else body.url.strip()
+        provided_url = raw_url if raw_url else None
+        if provided_url is not None:
+            try:
+                validate_url(provided_url)
+            except FootageDownloadError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
+
+        recorded_url = None if summary.source_video is None else summary.source_video.url
+        same_as_recorded = provided_url is None or (
+            recorded_url is not None and provided_url == recorded_url
+        )
+
+        # Already playable for the same URL: nothing to do.
+        if video.status is VideoStatus.READY and same_as_recorded:
+            return rally_log.footage.status(summary.id, ready_url=video.ready_url)
+
+        convert_source: Path | None = None
+        target_url: str | None = None
+        if same_as_recorded and video.original_present and video.source_path is not None:
+            # Original is already on disk: skip straight to converting.
+            convert_source = video.source_path
+        elif provided_url is not None:
+            target_url = provided_url
+        elif recorded_url is not None:
+            try:
+                validate_url(recorded_url)
+            except FootageDownloadError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
+            target_url = recorded_url
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Provide a video URL: this Match has no recorded Source Video yet",
+            )
+
+        try:
+            return rally_log.footage.enqueue(
+                summary.id,
+                url=target_url,
+                convert_source=convert_source,
+                cookies_from_browser=cookies_spec,
+            )
+        except FootageJobConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    @app.post("/api/matches/{match_id}/footage/cancel", operation_id="cancelMatchFootage")
+    def cancel_match_footage(match_id: UUID, rally_log: OpenLog) -> FootageJobOut:
+        """Cancels an active footage job or removes a queued one."""
+        summary, _video = rally_log.lookup(match_id)
+        return rally_log.footage.cancel(summary.id)
 
     @app.get(
         "/api/matches/{match_id}/video",

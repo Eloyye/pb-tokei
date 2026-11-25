@@ -7,15 +7,24 @@ The original file is never modified.
 from __future__ import annotations
 
 import contextlib
+import json
+import math
 import os
 import subprocess
-import sys
 import tempfile
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pb_tokei.footage import VIDEO_EXTENSIONS, CommandRunner
+from pb_tokei.footage import VIDEO_EXTENSIONS
+from pb_tokei.process import (
+    CommandRunner,
+    LineCallback,
+    StreamRunner,
+    as_stream_runner,
+    stream_subprocess,
+)
 
 TARGET_FPS = 60
 KEYFRAME_INTERVAL = 30
@@ -24,11 +33,22 @@ VIDEO_PRESET = "fast"
 VIDEO_PIX_FMT = "yuv420p"
 AUDIO_BITRATE = "192k"
 CONVERTED_SUFFIX = ".60fps.mp4"
-_STDERR_TAIL_BYTES = 8192
+_STDERR_TAIL_CHARS = 4000
 
 
 class FootageConversionError(RuntimeError):
     """Raised when probing or converting footage to constant 60 fps fails."""
+
+    def __init__(self, message: str, *, stderr_tail: str | None = None) -> None:
+        super().__init__(message)
+        self.stderr_tail = stderr_tail
+
+
+@dataclass(frozen=True)
+class ConvertProgress:
+    """Parsed ffmpeg conversion progress derived from `-progress pipe:1` and probed duration."""
+
+    percent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +56,12 @@ class ConvertResult:
     source_path: Path
     output_path: Path
     already_converted: bool
+
+
+@dataclass(frozen=True)
+class _MediaProbe:
+    audio_codec: str | None
+    duration_s: float | None
 
 
 def converted_path_for(source_path: Path) -> Path:
@@ -51,7 +77,9 @@ def convert_footage(
     source_path: Path,
     *,
     force: bool = False,
-    run: CommandRunner | None = None,
+    run: CommandRunner | StreamRunner | None = None,
+    on_progress: Callable[[ConvertProgress], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> ConvertResult:
     """Converts `source_path` to a constant 60 fps MP4 beside the original.
 
@@ -93,10 +121,10 @@ def convert_footage(
             already_converted=True,
         )
 
-    probe_runner = _default_probe_run if run is None else run
-    encode_runner = _default_encode_run if run is None else run
+    probe_runner = as_stream_runner(run, _default_probe_run)
+    encode_runner = as_stream_runner(run, _default_encode_run)
 
-    audio_codec = _probe_audio_codec(source_path, probe_runner)
+    probe = _probe_media(source_path, probe_runner, cancel=cancel)
 
     try:
         fd, raw_temp = tempfile.mkstemp(
@@ -112,11 +140,18 @@ def convert_footage(
     temp_path = Path(raw_temp)
 
     try:
-        args = _build_ffmpeg_args(source_path, temp_path, audio_codec=audio_codec)
-        result = encode_runner(args)
+        args = _build_ffmpeg_args(source_path, temp_path, audio_codec=probe.audio_codec)
+        parser = _FfmpegProgressParser(probe.duration_s, on_progress)
+        result = encode_runner(
+            args,
+            on_stdout_line=parser.feed if on_progress is not None else None,
+            cancel=cancel,
+        )
         if result.returncode != 0:
             detail = _extract_ffmpeg_error(result.stderr, result.returncode)
-            raise FootageConversionError(f"ffmpeg failed: {detail}")
+            stderr_raw = (result.stderr or "").strip()
+            stderr_tail = stderr_raw[-_STDERR_TAIL_CHARS:] if stderr_raw else None
+            raise FootageConversionError(f"ffmpeg failed: {detail}", stderr_tail=stderr_tail)
         try:
             if not temp_path.is_file() or temp_path.stat().st_size == 0:
                 raise FootageConversionError(
@@ -137,6 +172,77 @@ def convert_footage(
         output_path=output_path,
         already_converted=False,
     )
+
+
+class _FfmpegProgressParser:
+    """Parses ffmpeg `-progress pipe:1` key=value blocks into percentage updates."""
+
+    def __init__(
+        self,
+        duration_s: float | None,
+        on_progress: Callable[[ConvertProgress], None] | None,
+    ) -> None:
+        self._duration_s = duration_s
+        self._on_progress = on_progress
+        self._out_time_us: int | None = None
+
+    def feed(self, line: str) -> None:
+        if self._on_progress is None:
+            return
+        key, sep, value = line.strip().partition("=")
+        if not sep:
+            return
+        value = value.strip()
+        if key == "out_time_us":
+            parsed = _parse_non_negative_int(value)
+            if parsed is not None:
+                self._out_time_us = parsed
+        elif key == "out_time_ms" and self._out_time_us is None:
+            # ffmpeg historically reports microseconds in out_time_ms too.
+            parsed = _parse_non_negative_int(value)
+            if parsed is not None:
+                self._out_time_us = parsed
+        elif key == "out_time" and self._out_time_us is None:
+            parsed = _parse_hms_us(value)
+            if parsed is not None:
+                self._out_time_us = parsed
+        elif key == "progress":
+            if value == "end":
+                self._on_progress(ConvertProgress(percent=100.0))
+            elif value == "continue":
+                percent: float | None = None
+                if (
+                    self._duration_s is not None
+                    and self._duration_s > 0
+                    and self._out_time_us is not None
+                ):
+                    raw_pct = (self._out_time_us / 1_000_000.0 / self._duration_s) * 100.0
+                    percent = round(min(100.0, max(0.0, raw_pct)), 1)
+                self._on_progress(ConvertProgress(percent=percent))
+            self._out_time_us = None
+
+
+def _parse_non_negative_int(raw: str) -> int | None:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _parse_hms_us(raw: str) -> int | None:
+    parts = raw.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = float(parts[2])
+    except ValueError:
+        return None
+    if hours < 0 or minutes < 0 or seconds < 0 or not math.isfinite(seconds):
+        return None
+    return int(round((hours * 3600 + minutes * 60 + seconds) * 1_000_000))
 
 
 def _ensure_unique_source_stem(source_path: Path, output_path: Path) -> None:
@@ -182,7 +288,9 @@ def _build_ffmpeg_args(
         "-hide_banner",
         "-loglevel",
         "error",
-        "-stats",
+        "-nostats",
+        "-progress",
+        "pipe:1",
         "-i",
         str(source_path),
         "-map",
@@ -239,73 +347,121 @@ def _extract_ffmpeg_error(stderr: str | None, returncode: int) -> str:
     return f"exit status {returncode}"
 
 
-def _probe_audio_codec(source_path: Path, runner: CommandRunner) -> str | None:
+def _probe_media(
+    source_path: Path,
+    runner: StreamRunner,
+    *,
+    cancel: threading.Event | None = None,
+) -> _MediaProbe:
     args = [
         "ffprobe",
         "-v",
         "error",
-        "-select_streams",
-        "a:0",
         "-show_entries",
-        "stream=codec_name",
+        "format=duration:stream=codec_type,codec_name,duration",
         "-of",
-        "default=noprint_wrappers=1:nokey=1",
+        "json",
         str(source_path),
     ]
-    result = runner(args)
+    result = runner(args, cancel=cancel)
     if result.returncode != 0:
-        detail = (result.stderr or "").strip() or f"exit status {result.returncode}"
-        raise FootageConversionError(f"ffprobe failed: {detail}")
-    lines = [line.strip().lower() for line in result.stdout.splitlines() if line.strip()]
-    return lines[0] if lines else None
+        stderr_raw = (result.stderr or "").strip()
+        detail = stderr_raw or f"exit status {result.returncode}"
+        stderr_tail = stderr_raw[-_STDERR_TAIL_CHARS:] if stderr_raw else None
+        raise FootageConversionError(f"ffprobe failed: {detail}", stderr_tail=stderr_tail)
+    return _parse_probe_output(result.stdout)
 
 
-def _default_probe_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _parse_probe_output(stdout: str) -> _MediaProbe:
+    text = stdout.strip()
+    if not text:
+        return _MediaProbe(audio_codec=None, duration_s=None)
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            audio_codec: str | None = None
+            stream_duration: float | None = None
+            streams = payload.get("streams")
+            if isinstance(streams, list):
+                for stream in streams:
+                    if not isinstance(stream, dict):
+                        continue
+                    codec_type = stream.get("codec_type")
+                    codec_name = stream.get("codec_name")
+                    if (
+                        codec_type == "audio"
+                        and audio_codec is None
+                        and isinstance(codec_name, str)
+                        and codec_name.strip()
+                    ):
+                        audio_codec = codec_name.strip().lower()
+                    if codec_type == "video" and stream_duration is None:
+                        stream_duration = _parse_positive_float(stream.get("duration"))
+            fmt = payload.get("format")
+            format_duration = (
+                _parse_positive_float(fmt.get("duration")) if isinstance(fmt, dict) else None
+            )
+            return _MediaProbe(
+                audio_codec=audio_codec,
+                duration_s=format_duration if format_duration is not None else stream_duration,
+            )
+    # Fallback for plain single-line codec output (e.g. lightweight test doubles).
+    lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
+    return _MediaProbe(audio_codec=lines[0] if lines else None, duration_s=None)
+
+
+def _parse_positive_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+    elif isinstance(value, str):
+        try:
+            parsed = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
+
+
+def _default_probe_run(
+    args: Sequence[str],
+    *,
+    on_stdout_line: LineCallback | None = None,
+    on_stderr_line: LineCallback | None = None,
+    cancel: threading.Event | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, capture_output=True, text=True, check=False)
+        return stream_subprocess(
+            args,
+            on_stdout_line=on_stdout_line,
+            on_stderr_line=on_stderr_line,
+            cancel=cancel,
+        )
     except FileNotFoundError as exc:
         raise FootageConversionError(
             "ffprobe is not installed or not on PATH; install ffmpeg and try again"
         ) from exc
 
 
-def _default_encode_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _default_encode_run(
+    args: Sequence[str],
+    *,
+    on_stdout_line: LineCallback | None = None,
+    on_stderr_line: LineCallback | None = None,
+    cancel: threading.Event | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
-        proc = subprocess.Popen(
+        return stream_subprocess(
             args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            on_stdout_line=on_stdout_line,
+            on_stderr_line=on_stderr_line,
+            cancel=cancel,
+            capture_stdout=False,
         )
     except FileNotFoundError as exc:
         raise FootageConversionError(
             "ffmpeg is not installed or not on PATH; install ffmpeg and try again"
         ) from exc
-
-    tail = bytearray()
-    assert proc.stderr is not None
-    try:
-        fd = proc.stderr.fileno()
-        while True:
-            chunk = os.read(fd, 4096)
-            if not chunk:
-                break
-            sys.stderr.write(chunk.decode("utf-8", errors="replace"))
-            sys.stderr.flush()
-            tail.extend(chunk)
-            if len(tail) > _STDERR_TAIL_BYTES:
-                del tail[:-_STDERR_TAIL_BYTES]
-    except BaseException:
-        if proc.poll() is None:
-            proc.terminate()
-        raise
-    finally:
-        proc.stderr.close()
-        proc.wait()
-
-    return subprocess.CompletedProcess(
-        args,
-        proc.returncode,
-        stdout="",
-        stderr=tail.decode("utf-8", errors="replace"),
-    )
