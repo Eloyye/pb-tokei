@@ -647,13 +647,66 @@ def test_camera_motion_tracks_caches_and_serves_frames_with_unmapped_cuts(
         f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=19"
     ).json()
     assert len(frames["court_to_image"]) == 20
+    assert len(frames["lens"]) == 20
     assert len(frames["unmapped"]) == 20
     # Reference frame and live-play frames are mapped; cut frames are unmapped (null).
     assert frames["court_to_image"][5] is not None and frames["unmapped"][5] is False
     assert frames["court_to_image"][0] is not None and frames["unmapped"][0] is False
     for cut_f in range(12, 16):
         assert frames["court_to_image"][cut_f] is None
+        assert frames["lens"][cut_f] is None
         assert frames["unmapped"][cut_f] is True
+    # A lens, when estimated, comes with the frame's proportions.
+    for lens in frames["lens"]:
+        assert lens is None or lens["aspect"] == pytest.approx(640 / 360)
+
+
+def test_camera_motion_frames_carry_the_lens_estimated_on_a_distorting_camera(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    from test_camera_motion import _lens_image, _panning_camera, write_synthetic_video
+
+    k1 = 0.08
+    match_id = add_match(db)
+    (tmp_path / "footage").mkdir(exist_ok=True)
+    (tmp_path / "footage" / "lens.webm").write_bytes(b"original")
+    cameras = [_panning_camera((f - 5) / 20.0) for f in range(12)]
+    write_synthetic_video(tmp_path / "footage" / "lens.60fps.mp4", cameras, lens_k1=k1)
+    set_video(db, match_id, Path("footage/lens.webm"))
+
+    ref_cam = cameras[5]
+    landmarks = {}
+    for lm in Landmark:
+        p = lm.court_point
+        if ref_cam.in_frame(p.x, p.y):
+            seen = _lens_image(ref_cam, p.x, p.y, k1)
+            if 0 <= seen.x <= 1 and 0 <= seen.y <= 1:
+                landmarks[lm.value] = {"x": seen.x, "y": seen.y, "frame": 5}
+    client.put(
+        f"/api/matches/{match_id}/play-segments",
+        json=[{"start_frame": 0, "end_frame": 11, "camera_view": "sideline"}],
+    )
+    client.put(
+        f"/api/matches/{match_id}/calibrations/sideline",
+        json=[{"effective_from_frame": 0, "reference_frame": 5, "landmarks": landmarks}],
+    )
+    assert (
+        client.post(f"/api/matches/{match_id}/camera-motion/track?wait=true").json()["status"]
+        == "ready"
+    )
+
+    frames = client.get(
+        f"/api/matches/{match_id}/camera-motion/frames?start_frame=0&end_frame=13"
+    ).json()
+    for i, (matrix, lens) in enumerate(zip(frames["court_to_image"], frames["lens"], strict=True)):
+        if matrix is None:
+            # Frames 12-13 are outside the Play Segment: no matrix, no lens.
+            assert lens is None, i
+        else:
+            assert lens is not None, i
+            assert lens["k1"] == pytest.approx(k1, abs=0.02)
+            assert lens["aspect"] == pytest.approx(640 / 360)
+    assert frames["court_to_image"][11] is not None and frames["court_to_image"][12] is None
 
 
 def test_calibrations_api_registers_off_reference_landmarks_on_panning_video(

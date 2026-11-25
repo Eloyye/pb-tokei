@@ -1,4 +1,6 @@
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -6,6 +8,7 @@ import pytest
 from pb_tokei.calibration import (
     CourtMapping,
     Homography,
+    Lens,
     assess,
     calibration_at,
     fit_landmarks,
@@ -144,6 +147,46 @@ def test_image_to_court_to_image_round_trips(camera: Camera) -> None:
 
     assert back is not None
     assert back.x == pytest.approx(start.x) and back.y == pytest.approx(start.y)
+
+
+def test_a_lens_bends_points_by_their_distance_from_the_centre_in_pixels() -> None:
+    lens = Lens(k1=0.1, aspect=WIDTH / HEIGHT)
+    # 300 px right of the centre, and 300 px below it, are the same distance away.
+    right = np.array([[0.5 + 300 / WIDTH, 0.5]])
+    below = np.array([[0.5, 0.5 + 300 / HEIGHT]])
+
+    moved_right = (lens.undistort(right)[0, 0] - 0.5) * WIDTH - 300
+    moved_below = (lens.undistort(below)[0, 1] - 0.5) * HEIGHT - 300
+
+    assert moved_right > 0
+    assert moved_right == pytest.approx(moved_below)
+    assert lens.undistort(np.array([[0.5, 0.5]]))[0] == pytest.approx([0.5, 0.5])
+
+
+def test_distorting_undoes_undistorting_across_the_frame() -> None:
+    lens = Lens(k1=0.12, aspect=WIDTH / HEIGHT)
+    grid = np.array([[x, y] for x in np.linspace(0, 1, 9) for y in np.linspace(0, 1, 9)])
+
+    assert lens.distort(lens.undistort(grid)) == pytest.approx(grid, abs=1e-9)
+
+
+@pytest.mark.parametrize("camera", [MAIN, SIDELINE], ids=["main", "sideline"])
+def test_a_homography_with_a_lens_round_trips_through_the_bent_frame(camera: Camera) -> None:
+    fit = fit_landmarks(camera.clicks())
+    assert fit is not None
+    lens = Lens(k1=0.1, aspect=WIDTH / HEIGHT)
+    homography = Homography(fit.image_to_court, fit.court_to_image, lens=lens)
+    court = CourtPoint(3.0, -7.0)
+
+    seen = homography.to_image(court)
+    straight = fit.to_image(court)
+
+    assert seen is not None and straight is not None
+    # The lens moves the point, along the line from the centre.
+    assert (seen.x, seen.y) != pytest.approx((straight.x, straight.y))
+    bent = lens.undistort(np.array([[seen.x, seen.y]]))[0]
+    assert bent == pytest.approx([straight.x, straight.y])
+    assert_near(homography.to_court(seen), court, 1e-6)
 
 
 def test_noisy_clicks_still_place_zone_boundaries_within_half_a_foot() -> None:
@@ -336,6 +379,32 @@ def test_multi_frame_landmarks_mapped_through_frame_to_ref_recover_exact_homogra
     for x, y in [(0.0, -7.0), (5.0, 7.0), (10.0, 12.0)]:
         if cam_ref.in_frame(x, y):
             assert_near(fit.homography.to_court(cam_ref.image(x, y)), CourtPoint(x, y), 1e-5)
+
+
+def test_off_reference_clicks_are_undistorted_before_a_camera_motion_warp() -> None:
+    lens = Lens(k1=0.1, aspect=WIDTH / HEIGHT)
+    click = PlacedLandmark(0.85, 0.2, 7)
+    cal = Calibration(CameraView.SIDELINE, 0, 3, {Landmark.FAR_KITCHEN_LEFT: click})
+    identity = {7: np.eye(3)}
+
+    with_lens, _ = resolve_landmarks(cal, identity, {7: lens})
+    without_lens, _ = resolve_landmarks(cal, identity)
+
+    expected = lens.undistort(np.array([[click.x, click.y]]))[0]
+    got = with_lens[Landmark.FAR_KITCHEN_LEFT]
+    assert (got.x, got.y) == pytest.approx(tuple(expected))
+    assert without_lens[Landmark.FAR_KITCHEN_LEFT] == click.point
+
+
+def test_lens_distort_matches_the_golden_fixture_the_overlay_also_checks() -> None:
+    # `web/src/lib/lens-golden.json` is asserted by vitest against the overlay's `distort` too,
+    # so the two implementations cannot drift apart unnoticed.
+    golden = json.loads((Path(__file__).parents[1] / "web/src/lib/lens-golden.json").read_text())
+    assert len(golden) >= 20
+    for case in golden:
+        lens = Lens(k1=case["k1"], aspect=case["aspect"])
+        got = lens.distort(np.array([case["point"]]))[0]
+        assert tuple(got) == pytest.approx(tuple(case["distorted"]), abs=1e-12), case
 
 
 def test_resolve_landmarks_marks_behind_camera_and_non_finite_warps_unmapped() -> None:

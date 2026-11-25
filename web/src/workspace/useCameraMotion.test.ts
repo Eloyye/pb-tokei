@@ -64,10 +64,13 @@ const READY_MOTION: CameraMotionOut = {
   ],
 };
 
+const LENS = { k1: 0.09, aspect: 16 / 9 };
+
 const FRAMES_OUT: CameraMotionFramesOut = {
   start_frame: 100,
   end_frame: 103,
   court_to_image: [MATRIX_A, MATRIX_B, null, MATRIX_A],
+  lens: [LENS, LENS, null, null],
   unmapped: [false, false, true, false],
 };
 
@@ -108,6 +111,7 @@ describe("useCameraMotion", () => {
     );
 
     await waitFor(() => expect(result.current.frameMatrix).toEqual(MATRIX_B));
+    expect(result.current.frameLens).toEqual(LENS);
     expect(trackCameraMotion).toHaveBeenCalledWith("match-1");
     expect(getCameraMotionFrames).toHaveBeenCalledTimes(1);
     expect(getCameraMotionFrames).toHaveBeenCalledWith("match-1", 100, 103);
@@ -116,6 +120,7 @@ describe("useCameraMotion", () => {
     // Seeking onto an unmapped frame in the cached window returns null + frameUnmapped without re-fetching.
     rerender({ frame: 102 });
     expect(result.current.frameMatrix).toBeNull();
+    expect(result.current.frameLens).toBeNull();
     expect(result.current.frameUnmapped).toBe(true);
     expect(getCameraMotionFrames).toHaveBeenCalledTimes(1);
   });
@@ -249,6 +254,7 @@ describe("useCameraMotion", () => {
       court_to_image: Array.from({ length: end - start + 1 }, () =>
         start === 0 ? MATRIX_A : MATRIX_B,
       ),
+      lens: Array.from({ length: end - start + 1 }, () => null),
       unmapped: Array.from({ length: end - start + 1 }, () => false),
     }));
 

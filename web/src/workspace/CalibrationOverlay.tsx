@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { Calibration, CalibrationOut, Landmark } from "../api/client";
+import type { Calibration, CalibrationOut, Landmark, Lens } from "../api/client";
 import {
   COURT_LINES,
   landmarkHighlight,
@@ -39,6 +39,7 @@ export function CalibrationOverlay({
   fit,
   lastFit,
   frameMatrix,
+  frameLens,
   unmapped,
   selected,
   editable,
@@ -64,6 +65,11 @@ export function CalibrationOverlay({
    * `null` when explicitly unmapped, `undefined` when not tracked yet (falls back to static fit).
    */
   frameMatrix?: number[][] | null;
+  /**
+   * The lens that bends `frameMatrix`'s image into the frame, so the template follows the bowed
+   * painted lines (ADR 0011). Only used with `frameMatrix`; a static fit is drawn straight.
+   */
+  frameLens?: Lens | null;
   /** Whether Camera Motion failed to register this frame (positions are Unknown). */
   unmapped?: boolean;
   selected: Landmark | null;
@@ -115,11 +121,9 @@ export function CalibrationOverlay({
   const offRef = Boolean(calibration && frame !== calibration.reference_frame);
   const markers = visibleLandmarkMarkers(calibration, frame, fit, drag);
 
-  const matrix = unmapped
-    ? null
-    : frameMatrix !== undefined
-      ? frameMatrix
-      : (fit ?? lastFit)?.court_to_image;
+  const tracked = !unmapped && frameMatrix !== undefined;
+  const matrix = unmapped ? null : tracked ? frameMatrix : (fit ?? lastFit)?.court_to_image;
+  const lens = tracked ? (frameLens ?? null) : null;
   const staticOffRef = offRef && frameMatrix === undefined && !unmapped;
   const templateStale = !fit || staticOffRef;
   const highlight = landmarkHighlight({
@@ -129,6 +133,7 @@ export function CalibrationOverlay({
     resolvedLandmarks: fit?.resolved_landmarks,
     drag,
     matrix,
+    lens,
   });
 
   return (
@@ -167,7 +172,7 @@ export function CalibrationOverlay({
           aria-hidden
         >
           {COURT_LINES.flatMap((courtLine, i) =>
-            projectLine(matrix, courtLine).map((run, j) => (
+            projectLine(matrix, courtLine, lens).map((run, j) => (
               <polyline
                 key={`${i}-${j}`}
                 className={courtLine.dashed ? "zone" : "line"}

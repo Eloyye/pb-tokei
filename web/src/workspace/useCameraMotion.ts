@@ -5,6 +5,7 @@ import {
   type CameraMotionOut,
   getCameraMotion,
   getCameraMotionFrames,
+  type Lens,
   type PlaySegment,
   trackCameraMotion,
 } from "../api/client";
@@ -23,6 +24,11 @@ export interface CameraMotionState {
    * - `undefined` when Camera Motion has not been loaded/tracked for this frame yet
    */
   frameMatrix: number[][] | null | undefined;
+  /**
+   * The lens that bends `frameMatrix`'s image into the frame (ADR 0011), or null when it maps
+   * straight into the frame (no lens, or no tracked matrix).
+   */
+  frameLens: Lens | null;
   /** True when the playhead frame is inside a tracked span and could not be registered. */
   frameUnmapped: boolean;
   /** Retries Camera Motion tracking (e.g. after an error). */
@@ -193,6 +199,7 @@ export function useCameraMotion(
   const unmappedFromSummary = Boolean(motion && unmappedRangeAt(motion.unmapped_ranges, frame));
 
   let frameMatrix: number[][] | null | undefined;
+  let frameLens: Lens | null = null;
   let frameUnmapped = unmappedFromSummary;
   if (loadedWindow && frame >= loadedWindow.start_frame && frame <= loadedWindow.end_frame) {
     const idx = frame - loadedWindow.start_frame;
@@ -201,11 +208,12 @@ export function useCameraMotion(
       frameUnmapped = true;
     } else if (loadedWindow.court_to_image[idx]) {
       frameMatrix = loadedWindow.court_to_image[idx];
+      frameLens = loadedWindow.lens[idx] ?? null;
       frameUnmapped = false;
     }
   } else if (unmappedFromSummary) {
     frameMatrix = null;
   }
 
-  return { motion, frameMatrix, frameUnmapped, retrack };
+  return { motion, frameMatrix, frameLens, frameUnmapped, retrack };
 }

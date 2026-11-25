@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from pb_tokei.calibration import CourtMapping, Matrix, assess
+from pb_tokei.calibration import CourtMapping, Lens, Matrix, assess
 from pb_tokei.camera_motion import (
     CameraMotionCache,
     FrameRange,
@@ -74,17 +74,37 @@ class CameraMotionOut(BaseModel):
     spans: list[CameraMotionSpanOut]
 
 
+class LensOut(BaseModel):
+    """One-coefficient radial lens distortion about the frame centre (ADR 0011).
+
+    A court point maps through the frame's `court_to_image` matrix into the undistorted image,
+    then appears in the frame at `c + (p - c) * s` with `c = (0.5, 0.5)`, where `s` solves
+    `s * (1 + k1 * r^2 * s^2) = 1` for `r^2 = 4 * ((p.x - 0.5)^2 * aspect^2 + (p.y - 0.5)^2) /
+    (aspect^2 + 1)`: the distance from the centre in half-diagonals, `aspect` being the frame's
+    width over its height.
+    """
+
+    k1: float
+    aspect: float
+
+    @classmethod
+    def from_domain(cls, lens: Lens) -> LensOut:
+        return LensOut(k1=lens.k1, aspect=lens.aspect)
+
+
 class CameraMotionFramesOut(BaseModel):
     """Per-frame court-to-image matrices across an inclusive frame window.
 
     Entry `i` corresponds to `start_frame + i`: `court_to_image[i]` is the 3×3 matrix when mapped,
-    or null otherwise; `unmapped[i]` is True specifically when the frame is inside a tracked Play
-    Segment span whose registration failed (so its positions are Unknown).
+    or null otherwise; `lens[i]` is the lens that bends that matrix's image into the frame, or
+    null when there is none (draw it straight); `unmapped[i]` is True specifically when the frame
+    is inside a tracked Play Segment span whose registration failed (so its positions are Unknown).
     """
 
     start_frame: int
     end_frame: int
     court_to_image: list[list[list[float]] | None]
+    lens: list[LensOut | None]
     unmapped: list[bool]
 
 
@@ -309,6 +329,7 @@ class CameraMotionService:
                 start_frame=start_frame,
                 end_frame=end_frame,
                 court_to_image=[None] * count,
+                lens=[None] * count,
                 unmapped=[False] * count,
             )
 
@@ -318,24 +339,23 @@ class CameraMotionService:
             segments, calibrations, camera_motion=cached, landmark_frame_to_ref=reg_map
         )
         matrices: list[list[list[float]] | None] = []
+        lenses: list[LensOut | None] = []
         unmapped: list[bool] = []
         for frame in range(start_frame, end_frame + 1):
-            if not cached.covers(frame):
-                matrices.append(None)
-                unmapped.append(False)
-                continue
-            homography = mapping.at(frame)
-            if homography is None:
-                matrices.append(None)
-                unmapped.append(True)
-            else:
-                matrices.append(_rows(homography.court_to_image))
-                unmapped.append(False)
+            homography = mapping.at(frame) if cached.covers(frame) else None
+            matrices.append(None if homography is None else _rows(homography.court_to_image))
+            lenses.append(
+                None
+                if homography is None or homography.lens is None
+                else LensOut.from_domain(homography.lens)
+            )
+            unmapped.append(cached.covers(frame) and homography is None)
 
         return CameraMotionFramesOut(
             start_frame=start_frame,
             end_frame=end_frame,
             court_to_image=matrices,
+            lens=lenses,
             unmapped=unmapped,
         )
 

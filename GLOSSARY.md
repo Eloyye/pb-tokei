@@ -226,7 +226,7 @@ _Avoid_: keypoint, corner (only some Landmarks are corners)
 The Landmarks clicked in one Camera View (each recording the frame it was clicked on, or marked not visible), mapped back to the Calibration's reference frame via Camera Motion and fitted to map points on the court surface between the video and the court; it is in effect from a given frame until the next Calibration of that view, and its mapping follows the camera's movement via Camera Motion.
 
 **Camera Motion**:
-The derived frame-by-frame homography tracking how a Camera View pans and zooms relative to its Calibration's reference frame within a Play Segment; combined with the Calibration's Landmark fit, it maps each frame to the court, or maps to nothing when a frame cannot be registered.
+The derived frame-by-frame homography tracking how a Camera View pans and zooms relative to its Calibration's reference frame within a Play Segment, with the camera lens's distortion; combined with the Calibration's Landmark fit, it maps each frame to the court, or maps to nothing when a frame cannot be registered.
 
 **Roster File**:
 The hand-written TOML file that sets up one Match: its Tournament, Teams, Players and optional Franchise Match and source video.

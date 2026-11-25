@@ -13,6 +13,7 @@ from test_calibration import MAIN, SIDELINE, Camera, assert_near
 
 from pb_tokei.calibration import ERROR_WARNING_FT, CourtMapping, assess, fit_landmarks
 from pb_tokei.camera_motion import (
+    METHOD_VERSION,
     CameraMotion,
     CameraMotionCache,
     FrameRange,
@@ -25,6 +26,7 @@ from pb_tokei.rally_log import (
     Calibration,
     CameraView,
     CourtPoint,
+    ImagePoint,
     Landmark,
     PlacedLandmark,
     PlaySegment,
@@ -46,8 +48,12 @@ _COURT_LINE_SEGMENTS = [
 ]
 
 
-def _make_court_world_canvas() -> tuple[np.ndarray, np.ndarray]:
-    """Renders a top-down pickleball court + textured surround canvas and court->canvas matrix."""
+def _make_court_world_canvas(*, kitchen_logo: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """Renders a top-down pickleball court + textured surround canvas and court->canvas matrix.
+
+    With `kitchen_logo`, a white sponsor logo is painted in the far kitchen: lettering, and a
+    straight white edge running 1 ft short of the far kitchen line, parallel to it.
+    """
     # Canvas covers x in [-26, 26], y in [-38, 38] at 18 px/ft.
     ppm = 18.0
     cw, ch = int(52 * ppm), int(76 * ppm)
@@ -77,7 +83,43 @@ def _make_court_world_canvas() -> tuple[np.ndarray, np.ndarray]:
     for (x1, y1), (x2, y2) in _COURT_LINE_SEGMENTS:
         cv2.line(canvas, to_px(x1, y1), to_px(x2, y2), (245, 245, 245), 4, cv2.LINE_AA)
 
+    if kitchen_logo:
+        cv2.rectangle(canvas, to_px(-7.0, 5.6), to_px(7.0, 6.0), (245, 245, 245), -1)
+        for x in np.arange(-6.5, 6.6, 1.3):
+            cv2.rectangle(canvas, to_px(x, 3.2), to_px(x + 0.5, 5.6), (245, 245, 245), -1)
+
     return canvas, court_to_canvas
+
+
+def _lens_distort_frame(frame: np.ndarray, k1: float) -> np.ndarray:
+    """Bends a frame through one-coefficient radial distortion about its centre.
+
+    An undistorted point lies at `c + (p - c) * (1 + k1 * r^2)` for frame point `p`, where `r`
+    is `|p - c|` over the half-diagonal: barrel distortion for positive `k1`.
+    """
+    h, w = frame.shape[:2]
+    cx, cy, rn = w / 2.0, h / 2.0, math.hypot(w, h) / 2.0
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    scale = 1.0 + k1 * ((xs - cx) ** 2 + (ys - cy) ** 2) / (rn * rn)
+    return cv2.remap(
+        frame,
+        (cx + (xs - cx) * scale).astype(np.float32),
+        (cy + (ys - cy) * scale).astype(np.float32),
+        cv2.INTER_LINEAR,
+        borderValue=(30, 30, 30),
+    )
+
+
+def _lens_image(camera: Camera, x: float, y: float, k1: float) -> ImagePoint:
+    """Where a court point appears in a `_lens_distort_frame` frame of `camera`'s view."""
+    undistorted = camera.image(x, y)
+    cx, cy, rn = SYN_W / 2.0, SYN_H / 2.0, math.hypot(SYN_W, SYN_H) / 2.0
+    dx, dy = undistorted.x * SYN_W - cx, undistorted.y * SYN_H - cy
+    ru2 = (dx * dx + dy * dy) / (rn * rn)
+    s = 1.0
+    for _ in range(50):
+        s = 1.0 / (1.0 + k1 * ru2 * s * s)
+    return ImagePoint((cx + dx * s) / SYN_W, (cy + dy * s) / SYN_H)
 
 
 def _render_camera_frame(
@@ -109,9 +151,16 @@ def _render_camera_frame(
 def write_synthetic_video(
     path: Path,
     cameras: Sequence[Camera | None],
+    *,
+    kitchen_logo: bool = False,
+    lens_k1: float = 0.0,
 ) -> None:
-    """Writes an MP4 where each entry is a `Camera` frame or `None` (a hard-cut replay frame)."""
-    canvas, court_to_canvas = _make_court_world_canvas()
+    """Writes an MP4 where each entry is a `Camera` frame or `None` (a hard-cut replay frame).
+
+    `kitchen_logo` paints a sponsor logo in the far kitchen (`_make_court_world_canvas`);
+    `lens_k1` bends camera frames through radial lens distortion (`_lens_distort_frame`).
+    """
+    canvas, court_to_canvas = _make_court_world_canvas(kitchen_logo=kitchen_logo)
     fourcc = cv2.VideoWriter.fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(path), fourcc, 60.0, (SYN_W, SYN_H))
     assert writer.isOpened(), "Failed to open OpenCV VideoWriter"
@@ -136,7 +185,7 @@ def write_synthetic_video(
                 writer.write(cut_frame)
             else:
                 img, _ = _render_camera_frame(canvas, court_to_canvas, cam)
-                writer.write(img)
+                writer.write(_lens_distort_frame(img, lens_k1) if lens_k1 else img)
     finally:
         writer.release()
 
@@ -372,6 +421,102 @@ def test_tracks_segment_whose_reference_frame_is_in_an_earlier_segment(tmp_path:
     assert_near(h_end.to_court(cam_end.image(0.0, 7.0)), CourtPoint(0.0, 7.0), ERROR_WARNING_FT)
 
 
+def test_far_kitchen_line_stays_on_paint_beside_a_kitchen_logo_clicked_by_mistake(
+    tmp_path: Path,
+) -> None:
+    # A sponsor logo in the far kitchen has a straight white edge 1 ft short of the far kitchen
+    # line, and the far kitchen Landmarks were clicked on that edge instead of the line.
+    cameras: list[Camera | None] = [_panning_camera((f - 12) / 20.0) for f in range(25)]
+    video = tmp_path / "kitchen_logo.mp4"
+    write_synthetic_video(video, cameras, kitchen_logo=True)
+
+    ref_cam = cameras[12]
+    assert ref_cam is not None
+    placed = ref_cam.placed(12)
+    for lm in (Landmark.FAR_KITCHEN_LEFT, Landmark.FAR_KITCHEN_CENTRE, Landmark.FAR_KITCHEN_RIGHT):
+        x = lm.court_point.x
+        if ref_cam.in_frame(x, 6.0):
+            placed[lm] = PlacedLandmark.at(ref_cam.image(x, 6.0), 12)
+    cal = Calibration(CameraView.SIDELINE, 0, 12, placed)
+    seg = PlaySegment(0, 24, CameraView.SIDELINE)
+    base = assess(cal).homography
+    assert base is not None
+
+    span_motion = track_span(video, calibration_spans([seg], [cal])[0], base, keyframe_stride=5)
+    mapping = CourtMapping([seg], [cal], camera_motion=CameraMotion([span_motion]))
+
+    for f in [0, 6, 12, 18, 24]:
+        cam = cameras[f]
+        assert cam is not None
+        h = mapping.at(f)
+        assert h is not None, f"Expected frame {f} to be mapped"
+        for x in (-5.0, 0.0, 5.0):
+            if cam.in_frame(x, 7.0):
+                pt = h.to_court(cam.image(x, 7.0))
+                assert pt is not None
+                err = math.hypot(pt.x - x, pt.y - 7.0)
+                assert err < ERROR_WARNING_FT / 2, (
+                    f"frame {f} far kitchen x={x} off by {err:.2f} ft"
+                )
+
+
+def test_tracks_through_a_distorting_lens_within_a_quarter_foot(tmp_path: Path) -> None:
+    # Broadcast lenses bow court lines near the frame edges; a single homography fitted to the
+    # middle of the frame is feet off at the baselines. Camera Motion estimates the lens and the
+    # mapping carries it, so positions near the frame edges hold too.
+    k1 = 0.08
+    cameras: list[Camera | None] = [_panning_camera((f - 12) / 20.0) for f in range(25)]
+    video = tmp_path / "lens.mp4"
+    write_synthetic_video(video, cameras, lens_k1=k1)
+
+    ref_cam = cameras[12]
+    assert ref_cam is not None
+    placed = {}
+    for lm in Landmark:
+        p = lm.court_point
+        if ref_cam.in_frame(p.x, p.y):
+            seen = _lens_image(ref_cam, p.x, p.y, k1)
+            if 0 <= seen.x <= 1 and 0 <= seen.y <= 1:
+                placed[lm] = PlacedLandmark.at(seen, 12)
+    cal = Calibration(CameraView.SIDELINE, 0, 12, placed)
+    seg = PlaySegment(0, 24, CameraView.SIDELINE)
+    base = assess(cal).homography
+    assert base is not None
+
+    span = calibration_spans([seg], [cal])[0]
+    span_motion = track_span(video, span, base, keyframe_stride=5)
+    assert span_motion.lens is not None
+    assert span_motion.lens.k1 == pytest.approx(k1, abs=0.02)
+    assert span_motion.lens.aspect == pytest.approx(SYN_W / SYN_H)
+
+    # The lens survives the cache.
+    cache = CameraMotionCache(tmp_path / "cache")
+    cache.put(video, span, span_motion)
+    cached = cache.get(video, span)
+    assert cached is not None and cached.lens == span_motion.lens
+
+    mapping = CourtMapping([seg], [cal], camera_motion=CameraMotion([cached]))
+    for f in [0, 6, 12, 18, 24]:
+        cam = cameras[f]
+        assert cam is not None
+        h = mapping.at(f)
+        assert h is not None, f"Expected frame {f} to be mapped"
+        assert h.lens == span_motion.lens
+        for x in (-8.0, 0.0, 8.0):
+            for y in (-20.0, -7.0, 0.0, 7.0, 20.0):
+                if cam.in_frame(x, y):
+                    seen = _lens_image(cam, x, y, k1)
+                    pt = h.to_court(seen)
+                    assert pt is not None
+                    err = math.hypot(pt.x - x, pt.y - y)
+                    assert err < ERROR_WARNING_FT / 2, f"frame {f} ({x},{y}) off by {err:.2f} ft"
+                    # And back: the court point lands where the bent frame shows it.
+                    back = h.to_image(CourtPoint(x, y))
+                    assert back is not None
+                    px_off = math.hypot((back.x - seen.x) * SYN_W, (back.y - seen.y) * SYN_H)
+                    assert px_off < 2.0, f"frame {f} ({x},{y}) drawn {px_off:.1f} px off"
+
+
 # --- Multi-frame Landmark registration (Option 2) -----------------------------------------
 
 
@@ -550,9 +695,10 @@ def test_camera_motion_cache_hits_and_invalidates_on_edits_or_version_bump(
     span_reframed = calibration_spans([seg], [cal_reframed])[0]
     span_shorter = calibration_spans([PlaySegment(0, 10, CameraView.SIDELINE)], [cal])[0]
 
-    k_base = span_cache_key(video, span, method_version=1)
-    assert span_cache_key(video, span_moved, method_version=1) != k_base
-    assert span_cache_key(video, span_reframed, method_version=1) != k_base
-    assert span_cache_key(video, span_shorter, method_version=1) != k_base
-    assert span_cache_key(video, span, method_version=2) != k_base
-    assert CameraMotionCache(tmp_path / "cache", method_version=2).get(video, span) is None
+    k_base = span_cache_key(video, span, method_version=METHOD_VERSION)
+    assert span_cache_key(video, span_moved, method_version=METHOD_VERSION) != k_base
+    assert span_cache_key(video, span_reframed, method_version=METHOD_VERSION) != k_base
+    assert span_cache_key(video, span_shorter, method_version=METHOD_VERSION) != k_base
+    bumped = METHOD_VERSION + 1
+    assert span_cache_key(video, span, method_version=bumped) != k_base
+    assert CameraMotionCache(tmp_path / "cache", method_version=bumped).get(video, span) is None
