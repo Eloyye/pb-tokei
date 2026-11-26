@@ -26,6 +26,7 @@ from .model import (
     Landmark,
     OperatorWorkspace,
     Parity,
+    RallyStatus,
     RefereeCall,
     Ruling,
     ShotClass,
@@ -172,6 +173,111 @@ CREATE TABLE IF NOT EXISTS {name} (
 )"""
 
 
+def rallies_table(name: str) -> str:
+    """The Rallies table. `status` is annotation-workflow state that Event Processing ignores, and
+    `scoreboard_winner_id` is kept apart from `winner_id` (ADR 0013)."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    {_RALLY_KEY},
+    number INTEGER NOT NULL,
+    start_frame INTEGER,
+    end_frame INTEGER,
+    score_serving INTEGER,
+    score_receiving INTEGER,
+    score_server_number INTEGER CHECK (score_server_number IN (1, 2)),
+    score_certainty VARCHAR NOT NULL {_one_of("score_certainty", Certainty)},
+    CHECK ((score_certainty = 'unknown') = (score_serving IS NULL)),
+    CHECK ((score_serving IS NULL) = (score_receiving IS NULL)),
+    CHECK ((score_serving IS NULL) = (score_server_number IS NULL)),
+    {_fact("serving_team_id", _TEAM)},
+    {_fact("server_id", _PLAYER)},
+    {_fact("returner_id", _PLAYER)},
+    {_fact("referee_call", "VARCHAR", values=_one_of("referee_call", RefereeCall))},
+    has_challenge BOOLEAN NOT NULL,
+    {_fact("challenger_id", _PLAYER, optional=True)},
+    {_fact("challenge_original_call", "VARCHAR", optional=True)},
+    {_fact("challenge_ruling", "VARCHAR", optional=True, values=_RULING)},
+    CHECK (has_challenge = (challenger_id_certainty IS NOT NULL)),
+    CHECK (has_challenge = (challenge_original_call_certainty IS NOT NULL)),
+    CHECK (has_challenge = (challenge_ruling_certainty IS NOT NULL)),
+    {_fact("winner_id", _TEAM)},
+    winner_source VARCHAR {_one_of("winner_source", WinnerSource)},
+    {_fact("scoreboard_winner_id", _TEAM)},
+    status VARCHAR NOT NULL {_one_of("status", RallyStatus)},
+    PRIMARY KEY (match_id, game_number, number)
+)"""
+
+
+# The `rallies` columns added for Rally and Shot entry (ADR 0013), in table order.
+_RALLY_STATUS_COLUMNS = ["scoreboard_winner_id", "scoreboard_winner_id_certainty", "status"]
+
+
+def _migrate_rally_status(db: duckdb.DuckDBPyConnection) -> None:
+    """Adds `scoreboard_winner_id` (Unknown) and `status` to an older `rallies` table.
+
+    A Rally that already holds Shots, Observation Gaps or any known fact is In progress; any
+    other is Empty.
+    """
+    columns = [
+        name
+        for (name,) in db.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'rallies' "
+            "ORDER BY column_index"
+        ).fetchall()
+    ]
+    if "status" in columns and "scoreboard_winner_id" in columns:
+        return
+    # Copy every column the old table has, by name, so the copy can't drift out of line.
+    kept = [c for c in columns if c not in _RALLY_STATUS_COLUMNS]
+    old = ", ".join(f"r.{c}" for c in kept)
+    has_scoreboard = "scoreboard_winner_id" in columns
+    scoreboard = (
+        "r.scoreboard_winner_id, r.scoreboard_winner_id_certainty"
+        if has_scoreboard
+        else "NULL, 'unknown'"
+    )
+    recorded = " OR ".join(
+        [
+            *(
+                f"r.{fact}_certainty <> 'unknown'"
+                for fact in (
+                    "score",
+                    "serving_team_id",
+                    "server_id",
+                    "returner_id",
+                    "referee_call",
+                    "winner_id",
+                )
+            ),
+            "r.has_challenge",
+            *(
+                f"EXISTS (SELECT 1 FROM {table} e WHERE e.match_id = r.match_id "
+                "AND e.game_number = r.game_number AND e.rally_number = r.number)"
+                for table in ("shots", "observation_gaps")
+            ),
+        ]
+    )
+    status = (
+        "r.status"
+        if "status" in columns
+        else f"CASE WHEN {recorded} THEN 'in_progress' ELSE 'empty' END"
+    )
+    db.execute("BEGIN TRANSACTION")
+    try:
+        db.execute(rallies_table("rallies_migrated"))
+        target = ", ".join([*kept, *_RALLY_STATUS_COLUMNS])
+        db.execute(
+            f"INSERT INTO rallies_migrated ({target}) "
+            f"SELECT {old}, {scoreboard}, {status} FROM rallies r"
+        )
+        db.execute("DROP TABLE rallies")
+        db.execute("ALTER TABLE rallies_migrated RENAME TO rallies")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+    db.execute("COMMIT")
+
+
 def migrate(db: duckdb.DuckDBPyConnection) -> None:
     """Brings a Rally Log made by an older version up to the current schema.
 
@@ -292,6 +398,8 @@ def migrate(db: duckdb.DuckDBPyConnection) -> None:
             raise
         db.execute("COMMIT")
 
+    _migrate_rally_status(db)
+
 
 _RALLY_KEY = "match_id UUID NOT NULL, game_number INTEGER NOT NULL"
 _SHOT_KEY = f"{_RALLY_KEY}, rally_number INTEGER NOT NULL, log_position INTEGER NOT NULL"
@@ -360,34 +468,7 @@ CREATE TABLE IF NOT EXISTS games (
     number INTEGER NOT NULL,
     PRIMARY KEY (match_id, number)
 )""",
-    f"""
-CREATE TABLE IF NOT EXISTS rallies (
-    {_RALLY_KEY},
-    number INTEGER NOT NULL,
-    start_frame INTEGER,
-    end_frame INTEGER,
-    score_serving INTEGER,
-    score_receiving INTEGER,
-    score_server_number INTEGER CHECK (score_server_number IN (1, 2)),
-    score_certainty VARCHAR NOT NULL {_one_of("score_certainty", Certainty)},
-    CHECK ((score_certainty = 'unknown') = (score_serving IS NULL)),
-    CHECK ((score_serving IS NULL) = (score_receiving IS NULL)),
-    CHECK ((score_serving IS NULL) = (score_server_number IS NULL)),
-    {_fact("serving_team_id", _TEAM)},
-    {_fact("server_id", _PLAYER)},
-    {_fact("returner_id", _PLAYER)},
-    {_fact("referee_call", "VARCHAR", values=_one_of("referee_call", RefereeCall))},
-    has_challenge BOOLEAN NOT NULL,
-    {_fact("challenger_id", _PLAYER, optional=True)},
-    {_fact("challenge_original_call", "VARCHAR", optional=True)},
-    {_fact("challenge_ruling", "VARCHAR", optional=True, values=_RULING)},
-    CHECK (has_challenge = (challenger_id_certainty IS NOT NULL)),
-    CHECK (has_challenge = (challenge_original_call_certainty IS NOT NULL)),
-    CHECK (has_challenge = (challenge_ruling_certainty IS NOT NULL)),
-    {_fact("winner_id", _TEAM)},
-    winner_source VARCHAR {_one_of("winner_source", WinnerSource)},
-    PRIMARY KEY (match_id, game_number, number)
-)""",
+    rallies_table("rallies"),
     f"""
 CREATE TABLE IF NOT EXISTS shots (
     {_SHOT_KEY},
@@ -431,6 +512,15 @@ CREATE TABLE IF NOT EXISTS team_ends (
     near_team_id UUID NOT NULL REFERENCES teams (id),
     PRIMARY KEY (match_id, effective_from_frame)
 )""",
+]
+
+# A Match's Games and everything under them, children first: rewritten by `replace_games`.
+GAME_TABLES = [
+    "shot_positions",
+    "observation_gaps",
+    "shots",
+    "rallies",
+    "games",
 ]
 
 # Rewritten as a unit when a Match is saved, children first.

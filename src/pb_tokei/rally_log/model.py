@@ -162,6 +162,15 @@ class Ruling(StrEnum):
     OVERTURNED = "overturned"
 
 
+class RallyStatus(StrEnum):
+    """How far an operator has got annotating a Rally (workflow state, ignored by Event
+    Processing; ADR 0013)."""
+
+    EMPTY = "empty"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+
+
 class WinnerSource(StrEnum):
     """Where a Rally's winner came from, highest priority first."""
 
@@ -332,6 +341,10 @@ class Rally:
     winner_id: Fact[TeamId] = _unknown()
     winner_source: WinnerSource | None = None
     entries: tuple[Shot | ObservationGap, ...] = ()  # in the order they happened
+    # The winner shown by the broadcast scoreboard, kept apart from `winner_id` so a Referee
+    # Call and the scoreboard can be compared (ADR 0013).
+    scoreboard_winner_id: Fact[TeamId] = _unknown()
+    status: RallyStatus = RallyStatus.EMPTY
 
     @property
     def shots(self) -> tuple[Shot, ...]:
@@ -342,6 +355,87 @@ class Rally:
 class Game:
     number: int  # 1-based within its Match
     rallies: tuple[Rally, ...] = ()
+
+
+MAX_STORED_INT = 2**31 - 1
+"""The largest number the Rally Log's INTEGER columns hold (frames, numbers, scores)."""
+
+
+def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
+    """Raises ValueError unless the Games fit the Match: unique positive Game and Rally numbers,
+    frame bounds in order, every number small enough to store, and every Team and Player one of
+    the Match's."""
+    teams = {roster.team_a_id, roster.team_b_id}
+
+    def storable(value: int | None, what: str) -> None:
+        if value is not None and value > MAX_STORED_INT:
+            raise ValueError(f"{what} is too large to store: {value}")
+
+    players = roster.player_ids
+    game_numbers: set[int] = set()
+
+    def team(fact: Fact[TeamId], what: str) -> None:
+        if fact.value is not None and fact.value not in teams:
+            raise ValueError(f"{what}: Team {fact.value} is not in Match {roster.match_id}")
+
+    def player(fact: Fact[PlayerId], what: str) -> None:
+        if fact.value is not None and fact.value not in players:
+            raise ValueError(f"{what}: Player {fact.value} is not in Match {roster.match_id}")
+
+    for game in games:
+        if game.number < 1:
+            raise ValueError(f"Game number must be 1 or more: {game.number}")
+        storable(game.number, "Game number")
+        if game.number in game_numbers:
+            raise ValueError(f"two Games numbered {game.number}")
+        game_numbers.add(game.number)
+        rally_numbers: set[int] = set()
+        for rally in game.rallies:
+            where = f"Game {game.number} Rally {rally.number}"
+            if rally.number < 1:
+                raise ValueError(f"Rally number must be 1 or more: {where}")
+            storable(rally.number, f"{where} number")
+            storable(rally.start_frame, f"{where} start frame")
+            storable(rally.end_frame, f"{where} end frame")
+            score = rally.score.value
+            if score is not None:
+                storable(score.serving, f"{where} serving score")
+                storable(score.receiving, f"{where} receiving score")
+            if rally.number in rally_numbers:
+                raise ValueError(f"two Rallies numbered {rally.number} in Game {game.number}")
+            rally_numbers.add(rally.number)
+            if rally.start_frame is not None and rally.start_frame < 0:
+                raise ValueError(f"{where} cannot start before frame 0: {rally.start_frame}")
+            if rally.end_frame is not None:
+                if rally.start_frame is None:
+                    raise ValueError(f"{where} has an end frame but no start frame")
+                if rally.end_frame < rally.start_frame:
+                    raise ValueError(
+                        f"{where} ends (frame {rally.end_frame}) before it starts "
+                        f"(frame {rally.start_frame})"
+                    )
+            team(rally.serving_team_id, f"{where} Serving Team")
+            team(rally.winner_id, f"{where} winner")
+            team(rally.scoreboard_winner_id, f"{where} scoreboard winner")
+            player(rally.server_id, f"{where} Server")
+            player(rally.returner_id, f"{where} Returner")
+            if rally.challenge is not None:
+                player(rally.challenge.challenger_id, f"{where} challenger")
+            for shot in rally.shots:
+                frame = shot.contact_frame.value
+                if frame is not None and frame < 0:
+                    raise ValueError(f"{where} has a Shot before frame 0: {frame}")
+                storable(frame, f"{where} Shot contact frame")
+                storable(shot.shot_number.value, f"{where} Shot Number")
+                player(shot.hitter_id, f"{where} hitter")
+                if shot.error is not None:
+                    player(shot.error.player_id, f"{where} Error")
+                for player_id in shot.positions:
+                    if player_id not in players:
+                        raise ValueError(
+                            f"{where} position: Player {player_id} is not in Match "
+                            f"{roster.match_id}"
+                        )
 
 
 @dataclass(frozen=True)
@@ -693,6 +787,8 @@ class MatchSummary:
     source_video_frames: int | None = field(default=None, kw_only=True)
     operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary, kw_only=True)
     franchise_match_id: FranchiseMatchId | None = None
+    done_rallies: int = 0
+    total_rallies: int = 0
 
     @property
     def has_video(self) -> bool:

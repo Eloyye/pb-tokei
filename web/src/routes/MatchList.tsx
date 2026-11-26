@@ -71,6 +71,7 @@ export function MatchList() {
             <span>Franchise Match</span>
             <span>Video</span>
             <span>Mode</span>
+            <span>Progress</span>
             <span className="number">Active</span>
             <span className="number">Ratio</span>
           </div>
@@ -102,6 +103,7 @@ export function MatchList() {
                     {assisted ? "Assisted" : "Gold"}
                   </span>
                 </span>
+                <Progress done={match.done_rallies} total={match.total_rallies} />
                 <span className="number mono dimmed" title={operatorTimeTitle(match.operator_time)}>
                   {formatActiveTime(match.operator_time.active_seconds)}
                 </span>
@@ -123,5 +125,18 @@ export function MatchList() {
         </p>
       )}
     </main>
+  );
+}
+
+/** Rallies Done out of all Rallies, with a bar; or a note when there are none yet. */
+function Progress({ done, total }: { done: number; total: number }) {
+  if (total === 0) return <span className="dimmed">no Rallies yet</span>;
+  return (
+    <span className="progress" title={`${done} of ${total} Rallies Done`}>
+      <span className="progress-bar" aria-hidden>
+        <span style={{ width: `${(done / total) * 100}%` }} />
+      </span>
+      {done} / {total}
+    </span>
   );
 }

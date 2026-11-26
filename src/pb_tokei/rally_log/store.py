@@ -50,6 +50,7 @@ from .model import (
     PlayerPosition,
     PlaySegment,
     Rally,
+    RallyStatus,
     RefereeCall,
     Ruling,
     Score,
@@ -65,12 +66,13 @@ from .model import (
     WinnerSource,
     Zone,
     check_calibrations,
+    check_games,
     check_play_segments,
     check_player_anchors,
     check_team_ends,
     check_video_frames,
 )
-from .schema import MATCH_CONTENT_TABLES, STATEMENTS, migrate
+from .schema import GAME_TABLES, MATCH_CONTENT_TABLES, STATEMENTS, migrate
 
 Row = tuple[Any, ...]
 
@@ -532,7 +534,8 @@ class RallyLog:
                 COALESCE(ot.review_seconds, 0),
                 pa1.name, pa2.name, pb1.name, pb2.name,
                 fa.name, fb.name,
-                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id
+                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id,
+                COALESCE(rc.done, 0), COALESCE(rc.total, 0)
             FROM matches m
             JOIN tournaments t ON t.id = m.tournament_id
             LEFT JOIN (
@@ -547,6 +550,13 @@ class RallyLog:
             LEFT JOIN franchise_matches fm ON fm.id = m.franchise_match_id
             LEFT JOIN franchises fa ON fa.id = fm.franchise_a_id
             LEFT JOIN franchises fb ON fb.id = fm.franchise_b_id
+            LEFT JOIN (
+                SELECT match_id,
+                    count(*) FILTER (WHERE status = 'done') AS done,
+                    count(*) AS total
+                FROM rallies
+                GROUP BY match_id
+            ) rc ON rc.match_id = m.id
             WHERE {where}
             ORDER BY t.name, m.id
             """,
@@ -565,6 +575,8 @@ class RallyLog:
                 franchise_b=fb,
                 source_video=_source_video(video_url, video_id, video_path),
                 franchise_match_id=None if fm_id is None else FranchiseMatchId(fm_id),
+                done_rallies=done,
+                total_rallies=total,
             )
             for (
                 id_,
@@ -584,6 +596,8 @@ class RallyLog:
                 video_id,
                 video_path,
                 fm_id,
+                done,
+                total,
             ) in rows
         ]
 
@@ -692,6 +706,23 @@ class RallyLog:
             self._require_match(match_id)
             self._db.execute("DELETE FROM play_segments WHERE match_id = ?", [match_id])
             self._insert_play_segments(match_id, segments)
+
+    def get_games(self, match_id: MatchId) -> tuple[Game, ...]:
+        """A Match's Games with their Rallies, Shots and Observation Gaps, in number order."""
+        self._require_match(match_id)
+        return self._load_games(match_id)
+
+    def replace_games(self, match_id: MatchId, games: Sequence[Game]) -> None:
+        """Replaces all of a Match's Games, Rallies, Shots, positions and Observation Gaps,
+        leaving its Play Segments, Calibrations, Player anchors and Team ends as they are.
+
+        Raises ValueError if the Games don't fit the Match (see `check_games`).
+        """
+        with self.transaction():
+            check_games(games, self.get_match_roster(match_id))
+            for table in GAME_TABLES:
+                self._db.execute(f"DELETE FROM {table} WHERE match_id = ?", [match_id])
+            self._insert_games(match_id, games)
 
     def get_calibrations(self, match_id: MatchId) -> tuple[Calibration, ...]:
         """A Match's Calibrations, by Camera View then effective-from frame."""
@@ -865,9 +896,14 @@ class RallyLog:
         self._insert_calibrations(m, match.calibrations)
         self._insert_player_anchors(m, match.player_anchors)
         self._insert_team_ends(m, match.team_ends)
-        self._many("games", [[m, g.number] for g in match.games])
+        if match.games:
+            check_games(match.games, self.get_match_roster(m))
+        self._insert_games(m, match.games)
+
+    def _insert_games(self, m: MatchId, games: Sequence[Game]) -> None:
+        self._many("games", [[m, g.number] for g in games])
         rallies, shots, positions, gaps = [], [], [], []
-        for game in match.games:
+        for game in games:
             for rally in game.rallies:
                 rallies.append([m, game.number, *_rally_row(rally)])
                 for log_position, entry in enumerate(rally.entries):
@@ -1030,6 +1066,8 @@ def _rally_row(rally: Rally) -> list[Any]:
         *_optional_fact(None if challenge is None else challenge.ruling),
         *_fact(rally.winner_id),
         None if rally.winner_source is None else rally.winner_source.value,
+        *_fact(rally.scoreboard_winner_id),
+        rally.status.value,
     ]
 
 
@@ -1061,6 +1099,9 @@ def _read_rally(
         winner,
         winner_c,
         winner_source,
+        scoreboard_winner,
+        scoreboard_winner_c,
+        status,
     ) = row
     challenge = None
     if has_challenge:
@@ -1082,6 +1123,8 @@ def _read_rally(
         winner_id=_read(winner, winner_c, TeamId),
         winner_source=None if winner_source is None else WinnerSource(winner_source),
         entries=entries,
+        scoreboard_winner_id=_read(scoreboard_winner, scoreboard_winner_c, TeamId),
+        status=RallyStatus(status),
     )
 
 

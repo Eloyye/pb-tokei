@@ -34,6 +34,7 @@ from pb_tokei.annotate.footage_jobs import (
     FootageJobSummaryOut,
 )
 from pb_tokei.annotate.frontend import STATIC_DIR
+from pb_tokei.annotate.games import GameIO, frames_in, games_from_domain
 from pb_tokei.annotate.match_setup import CreatedMatchOut, CreateMatchIn, RosterOut, roster_catalog
 from pb_tokei.annotate.motion import (
     CameraMotionFramesOut,
@@ -194,6 +195,9 @@ class MatchOut(BaseModel):
     operator_time_ratio: float | None
     assisted_ratio_budget: float = ASSISTED_RATIO_BUDGET
     footage_job: FootageJobSummaryOut | None = None
+    # Rallies marked Done, and all Rallies, for Home's Progress column.
+    done_rallies: int = 0
+    total_rallies: int = 0
 
     @classmethod
     def from_summary(
@@ -215,6 +219,8 @@ class MatchOut(BaseModel):
             operator_time=OperatorTimeOut.from_summary(summary.operator_time),
             operator_time_ratio=summary.operator_time_ratio,
             footage_job=footage_job,
+            done_rallies=summary.done_rallies,
+            total_rallies=summary.total_rallies,
         )
 
 
@@ -1021,6 +1027,38 @@ def create_app(
 
         saved_of_view, segments = rally_log.run(change)
         return rally_log.fit_calibrations(saved_of_view, segments, summary.source_video)
+
+    # --- Games, Rallies and Shots ----------------------------------------------------------
+
+    @app.get("/api/matches/{match_id}/games", operation_id="getGames")
+    def get_games(match_id: UUID, rally_log: OpenLog) -> list[GameIO]:
+        return games_from_domain(rally_log.run(lambda log: log.get_games(MatchId(match_id))))
+
+    @app.put("/api/matches/{match_id}/games", operation_id="replaceGames")
+    def replace_games(match_id: UUID, body: list[GameIO], rally_log: OpenLog) -> list[GameIO]:
+        """Replaces all of a Match's Games, Rallies, Shots and Observation Gaps, leaving its Play
+        Segments, Calibrations, Player anchors and Team ends. 422 if a frame is outside the video
+        or a Team or Player isn't in the Match."""
+        mid = MatchId(match_id)
+        _summary, video = rally_log.lookup(match_id)
+        if video.status is VideoStatus.READY and video.converted_path is not None:
+            frame_count = video_frame_count(video.converted_path)
+            if frame_count is not None:
+                for what, frame in frames_in(body):
+                    if frame >= frame_count:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"{what} frame {frame} is outside the video "
+                                f"(length {frame_count} frames)"
+                            ),
+                        )
+
+        def change(log: RallyLog) -> list[GameIO]:
+            log.replace_games(mid, [g.to_domain() for g in body])
+            return games_from_domain(log.get_games(mid))
+
+        return rally_log.run(change)
 
     # --- Camera Motion -------------------------------------------------------------------
 

@@ -1,11 +1,22 @@
-import { useMemo, useState } from "react";
-import type { MatchDetail, PlayerTrackingFrameOut, TeamEnd } from "../api/client";
+import { useMemo } from "react";
+import type { MatchDetail, PlayerTrackingFrameOut, Shot, TeamEnd } from "../api/client";
 import type { Point } from "../lib/calibrations";
 import { nearTeamKeyFor, playerInitialsMap } from "../lib/players";
-import { CourtDiagram, type CourtPlayerDot } from "./CourtDiagram";
+import { teamKey, type Roster } from "../lib/rallyLog";
+import {
+  type CourtGhost,
+  CourtDiagram,
+  type CourtLanding,
+  type CourtPlayerDot,
+} from "./CourtDiagram";
 import { Panel, PanelTitle } from "./Panel";
 
-/** Court diagram showing live tracked Players at the playhead, with drag-to-place fixes. */
+/**
+ * The Court diagram. With a Shot selected it shows that Shot's recorded positions (the hitter
+ * ringed, the previous Shot's as ghosts, the landing as a ✕): clicking the court sets the
+ * landing and dragging a dot edits that Shot only. Otherwise it shows live tracked Players at the
+ * playhead, with drag-to-place anchor fixes.
+ */
 export function CourtPanel({
   match,
   focused,
@@ -16,6 +27,11 @@ export function CourtPanel({
   onSelectPlayer,
   onMovePlayer,
   onPlaceOnCourt,
+  roster,
+  shot,
+  previousShot,
+  onSetLanding,
+  onMoveShotPlayer,
 }: {
   match: MatchDetail;
   focused: boolean;
@@ -26,6 +42,12 @@ export function CourtPanel({
   onSelectPlayer?: (playerId: string) => void;
   onMovePlayer?: (playerId: string, courtPoint: Point) => void;
   onPlaceOnCourt?: (courtPoint: Point) => void;
+  roster?: Roster;
+  /** The selected Shot, if any: its recorded positions replace live tracking. */
+  shot?: Shot;
+  previousShot?: Shot;
+  onSetLanding?: (courtPoint: Point) => void;
+  onMoveShotPlayer?: (playerId: string, courtPoint: Point) => void;
 }) {
   const initials = useMemo(() => playerInitialsMap(match.players), [match.players]);
   const trackedById = useMemo(
@@ -37,6 +59,20 @@ export function CourtPanel({
   const farLabel = nearKey === "a" ? match.team_b.join(" / ") : match.team_a.join(" / ");
 
   const dots: CourtPlayerDot[] = match.players.map((p) => {
+    if (shot) {
+      const position = shot.positions[p.id]?.position;
+      return {
+        id: p.id,
+        name: p.name,
+        initials: initials.get(p.id) ?? "?",
+        team: p.team,
+        x: position?.value?.x ?? null,
+        y: position?.value?.y ?? null,
+        certainty: position?.certainty ?? "unknown",
+        selected: p.id === selectedPlayerId,
+        hitter: shot.hitter_id.value === p.id,
+      };
+    }
     const tp = trackedById.get(p.id);
     return {
       id: p.id,
@@ -50,13 +86,31 @@ export function CourtPanel({
     };
   });
   const anyKnown = dots.some((d) => d.certainty !== "unknown");
+  const ghosts: CourtGhost[] = previousShot
+    ? match.players.flatMap((p) => {
+        const at = previousShot.positions[p.id]?.position.value;
+        return at ? [{ id: p.id, team: p.team, x: at.x, y: at.y }] : [];
+      })
+    : [];
+  const hitter = shot?.hitter_id.value ?? null;
+  const landingPoint = shot?.landing.value ?? null;
+  const landing: CourtLanding | null =
+    shot && landingPoint
+      ? {
+          ...landingPoint,
+          team: roster
+            ? teamKey(roster, match.players.find((p) => p.id === hitter)?.team_id ?? null)
+            : null,
+          from: (hitter !== null && shot.positions[hitter]?.position.value) || null,
+        }
+      : null;
 
   return (
     <Panel
       id="court"
       focused={focused}
       tabs={<PanelTitle>Court</PanelTitle>}
-      tools={<span>near end = Main View camera</span>}
+      tools={<span>{shot ? "Shot at contact" : "live"} · near end = Main View camera</span>}
     >
       <div className="court-wrap">
         <CourtDiagram
@@ -64,79 +118,22 @@ export function CourtPanel({
           farTeam={farLabel}
           nearTeamKey={nearKey}
           players={dots}
-          interactive={Boolean(onMovePlayer)}
+          interactive={shot ? Boolean(onMoveShotPlayer) : Boolean(onMovePlayer)}
           selectedPlayerId={selectedPlayerId}
           onSelectPlayer={onSelectPlayer}
-          onMovePlayer={onMovePlayer}
-          onPlaceOnCourt={onPlaceOnCourt}
+          onMovePlayer={shot ? onMoveShotPlayer : onMovePlayer}
+          onPlaceOnCourt={shot ? undefined : onPlaceOnCourt}
+          ghosts={ghosts}
+          landing={landing}
+          onClickCourt={shot ? onSetLanding : undefined}
         />
         <div className="court-note">
-          {anyKnown
-            ? "Drag any Player dot to override position"
-            : "Track and anchor Players in Calibrate → Players, or drag dots onto the court"}
+          {shot
+            ? "Click the court to set the landing; drag a dot to fix this Shot's position"
+            : anyKnown
+              ? "Drag any Player dot to override position"
+              : "Track and anchor Players in Calibrate → Players, or drag dots onto the court"}
         </div>
-      </div>
-    </Panel>
-  );
-}
-
-type InspectorTab = "shot" | "rally";
-
-/** Properties of the current Shot or Rally. Empty until Rally and Shot entry exists. */
-export function InspectorPanel({ focused }: { focused: boolean }) {
-  const [tab, setTab] = useState<InspectorTab>("shot");
-  return (
-    <Panel
-      id="inspector"
-      focused={focused}
-      tabs={
-        <div role="tablist" aria-label="Inspector" style={{ display: "flex" }}>
-          {(["shot", "rally"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              role="tab"
-              aria-selected={tab === t}
-              className={`panel-tab ${tab === t ? "active" : ""}`}
-              onClick={() => setTab(t)}
-            >
-              {t === "shot" ? "Shot" : "Rally"}
-            </button>
-          ))}
-        </div>
-      }
-    >
-      <div className="panel-body" role="tabpanel">
-        {tab === "shot" ? (
-          <p className="empty">
-            <strong>No Shot selected.</strong> The current Shot's Hitter, Shot Class, Contact Kind,
-            Zone, Erne, ATP, landing and Error will show here, each marked Observed, Inferred or
-            Unknown.
-          </p>
-        ) : (
-          <p className="empty">
-            <strong>No Rally selected.</strong> The current Rally's frames, score, Serving Team,
-            Server, Returner, Referee Call, Challenge and winner will show here.
-          </p>
-        )}
-      </div>
-    </Panel>
-  );
-}
-
-export function RalliesPanel({ focused }: { focused: boolean }) {
-  return (
-    <Panel
-      id="rallies"
-      focused={focused}
-      className="area-rallies"
-      tabs={<PanelTitle>Rallies</PanelTitle>}
-      tools={<span className="mono">0</span>}
-    >
-      <div className="panel-body">
-        <p className="empty">
-          No Rallies yet. They will be listed here by Game, with status, score and issues.
-        </p>
       </div>
     </Panel>
   );

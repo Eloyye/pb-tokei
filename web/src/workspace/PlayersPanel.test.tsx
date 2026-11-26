@@ -35,6 +35,8 @@ const MATCH: MatchDetail = {
   },
   operator_time_ratio: 0,
   footage_job: null,
+  done_rallies: 0,
+  total_rallies: 0,
   fix_command: null,
   source_url: "https://example.com/v",
   original_present: true,

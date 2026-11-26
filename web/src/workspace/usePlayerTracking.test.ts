@@ -105,6 +105,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** Tracking at frame 10 of SEGMENTS, for a new Shot's snapshot. */
+function renderAt(enabled = true, anchors: PlayerAnchor[] = EMPTY_ANCHORS) {
+  return renderHook(() =>
+    usePlayerTracking(
+      "match-1",
+      enabled,
+      SAVED,
+      SEGMENTS,
+      CALIBRATIONS,
+      anchors,
+      EMPTY_ENDS,
+      0,
+      10,
+    ),
+  );
+}
+
 describe("usePlayerTracking", () => {
   it("loads status without auto-triggering tracking, then polls after explicit startTracking until ready", async () => {
     vi.useFakeTimers();
@@ -271,5 +288,58 @@ describe("usePlayerTracking", () => {
       await match2Status.promise;
     });
     expect(result.current.status?.device).toBe("cpu");
+  });
+
+  describe("Player Tracking for a new Shot (cachedAt / trackingAt)", () => {
+    it("asks for a fetch until the status has loaded, then knows nothing is tracked", async () => {
+      const status = deferred<PlayerTrackingOut>();
+      vi.mocked(getPlayerTracking).mockReturnValue(status.promise);
+      const { result } = renderAt();
+      expect(result.current.cachedAt(10)).toBeUndefined();
+
+      await act(async () => status.resolve(IDLE_STATUS));
+      expect(result.current.cachedAt(10)).toBeNull();
+    });
+
+    it("needs a fetch when an anchor exists but the frame isn't loaded", async () => {
+      vi.mocked(getPlayerTracking).mockResolvedValue(IDLE_STATUS);
+      vi.mocked(getPlayerTrackingFrames).mockReturnValue(new Promise(() => {}));
+      const anchor: PlayerAnchor = {
+        frame: 5,
+        player_id: "p1",
+        kind: "identity",
+        image_x: 0.5,
+        image_y: 0.5,
+      };
+      const { result } = renderAt(true, [anchor]);
+      await waitFor(() => expect(getPlayerTracking).toHaveBeenCalled());
+      expect(result.current.cachedAt(10)).toBeUndefined();
+    });
+
+    it("serves a loaded frame without fetching, and fetches one frame otherwise", async () => {
+      vi.mocked(getPlayerTracking).mockResolvedValue(READY_STATUS);
+      const { result } = renderAt();
+      await waitFor(() => expect(result.current.frameData?.frame).toBe(10));
+      expect(result.current.cachedAt(42)?.frame).toBe(42);
+      expect((await result.current.trackingAt(42))?.frame).toBe(42);
+      expect(getPlayerTrackingFrames).toHaveBeenCalledTimes(1);
+
+      // Outside the loaded window (frame 350 is in the next one): a one-frame fetch.
+      expect(result.current.cachedAt(350)).toBeUndefined();
+      expect((await result.current.trackingAt(350))?.frame).toBe(350);
+      expect(getPlayerTrackingFrames).toHaveBeenLastCalledWith("match-1", 350, 350);
+    });
+
+    it("gives nothing without video, and nothing when a fetch fails", async () => {
+      const disabled = renderAt(false);
+      expect(disabled.result.current.cachedAt(10)).toBeNull();
+      expect(await disabled.result.current.trackingAt(10)).toBeUndefined();
+      disabled.unmount();
+
+      vi.mocked(getPlayerTracking).mockResolvedValue(READY_STATUS);
+      vi.mocked(getPlayerTrackingFrames).mockRejectedValue(new Error("offline"));
+      const { result } = renderAt();
+      expect(await result.current.trackingAt(350)).toBeUndefined();
+    });
   });
 });

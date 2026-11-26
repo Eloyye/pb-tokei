@@ -39,6 +39,8 @@ function makeMatch(overrides: Partial<MatchDetail> = {}): MatchDetail {
     },
     operator_time_ratio: null,
     footage_job: null,
+    done_rallies: 0,
+    total_rallies: 0,
     fix_command: `pb-tokei download <url> --match ${MATCH_ID} --db /data/log.duckdb`,
     source_url: null,
     original_present: false,
