@@ -1,3 +1,7 @@
+import { type PointerEvent, useRef, useState } from "react";
+import type { Certainty } from "../api/client";
+import type { Point } from "../lib/calibrations";
+
 /**
  * A top-down court in feet, 10 SVG units to the foot. The near end (negative `y`, the Main View
  * camera's end) is at the bottom so it lines up with the video. Zone bands are shaded:
@@ -9,11 +13,118 @@ function Y(feet: number): number {
   return -feet * 10;
 }
 
-export function CourtDiagram({ nearTeam, farTeam }: { nearTeam: string; farTeam: string }) {
+function X(feet: number): number {
+  return feet * 10;
+}
+
+export interface CourtPlayerDot {
+  id: string;
+  name: string;
+  initials: string;
+  team: "a" | "b";
+  x: number | null;
+  y: number | null;
+  certainty: Certainty;
+  selected?: boolean;
+}
+
+/** Parking slots outside the right sideline for Players whose position is Unknown. */
+const UNKNOWN_SLOTS: readonly Point[] = [
+  { x: 12.2, y: -15.5 },
+  { x: 12.2, y: -9.5 },
+  { x: 12.2, y: 9.5 },
+  { x: 12.2, y: 15.5 },
+];
+
+const VIEW_X = -140;
+const VIEW_Y = -250;
+const VIEW_W = 280;
+const VIEW_H = 500;
+
+export function CourtDiagram({
+  nearTeam,
+  farTeam,
+  nearTeamKey = "a",
+  players = [],
+  interactive = false,
+  selectedPlayerId = null,
+  onSelectPlayer,
+  onMovePlayer,
+  onPlaceOnCourt,
+}: {
+  nearTeam: string;
+  farTeam: string;
+  /** Which Team (`"a"` or `"b"`) is currently at the near end, colouring the end labels. */
+  nearTeamKey?: "a" | "b";
+  players?: readonly CourtPlayerDot[];
+  interactive?: boolean;
+  selectedPlayerId?: string | null;
+  onSelectPlayer?: (playerId: string) => void;
+  /** Fired when a Player dot is dragged to a new court position (in feet). */
+  onMovePlayer?: (playerId: string, courtPoint: Point) => void;
+  /** Fired when empty court is clicked while placing an undetected Player. */
+  onPlaceOnCourt?: (courtPoint: Point) => void;
+}) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [drag, setDrag] = useState<{ playerId: string; from: Point; at: Point } | null>(null);
   const sides = [-1, 1] as const;
+  const nearClass = nearTeamKey === "a" ? "team-a" : "team-b";
+  const farClass = nearTeamKey === "a" ? "team-b" : "team-a";
+
+  const selectedPlayer = players.find((p) => p.id === selectedPlayerId);
+  const canClickToPlace =
+    interactive &&
+    Boolean(onPlaceOnCourt) &&
+    selectedPlayer !== undefined &&
+    selectedPlayer.certainty === "unknown";
+
+  const clientToCourt = (event: PointerEvent<SVGSVGElement>): Point | null => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    // Account for default SVG preserveAspectRatio="xMidYMid meet".
+    const scale = Math.min(rect.width / VIEW_W, rect.height / VIEW_H);
+    const drawnW = VIEW_W * scale;
+    const drawnH = VIEW_H * scale;
+    const offsetX = rect.left + (rect.width - drawnW) / 2;
+    const offsetY = rect.top + (rect.height - drawnH) / 2;
+    const svgX = VIEW_X + (event.clientX - offsetX) / scale;
+    const svgY = VIEW_Y + (event.clientY - offsetY) / scale;
+    return {
+      x: Math.max(-16, Math.min(16, svgX / 10)),
+      y: Math.max(-32, Math.min(32, -svgY / 10)),
+    };
+  };
+
   return (
-    <svg className="court" viewBox="-140 -250 280 500" role="img" aria-label="Court diagram">
-      <rect className="surround" x={-140} y={-250} width={280} height={500} />
+    <svg
+      ref={svgRef}
+      className={`court ${interactive ? "interactive" : ""} ${canClickToPlace ? "placing" : ""}`}
+      viewBox={`${VIEW_X} ${VIEW_Y} ${VIEW_W} ${VIEW_H}`}
+      role="img"
+      aria-label="Court diagram"
+      onPointerMove={(event) => {
+        if (!drag || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        const pt = clientToCourt(event);
+        if (pt) setDrag({ ...drag, at: pt });
+      }}
+      onPointerDown={(event) => {
+        if (!canClickToPlace || !onPlaceOnCourt) return;
+        const pt = clientToCourt(event);
+        if (pt) onPlaceOnCourt(pt);
+      }}
+      onPointerUp={(event) => {
+        if (!drag) return;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        if (drag.at.x !== drag.from.x || drag.at.y !== drag.from.y) {
+          onMovePlayer?.(drag.playerId, drag.at);
+        }
+        setDrag(null);
+      }}
+      onPointerCancel={() => setDrag(null)}
+    >
+      <rect className="surround" x={VIEW_X} y={VIEW_Y} width={VIEW_W} height={VIEW_H} />
       {sides.map((s) => (
         <g key={s}>
           <rect
@@ -62,12 +173,58 @@ export function CourtDiagram({ nearTeam, farTeam }: { nearTeam: string; farTeam:
       <line className="line" x1={0} y1={-220} x2={0} y2={-70} />
       <line className="line" x1={0} y1={70} x2={0} y2={220} />
       <line className="net" x1={-110} y1={0} x2={110} y2={0} />
-      <text className="label team-a" x={0} y={Y(-23.6) + 4} textAnchor="middle">
+      <text className={`label ${nearClass}`} x={0} y={Y(-23.6) + 4} textAnchor="middle">
         {nearTeam}
       </text>
-      <text className="label team-b" x={0} y={Y(23.6) + 4} textAnchor="middle">
+      <text className={`label ${farClass}`} x={0} y={Y(23.6) + 4} textAnchor="middle">
         {farTeam}
       </text>
+      {players.map((p, idx) => {
+        const activeDrag = drag?.playerId === p.id ? drag : null;
+        const unknown = !activeDrag && (p.certainty === "unknown" || p.x === null || p.y === null);
+        const inferred = !activeDrag && p.certainty === "inferred";
+        const slot = UNKNOWN_SLOTS[idx % UNKNOWN_SLOTS.length]!;
+        const cx = activeDrag ? activeDrag.at.x : unknown ? slot.x : p.x!;
+        const cy = activeDrag ? activeDrag.at.y : unknown ? slot.y : p.y!;
+        const isSelected = Boolean(p.selected || p.id === selectedPlayerId);
+        const classes = [
+          "court-player",
+          `team-${p.team}`,
+          unknown ? "unknown" : inferred ? "inferred" : "observed",
+          isSelected ? "selected" : "",
+          interactive ? "draggable" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return (
+          <g
+            key={p.id}
+            className={classes}
+            transform={`translate(${X(cx)}, ${Y(cy)})`}
+            data-player-id={p.id}
+            data-certainty={p.certainty}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              onSelectPlayer?.(p.id);
+              if (!interactive || !onMovePlayer) return;
+              svgRef.current?.setPointerCapture(event.pointerId);
+              const from = { x: cx, y: cy };
+              setDrag({ playerId: p.id, from, at: from });
+            }}
+          >
+            <title>
+              {p.name}
+              {unknown
+                ? " (Unknown — drag onto court to place)"
+                : ` (${cx.toFixed(1)}, ${cy.toFixed(1)} ft, ${p.certainty})`}
+            </title>
+            <circle r={11} />
+            <text y={3.5} textAnchor="middle">
+              {p.initials}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }

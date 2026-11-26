@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
-import { type Landmark, type MatchDetail, matchVideoUrl } from "../api/client";
+import {
+  type FrameDetectionOut,
+  type Landmark,
+  type MatchDetail,
+  matchVideoUrl,
+} from "../api/client";
 import {
   calibrationAt,
   calibrationKeyFor,
@@ -32,6 +37,15 @@ import {
   zoomKeyAction,
 } from "../lib/keymap";
 import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
+import {
+  courtPointToImage,
+  deletePlayerAnchor,
+  deleteTeamEnd,
+  imagePointToCourt,
+  setPlayerAnchor,
+  swapTeamEnds,
+  swapTeamPartners,
+} from "../lib/players";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
 import { type FrameRange, fullView, reconcileView, ZOOM_STEP, zoomView } from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
@@ -39,18 +53,22 @@ import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
 import type { PanelId } from "./Panel";
 import { CalibrationOverlay } from "./CalibrationOverlay";
-import { CalibrationPanel } from "./CalibrationPanel";
+import { type CalibrateTab, CalibrationPanel } from "./CalibrationPanel";
+import { PlayerOverlay } from "./PlayerOverlay";
+import { PlayersPanel } from "./PlayersPanel";
 import { CourtPanel, InspectorPanel, RalliesPanel } from "./SidePanels";
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
 import { useCameraMotion } from "./useCameraMotion";
+import { usePlayerTracking } from "./usePlayerTracking";
 import { useRecording } from "./useRecording";
 
 const MESSAGES: Record<WorkspaceName, string> = {
   calibrate:
-    "Mark Play Segments with Shift+I and Shift+O, 1 / 2 for Main or Sideline; then click each Landmark on the video.",
-  annotate: "Rally and Shot entry isn't built yet. Playback and the Timeline work.",
+    "Mark Play Segments with Shift+I and Shift+O, 1 / 2 for Main or Sideline; calibrate Landmarks, then track and anchor Players.",
+  annotate:
+    "Live tracked Players show on the Monitor and Court diagram; click a box or drag a dot to fix.",
   review: "Review needs pre-filled Rally Logs, which don't exist yet.",
 };
 
@@ -71,18 +89,46 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const gridRef = useRef<HTMLDivElement>(null);
   const [recordingState, recording] = useRecording(match.id);
   const calibrating = workspace === "calibrate";
+  const annotating = workspace === "annotate";
+  const [calibrateTab, setCalibrateTab] = useState<CalibrateTab>("landmarks");
+  const [calibrateSelectedPlayerId, setCalibrateSelectedPlayerId] = useState<string | null>(
+    () => match.players[0]?.id ?? null,
+  );
+  // In Annotate, no Player is selected until the operator explicitly clicks one in CourtPanel or
+  // the Monitor overlay, so clicking the video toggles play/pause instead of saving an anchor.
+  const [annotateSelectedPlayerId, setAnnotateSelectedPlayerId] = useState<string | null>(null);
+  const selectedPlayerId = calibrating ? calibrateSelectedPlayerId : annotateSelectedPlayerId;
+  const setSelectedPlayerId = calibrating
+    ? setCalibrateSelectedPlayerId
+    : setAnnotateSelectedPlayerId;
+  const [showPlayerOverlay, setShowPlayerOverlay] = useState(true);
+
   const segments = recordingState.recording?.segments ?? null;
   const segment = (segments && segmentAt(segments, frame)) || undefined;
 
   // Calibration at the playhead: the one in effect for its Play Segment's Camera View, and the
   // Landmark to place next. The selection belongs to one Calibration; on another, it restarts.
   const calibrations = recordingState.recording?.calibrations ?? [];
+  const anchors = recordingState.recording?.anchors ?? [];
+  const teamEnds = recordingState.recording?.teamEnds ?? [];
   const cameraMotion = useCameraMotion(
     match.id,
-    calibrating && match.video_status === "ready",
+    (calibrating || annotating) && match.video_status === "ready",
     recordingState.saveStatus,
     segments,
     calibrations,
+    frame,
+    calibrating,
+  );
+  const playerTracking = usePlayerTracking(
+    match.id,
+    (calibrating || annotating) && match.video_status === "ready",
+    recordingState.saveStatus,
+    segments,
+    calibrations,
+    anchors,
+    teamEnds,
+    cameraMotion.motion?.tracked_spans ?? 0,
     frame,
   );
   const unmappedRanges = cameraMotion.motion?.unmapped_ranges ?? [];
@@ -90,6 +136,109 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
   const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
   const activeFit = calibration ? currentFit(recordingState.fits, calibration) : undefined;
+  const activeCourtToImage = cameraMotion.frameUnmapped
+    ? null
+    : cameraMotion.frameMatrix !== undefined
+      ? cameraMotion.frameMatrix
+      : (activeFit?.court_to_image ??
+        (calibration ? recordingState.fits.get(fitKey(calibration))?.court_to_image : null) ??
+        null);
+  const activeLens =
+    !cameraMotion.frameUnmapped && cameraMotion.frameMatrix !== undefined
+      ? cameraMotion.frameLens
+      : null;
+
+  const oppositeEndFlipYFt = playerTracking.status?.opposite_end_flip_y_ft;
+
+  const assignPlayerDetection = (playerId: string, point: Point, detection: FrameDetectionOut) => {
+    const courtY =
+      detection.court_y ??
+      imagePointToCourt(
+        { x: detection.foot_x, y: detection.foot_y },
+        activeCourtToImage,
+        activeLens,
+      )?.y ??
+      null;
+    const result = recording.editPlayers((curAnchors, curEnds) =>
+      setPlayerAnchor(
+        curAnchors,
+        curEnds,
+        match,
+        frame,
+        playerId,
+        "identity",
+        point,
+        courtY,
+        oppositeEndFlipYFt,
+      ),
+    );
+    if (calibrating) {
+      if (result?.nextSelected) setCalibrateSelectedPlayerId(result.nextSelected);
+    } else {
+      setAnnotateSelectedPlayerId(null);
+    }
+  };
+
+  const movePlayerOnMonitor = (playerId: string, point: Point) => {
+    const courtY = imagePointToCourt(point, activeCourtToImage, activeLens)?.y ?? null;
+    recording.editPlayers((curAnchors, curEnds) =>
+      setPlayerAnchor(
+        curAnchors,
+        curEnds,
+        match,
+        frame,
+        playerId,
+        "position",
+        point,
+        courtY,
+        oppositeEndFlipYFt,
+      ),
+    );
+    if (!calibrating) setAnnotateSelectedPlayerId(null);
+  };
+
+  const movePlayerOnCourt = (playerId: string, courtPoint: Point) => {
+    const imagePt = courtPointToImage(courtPoint, activeCourtToImage, activeLens);
+    if (!imagePt) {
+      recording.notify(
+        segment
+          ? "Calibrate this Camera View first (or point is outside the video frame)"
+          : "Seek to a calibrated Play Segment to place Players",
+      );
+      return;
+    }
+    recording.editPlayers((curAnchors, curEnds) =>
+      setPlayerAnchor(
+        curAnchors,
+        curEnds,
+        match,
+        frame,
+        playerId,
+        "position",
+        imagePt,
+        courtPoint.y,
+        oppositeEndFlipYFt,
+      ),
+    );
+    if (!calibrating) setAnnotateSelectedPlayerId(null);
+  };
+
+  const placeSelectedOnCourt = (courtPoint: Point) => {
+    if (!selectedPlayerId) return recording.notify("Select a Player first");
+    movePlayerOnCourt(selectedPlayerId, courtPoint);
+  };
+
+  const swapTeam = (team: "a" | "b") => {
+    recording.editPlayers((curAnchors, curEnds) =>
+      swapTeamPartners(curAnchors, curEnds, match, team, frame, playerTracking.frameData),
+    );
+  };
+
+  const swapEnds = () => {
+    recording.editPlayers((curAnchors, curEnds) =>
+      swapTeamEnds(curAnchors, curEnds, match, frame, playerTracking.frameData?.near_team_id),
+    );
+  };
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,
     landmark: null,
@@ -224,24 +373,28 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       }
     };
     if (isTextEntry(event.target)) return;
-    if (calibrating && totalFrames > 0) {
+    if ((calibrating || annotating) && totalFrames > 0) {
       const historyAction = historyKeyAction(event);
       if (historyAction) {
         event.preventDefault();
         if (!event.repeat) recording[historyAction]();
         return;
       }
+    }
+    if (calibrating && totalFrames > 0) {
       const segmentAction = segmentKeyAction(event);
       if (segmentAction) {
         event.preventDefault();
         if (!event.repeat) edit(segmentAction);
         return;
       }
-      const calibrationAction = calibrationKeyAction(event);
-      if (calibrationAction) {
-        event.preventDefault();
-        if (!event.repeat) calibrate(calibrationAction);
-        return;
+      if (calibrateTab === "landmarks") {
+        const calibrationAction = calibrationKeyAction(event);
+        if (calibrationAction) {
+          event.preventDefault();
+          if (!event.repeat) calibrate(calibrationAction);
+          return;
+        }
       }
     }
     const zoomDirection = zoomKeyAction(event);
@@ -302,7 +455,13 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         <Monitor
           match={match}
           src={src}
-          title={calibrating ? "Program: Calibrate" : "Program"}
+          title={
+            calibrating
+              ? calibrateTab === "players"
+                ? "Program: Players"
+                : "Program: Calibrate"
+              : "Program"
+          }
           videoRef={videoRef}
           state={state}
           controls={controls}
@@ -310,9 +469,48 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           onCloseGoto={() => setGotoOpen(false)}
           focused={focused === "monitor"}
           cameraView={segments ? (segment?.camera_view ?? "none") : null}
+          headerTools={
+            annotating &&
+            src && (
+              <div className="monitor-player-tools">
+                <button
+                  type="button"
+                  className={`icon-button ${showPlayerOverlay ? "active" : ""}`}
+                  aria-pressed={showPlayerOverlay}
+                  title="Toggle Player overlay on the Monitor"
+                  onClick={() => setShowPlayerOverlay((v) => !v)}
+                >
+                  Players
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  title="Swap Team A partners from the playhead forward"
+                  onClick={() => swapTeam("a")}
+                >
+                  Swap A
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  title="Swap Team B partners from the playhead forward"
+                  onClick={() => swapTeam("b")}
+                >
+                  Swap B
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  title="Swap near and far Team ends from the playhead forward"
+                  onClick={swapEnds}
+                >
+                  Swap ends
+                </button>
+              </div>
+            )
+          }
           overlay={
-            calibrating &&
-            segments && (
+            calibrating && calibrateTab === "landmarks" && segments ? (
               <CalibrationOverlay
                 videoRef={videoRef}
                 frame={frame}
@@ -328,7 +526,20 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 onSelect={select}
                 onBlocked={recording.notify}
               />
-            )
+            ) : (calibrating && calibrateTab === "players") || (annotating && showPlayerOverlay) ? (
+              <PlayerOverlay
+                videoRef={videoRef}
+                players={match.players}
+                frameData={playerTracking.frameData}
+                selectedPlayerId={selectedPlayerId}
+                editable={Boolean(segment)}
+                clickEmptyPlaces={calibrating && calibrateTab === "players"}
+                onSelectPlayer={setSelectedPlayerId}
+                onAssignDetection={assignPlayerDetection}
+                onMovePlayer={movePlayerOnMonitor}
+                onBackgroundClick={annotating ? controls.togglePlay : undefined}
+              />
+            ) : undefined
           }
         />
         <Splitter
@@ -379,10 +590,52 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
               onConfirmLandmark={confirmOne}
               onConfirmAll={confirmAllHere}
               onRetrack={cameraMotion.retrack}
+              activeTab={calibrateTab}
+              onTabChange={setCalibrateTab}
+              playersPanel={
+                <PlayersPanel
+                  match={match}
+                  frame={frame}
+                  tracking={playerTracking.status}
+                  frameData={playerTracking.frameData}
+                  anchors={anchors}
+                  teamEnds={teamEnds}
+                  selectedPlayerId={selectedPlayerId}
+                  onSelectPlayer={setSelectedPlayerId}
+                  onTrack={() => playerTracking.startTracking(frame)}
+                  onCancelTrack={playerTracking.cancelTracking}
+                  onSwapTeam={swapTeam}
+                  onSwapEnds={swapEnds}
+                  onMovePlayerOnCourt={movePlayerOnCourt}
+                  onPlacePlayerOnCourt={placeSelectedOnCourt}
+                  onSeek={controls.seek}
+                  onDeleteAnchor={(anchorFrame, playerId) => {
+                    const name = match.players.find((p) => p.id === playerId)?.name;
+                    recording.editPlayers((curAnchors, curEnds) =>
+                      deletePlayerAnchor(curAnchors, curEnds, anchorFrame, playerId, name),
+                    );
+                  }}
+                  onDeleteTeamEnd={(effectiveFrom) =>
+                    recording.editPlayers((curAnchors, curEnds) =>
+                      deleteTeamEnd(curAnchors, curEnds, effectiveFrom),
+                    )
+                  }
+                />
+              }
             />
           ) : (
             <>
-              <CourtPanel match={match} focused={focused === "court"} />
+              <CourtPanel
+                match={match}
+                focused={focused === "court"}
+                frame={frame}
+                frameData={playerTracking.frameData}
+                teamEnds={teamEnds}
+                selectedPlayerId={selectedPlayerId}
+                onSelectPlayer={setSelectedPlayerId}
+                onMovePlayer={movePlayerOnCourt}
+                onPlaceOnCourt={placeSelectedOnCourt}
+              />
               <InspectorPanel focused={focused === "inspector"} />
             </>
           )}
@@ -431,7 +684,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         />
       </div>
       <StatusBar
-        message={(calibrating && recordingState.message) || MESSAGES[workspace]}
+        message={((calibrating || annotating) && recordingState.message) || MESSAGES[workspace]}
         saveStatus={recordingState.saveStatus}
         totalFrames={totalFrames}
       />

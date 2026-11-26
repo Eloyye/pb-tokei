@@ -10,9 +10,13 @@ from collections.abc import Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import duckdb
+
+if TYPE_CHECKING:
+    from pb_tokei.player_vision import VisionBackend
 
 from pb_tokei.convert import ConvertProgress, FootageConversionError, convert_footage
 from pb_tokei.footage import (
@@ -145,6 +149,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser", action="store_true", help="Don't open the app in a browser."
     )
 
+    track = subparsers.add_parser(
+        "track",
+        help="Track all four Players across calibrated Play Segments and cache results.",
+    )
+    track.add_argument("match_id", help="Match UUID in the Rally Log.")
+    _db_argument(track)
+    track.add_argument(
+        "--device",
+        choices=("auto", "mps", "cuda", "cpu"),
+        default="auto",
+        help="Compute device for person detection and pose estimation (default: auto).",
+    )
+
     dev = subparsers.add_parser("dev", help="Maintain this development checkout.")
     dev_commands = dev.add_subparsers(dest="dev_command", required=True)
     update = dev_commands.add_parser(
@@ -180,6 +197,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     run: CommandRunner | StreamRunner | None = None,
+    player_backend: VisionBackend | None = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -192,6 +210,8 @@ def main(
         return args.handler(args)
     if args.command == "annotate":
         return _run_annotate(args)
+    if args.command == "track":
+        return _run_track(args, parser=parser, backend=player_backend)
     if args.command == "dev":
         return args.handler(run=run)
 
@@ -489,6 +509,118 @@ def _run_annotate(args: argparse.Namespace) -> int:
     except FrontEndNotBuiltError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _run_track(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser,
+    backend: VisionBackend | None = None,
+) -> int:
+    from pb_tokei.calibration import CourtMapping
+    from pb_tokei.camera_motion import CameraMotionCache, default_cache_dir
+    from pb_tokei.convert import converted_path_for
+    from pb_tokei.player_tracking import PlayerTrackingCache, default_player_cache_dir
+    from pb_tokei.player_vision import PlayerTrackingError, TorchVisionBackend
+    from pb_tokei.rally_log import MatchNotFound, resolve_video_path
+
+    try:
+        match_id = MatchId(UUID(args.match_id))
+    except ValueError:
+        parser.error(f"Invalid match UUID: {args.match_id}")
+
+    db_path = _resolve_cli_db(args.db)
+    if db_path is None:
+        return 1
+
+    try:
+        with RallyLog.open(db_path) as log:
+            summary = log.get_match_summary(match_id)
+            roster = log.get_match_roster(match_id)
+            segments = log.get_play_segments(match_id)
+            calibrations = log.get_calibrations(match_id)
+            anchors = log.get_player_anchors(match_id)
+            team_ends = log.get_team_ends(match_id)
+    except KeyError, MatchNotFound:
+        print(f"error: Match not found in {db_path}: {match_id}", file=sys.stderr)
+        return 1
+    except (duckdb.Error, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if summary.source_video is None:
+        print(f"error: Match {match_id} has no recorded Source Video", file=sys.stderr)
+        return 1
+
+    source_path = resolve_video_path(summary.source_video.path, db_path)
+    try:
+        video_path = converted_path_for(source_path)
+    except FootageConversionError:
+        video_path = source_path
+    if not video_path.is_file():
+        print(
+            f"error: Converted 60 fps video not found at {video_path}. "
+            f"Run: pb-tokei convert {shlex.quote(str(source_path))}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not segments:
+        print(
+            f"error: Match {match_id} has no Play Segments yet. Mark them in pb-tokei annotate.",
+            file=sys.stderr,
+        )
+        return 1
+
+    progress_line = _CliProgressLine()
+    try:
+        motion_cache = CameraMotionCache(default_cache_dir(db_path))
+        reg_map = motion_cache.landmark_frame_to_ref(video_path, segments, calibrations)
+        motion = motion_cache.track_match(video_path, segments, calibrations)
+        mapping = CourtMapping(
+            segments, calibrations, camera_motion=motion, landmark_frame_to_ref=reg_map
+        )
+
+        active_backend: VisionBackend = (
+            backend if backend is not None else TorchVisionBackend(device=args.device)
+        )
+
+        print(f"Device: {active_backend.device.value.upper()}", file=sys.stderr)
+        player_cache = PlayerTrackingCache(
+            default_player_cache_dir(db_path),
+            detector_model=active_backend.detector_model,
+            pose_model=active_backend.pose_model,
+        )
+        player_cache.track_match(
+            video_path,
+            roster,
+            segments,
+            calibrations,
+            mapping,
+            motion,
+            anchors,
+            team_ends,
+            backend=active_backend,
+            on_progress=lambda done, total, seg: progress_line.update(
+                "track",
+                100.0 * done / max(1, total),
+                f"Tracking Players {100.0 * done / max(1, total):.1f}% "
+                f"({seg.camera_view.value} {seg.start_frame}-{seg.end_frame})",
+            ),
+        )
+    except (PlayerTrackingError, OSError, ValueError) as exc:
+        progress_line.finish()
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        progress_line.finish()
+
+    total_frames = sum(s.end_frame - s.start_frame + 1 for s in segments)
+    print(
+        f"Tracked {len(segments)} Play Segment{'s' if len(segments) != 1 else ''} "
+        f"({total_frames} frames) on {active_backend.device.value.upper()}"
+    )
     return 0
 
 

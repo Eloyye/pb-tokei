@@ -29,6 +29,7 @@ export function Monitor({
   focused,
   cameraView,
   overlay,
+  headerTools,
 }: {
   match: MatchDetail;
   src: string | null;
@@ -43,6 +44,8 @@ export function Monitor({
   cameraView: CameraView | "none" | null;
   /** A layer over the picture, such as Calibrate's Landmarks; it takes clicks on the video. */
   overlay?: ReactNode;
+  /** Extra controls in the Monitor header (e.g. Annotate's Player overlay toggle & swaps). */
+  headerTools?: ReactNode;
 }) {
   const lastFrame = Math.max(0, state.totalFrames - 1);
   return (
@@ -52,11 +55,14 @@ export function Monitor({
       className="area-monitor"
       tabs={<PanelTitle>{title}</PanelTitle>}
       tools={
-        src && (
-          <span className="mono">
-            {state.frame.toLocaleString("en-US")} / {lastFrame.toLocaleString("en-US")}
-          </span>
-        )
+        <>
+          {headerTools}
+          {src && (
+            <span className="mono">
+              {state.frame.toLocaleString("en-US")} / {lastFrame.toLocaleString("en-US")}
+            </span>
+          )}
+        </>
       }
     >
       <div className="viewer">

@@ -1,11 +1,4 @@
-import {
-  type PointerEvent,
-  type RefObject,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type PointerEvent, type RefObject, useEffect, useRef, useState } from "react";
 import type { Calibration, CalibrationOut, Landmark, Lens } from "../api/client";
 import {
   COURT_LINES,
@@ -15,17 +8,11 @@ import {
   projectLine,
   visibleLandmarkMarkers,
 } from "../lib/calibrations";
+import { usePictureRect } from "./usePictureRect";
 
 /** How much the magnifier enlarges, and its size on screen in CSS pixels. */
 const ZOOM = 4;
 const LOUPE = 132;
-
-interface Rect {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
 
 /**
  * Calibrate's layer over the Monitor: the fitted court template, the clicked Landmarks, and a 4×
@@ -256,35 +243,4 @@ function fraction(event: PointerEvent<HTMLElement>): Point {
     x: Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)),
     y: Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)),
   };
-}
-
-/** Where the picture sits inside the `<video>` box once letterboxed, kept current on resize. */
-function usePictureRect(videoRef: RefObject<HTMLVideoElement | null>): Rect | null {
-  const [rect, setRect] = useState<Rect | null>(null);
-  useLayoutEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const measure = () => {
-      const { clientWidth: bw, clientHeight: bh, videoWidth: vw, videoHeight: vh } = video;
-      if (!vw || !vh || !bw || !bh) return setRect(null);
-      const scale = Math.min(bw / vw, bh / vh);
-      const width = vw * scale;
-      const height = vh * scale;
-      setRect({
-        left: video.offsetLeft + (bw - width) / 2,
-        top: video.offsetTop + (bh - height) / 2,
-        width,
-        height,
-      });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(video);
-    video.addEventListener("loadedmetadata", measure);
-    return () => {
-      observer.disconnect();
-      video.removeEventListener("loadedmetadata", measure);
-    };
-  }, [videoRef]);
-  return rect;
 }

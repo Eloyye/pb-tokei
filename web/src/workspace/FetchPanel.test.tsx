@@ -32,6 +32,34 @@ function makeMatch(overrides: Partial<MatchDetail> = {}): MatchDetail {
     fix_command: `pb-tokei download <url> --match ${MATCH_ID} --db /data/log.duckdb`,
     source_url: null,
     original_present: false,
+    team_a_id: "11111111-1111-1111-1111-111111111111",
+    team_b_id: "22222222-2222-2222-2222-222222222222",
+    players: [
+      {
+        id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+        name: "Anna Bright",
+        team_id: "11111111-1111-1111-1111-111111111111",
+        team: "a",
+      },
+      {
+        id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2",
+        name: "Ben Johns",
+        team_id: "11111111-1111-1111-1111-111111111111",
+        team: "a",
+      },
+      {
+        id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+        name: "Cara Lee",
+        team_id: "22222222-2222-2222-2222-222222222222",
+        team: "b",
+      },
+      {
+        id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
+        name: "Dan Kim",
+        team_id: "22222222-2222-2222-2222-222222222222",
+        team: "b",
+      },
+    ],
     ...overrides,
   };
 }

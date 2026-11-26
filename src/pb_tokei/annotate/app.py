@@ -15,12 +15,12 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import unquote
 from uuid import UUID
 
 import duckdb
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -39,6 +39,14 @@ from pb_tokei.annotate.motion import (
     CameraMotionOut,
     CameraMotionService,
 )
+from pb_tokei.annotate.players import (
+    PlayerAnchorIO,
+    PlayerTrackingFramesOut,
+    PlayerTrackingOut,
+    PlayerTrackingService,
+    TeamEndIO,
+    TrackPlayersIn,
+)
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
@@ -49,17 +57,22 @@ from pb_tokei.footage import (
     validate_cookies_from_browser,
     validate_url,
 )
+from pb_tokei.player_tracking import default_player_cache_dir
+from pb_tokei.player_vision import DevicePreference, VisionBackend
 from pb_tokei.rally_log import (
     Calibration,
     CameraView,
     Landmark,
     MatchId,
     MatchNotFound,
+    MatchRoster,
     MatchSummary,
     PlacedLandmark,
+    PlayerAnchor,
     PlaySegment,
     RallyLog,
     SourceVideo,
+    TeamEnd,
     resolve_video_path,
 )
 from pb_tokei.roster import set_up_match
@@ -159,27 +172,53 @@ class MatchOut(BaseModel):
         )
 
 
+class MatchPlayerOut(BaseModel):
+    """One Player in a Match, with their Team assignment."""
+
+    id: UUID
+    name: str
+    team_id: UUID
+    team: Literal["a", "b"]
+
+
 class MatchDetailOut(MatchOut):
-    """A Match, plus its recorded video metadata and the CLI command that makes it playable."""
+    """A Match, plus its recorded video metadata, roster IDs, and fix command."""
 
     fix_command: str | None
     source_url: str | None
     original_present: bool
+    team_a_id: UUID
+    team_b_id: UUID
+    players: list[MatchPlayerOut]
 
     @classmethod
     def from_match(
         cls,
         match: MatchOut,
+        roster: MatchRoster,
         fix_command: str | None,
         *,
         source_url: str | None,
         original_present: bool,
     ) -> MatchDetailOut:
+        players = [
+            *(
+                MatchPlayerOut(id=p.id, name=p.name, team_id=roster.team_a_id, team="a")
+                for p in roster.team_a_players
+            ),
+            *(
+                MatchPlayerOut(id=p.id, name=p.name, team_id=roster.team_b_id, team="b")
+                for p in roster.team_b_players
+            ),
+        ]
         return MatchDetailOut(
             **match.model_dump(),
             fix_command=fix_command,
             source_url=source_url,
             original_present=original_present,
+            team_a_id=roster.team_a_id,
+            team_b_id=roster.team_b_id,
+            players=players,
         )
 
 
@@ -370,13 +409,20 @@ class _OpenRallyLog:
         db_file: Path,
         *,
         footage_runner: CommandRunner | StreamRunner | None = None,
+        player_backend_factory: Callable[[DevicePreference], VisionBackend] | None = None,
     ) -> None:
         self.db_file = db_file
         self.motion = CameraMotionService(default_cache_dir(db_file))
+        self.players = PlayerTrackingService(
+            default_player_cache_dir(db_file),
+            self.motion.cache,
+            backend_factory=player_backend_factory,
+        )
         self.footage = FootageJobService(db_file, runner=footage_runner)
 
     def close(self) -> None:
         self.motion.close()
+        self.players.close()
         self.footage.close()
 
     def video(self, source_video: SourceVideo | None) -> _VideoState:
@@ -401,6 +447,44 @@ class _OpenRallyLog:
         video = self.video(summary.source_video)
         video_path = video.converted_path if video.status is VideoStatus.READY else None
         return mid, video_path, segments, calibrations
+
+    def player_tracking_inputs(
+        self, match_id: UUID
+    ) -> tuple[
+        MatchId,
+        Path | None,
+        MatchRoster,
+        tuple[PlaySegment, ...],
+        tuple[Calibration, ...],
+        tuple[PlayerAnchor, ...],
+        tuple[TeamEnd, ...],
+    ]:
+        mid = MatchId(match_id)
+
+        def load(
+            log: RallyLog,
+        ) -> tuple[
+            MatchSummary,
+            MatchRoster,
+            tuple[PlaySegment, ...],
+            tuple[Calibration, ...],
+            tuple[PlayerAnchor, ...],
+            tuple[TeamEnd, ...],
+        ]:
+            summary = _match_summary(log, match_id)
+            return (
+                summary,
+                log.get_match_roster(mid),
+                log.get_play_segments(mid),
+                log.get_calibrations(mid),
+                log.get_player_anchors(mid),
+                log.get_team_ends(mid),
+            )
+
+        summary, roster, segments, calibrations, anchors, team_ends = self.run(load)
+        video = self.video(summary.source_video)
+        video_path = video.converted_path if video.status is VideoStatus.READY else None
+        return mid, video_path, roster, segments, calibrations, anchors, team_ends
 
     def run[T](self, action: Callable[[RallyLog], T]) -> T:
         """Runs an action on the Rally Log: 404 for a missing Match, 422 for invalid data."""
@@ -447,11 +531,19 @@ class _RallyLogs:
         db_file: Path | None,
         *,
         footage_runner: CommandRunner | StreamRunner | None = None,
+        player_backend_factory: Callable[[DevicePreference], VisionBackend] | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._footage_runner = footage_runner
+        self._player_backend_factory = player_backend_factory
         self._current = (
-            None if db_file is None else _OpenRallyLog(db_file, footage_runner=footage_runner)
+            None
+            if db_file is None
+            else _OpenRallyLog(
+                db_file,
+                footage_runner=footage_runner,
+                player_backend_factory=player_backend_factory,
+            )
         )
 
     @property
@@ -464,7 +556,11 @@ class _RallyLogs:
             old = self._current
             if old is not None and old.db_file == db_file:
                 return
-            self._current = _OpenRallyLog(db_file, footage_runner=self._footage_runner)
+            self._current = _OpenRallyLog(
+                db_file,
+                footage_runner=self._footage_runner,
+                player_backend_factory=self._player_backend_factory,
+            )
         if old is not None:
             old.close()
 
@@ -523,6 +619,7 @@ def create_app(
     *,
     static_dir: Path = STATIC_DIR,
     footage_runner: CommandRunner | StreamRunner | None = None,
+    player_backend_factory: Callable[[DevicePreference], VisionBackend] | None = None,
 ) -> FastAPI:
     """Builds the app, serving the Rally Log at `db_path`, or none until one is chosen in the app.
 
@@ -531,6 +628,7 @@ def create_app(
     rally_logs = _RallyLogs(
         None if db_path is None else db_path.resolve(),
         footage_runner=footage_runner,
+        player_backend_factory=player_backend_factory,
     )
 
     @asynccontextmanager
@@ -651,10 +749,18 @@ def create_app(
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
     def get_match(match_id: UUID, rally_log: OpenLog) -> MatchDetailOut:
-        summary, video = rally_log.lookup(match_id)
+        mid = MatchId(match_id)
+
+        def load(log: RallyLog) -> tuple[MatchSummary, MatchRoster]:
+            summary = _match_summary(log, match_id)
+            return summary, log.get_match_roster(mid)
+
+        summary, roster = rally_log.run(load)
+        video = rally_log.video(summary.source_video)
         job = rally_log.footage.summary(summary.id, ready_url=video.ready_url)
         return MatchDetailOut.from_match(
             MatchOut.from_summary(summary, video.status, job),
+            roster,
             video.fix_command(summary.id, rally_log.db_file),
             source_url=None if summary.source_video is None else summary.source_video.url,
             original_present=video.original_present,
@@ -861,6 +967,126 @@ def create_app(
         try:
             return rally_log.motion.frames(
                 video_path, segments, calibrations, start_frame, end_frame
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    # --- Player Anchors, Team Ends, and Player Tracking ----------------------------------
+
+    @app.get("/api/matches/{match_id}/player-anchors", operation_id="getPlayerAnchors")
+    def get_player_anchors(match_id: UUID, rally_log: OpenLog) -> list[PlayerAnchorIO]:
+        anchors = rally_log.run(lambda log: log.get_player_anchors(MatchId(match_id)))
+        return [PlayerAnchorIO.from_domain(a) for a in anchors]
+
+    @app.put("/api/matches/{match_id}/player-anchors", operation_id="replacePlayerAnchors")
+    def replace_player_anchors(
+        match_id: UUID, body: list[PlayerAnchorIO], rally_log: OpenLog
+    ) -> list[PlayerAnchorIO]:
+        """Replaces all operator-placed Player anchors for a Match."""
+        mid = MatchId(match_id)
+        _summary, video = rally_log.lookup(match_id)
+        if video.status is VideoStatus.READY and video.converted_path is not None:
+            frame_count = video_frame_count(video.converted_path)
+            if frame_count is not None:
+                for item in body:
+                    if item.frame >= frame_count:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"Player anchor frame {item.frame} is outside the video "
+                                f"(length {frame_count} frames)"
+                            ),
+                        )
+
+        def change(log: RallyLog) -> tuple[PlayerAnchor, ...]:
+            log.replace_player_anchors(mid, [a.to_domain() for a in body])
+            return log.get_player_anchors(mid)
+
+        return [PlayerAnchorIO.from_domain(a) for a in rally_log.run(change)]
+
+    @app.get("/api/matches/{match_id}/team-ends", operation_id="getTeamEnds")
+    def get_team_ends(match_id: UUID, rally_log: OpenLog) -> list[TeamEndIO]:
+        ends = rally_log.run(lambda log: log.get_team_ends(MatchId(match_id)))
+        return [TeamEndIO.from_domain(te) for te in ends]
+
+    @app.put("/api/matches/{match_id}/team-ends", operation_id="replaceTeamEnds")
+    def replace_team_ends(
+        match_id: UUID, body: list[TeamEndIO], rally_log: OpenLog
+    ) -> list[TeamEndIO]:
+        """Replaces all `team_ends` records for a Match."""
+        mid = MatchId(match_id)
+        _summary, video = rally_log.lookup(match_id)
+        if video.status is VideoStatus.READY and video.converted_path is not None:
+            frame_count = video_frame_count(video.converted_path)
+            if frame_count is not None:
+                for item in body:
+                    if item.effective_from_frame >= frame_count:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"TeamEnd frame {item.effective_from_frame} is outside the video "
+                                f"(length {frame_count} frames)"
+                            ),
+                        )
+
+        def change(log: RallyLog) -> tuple[TeamEnd, ...]:
+            log.replace_team_ends(mid, [te.to_domain() for te in body])
+            return log.get_team_ends(mid)
+
+        return [TeamEndIO.from_domain(te) for te in rally_log.run(change)]
+
+    @app.get("/api/matches/{match_id}/player-tracking", operation_id="getPlayerTracking")
+    def get_player_tracking(match_id: UUID, rally_log: OpenLog) -> PlayerTrackingOut:
+        mid, video_path, segments, _calibrations = rally_log.motion_inputs(match_id)
+        return rally_log.players.status(mid, video_path, segments)
+
+    @app.post("/api/matches/{match_id}/player-tracking/track", operation_id="trackPlayers")
+    def track_players(
+        match_id: UUID,
+        rally_log: OpenLog,
+        body: Annotated[TrackPlayersIn | None, Body()] = None,
+    ) -> PlayerTrackingOut:
+        """Explicitly triggers background Player Tracking, prioritising the playhead segment."""
+        opts = TrackPlayersIn() if body is None else body
+        mid, video_path, segments, _calibrations = rally_log.motion_inputs(match_id)
+        return rally_log.players.trigger(
+            mid,
+            video_path,
+            segments,
+            priority_frame=opts.priority_frame,
+            device=opts.device,
+            wait=opts.wait,
+        )
+
+    @app.post("/api/matches/{match_id}/player-tracking/cancel", operation_id="cancelPlayerTracking")
+    def cancel_player_tracking(match_id: UUID, rally_log: OpenLog) -> PlayerTrackingOut:
+        """Cancels an active background Player Tracking job."""
+        mid, video_path, segments, _calibrations = rally_log.motion_inputs(match_id)
+        return rally_log.players.cancel(mid, video_path, segments)
+
+    @app.get(
+        "/api/matches/{match_id}/player-tracking/frames", operation_id="getPlayerTrackingFrames"
+    )
+    def get_player_tracking_frames(
+        match_id: UUID,
+        rally_log: OpenLog,
+        start_frame: int = Query(ge=0),
+        end_frame: int = Query(ge=0),
+    ) -> PlayerTrackingFramesOut:
+        """Windowed detections and resolved Player positions, Zones, and Settled facts."""
+        _mid, video_path, roster, segments, calibrations, anchors, team_ends = (
+            rally_log.player_tracking_inputs(match_id)
+        )
+        try:
+            return rally_log.players.frames(
+                video_path,
+                roster,
+                segments,
+                calibrations,
+                anchors,
+                team_ends,
+                start_frame,
+                end_frame,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None

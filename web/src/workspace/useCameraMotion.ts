@@ -47,6 +47,7 @@ export function useCameraMotion(
   segments: PlaySegment[] | null,
   calibrations: Calibration[],
   frame: number,
+  autoTrack = true,
 ): CameraMotionState {
   const [motionState, setMotionState] = useState<{
     scope: string;
@@ -86,7 +87,7 @@ export function useCameraMotion(
       try {
         let next = await getCameraMotion(matchId);
         if (cancelled) return;
-        if (next.status === "idle") {
+        if (autoTrack && next.status === "idle") {
           next = await trackCameraMotion(matchId);
           if (cancelled) return;
         }
@@ -105,7 +106,7 @@ export function useCameraMotion(
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [matchId, enabled, saved, scope]);
+  }, [matchId, enabled, saved, scope, autoTrack]);
 
   // Poll while background tracking is in progress; re-trigger if tracking settles back to idle.
   const tracking = motion?.status === "tracking";
@@ -119,7 +120,7 @@ export function useCameraMotion(
         try {
           let next = await getCameraMotion(matchId);
           if (cancelled) return;
-          if (next.status === "idle") {
+          if (autoTrack && next.status === "idle") {
             next = await trackCameraMotion(matchId);
             if (cancelled) return;
           }
@@ -136,7 +137,7 @@ export function useCameraMotion(
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [matchId, enabled, tracking, scope]);
+  }, [matchId, enabled, tracking, scope, autoTrack]);
 
   // Compute primitive window bounds so moving `frame` within the same window never re-triggers
   // or cancels an in-flight frame-window fetch.

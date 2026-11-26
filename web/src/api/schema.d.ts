@@ -214,6 +214,125 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/player-anchors": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Player Anchors */
+    get: operations["getPlayerAnchors"];
+    /**
+     * Replace Player Anchors
+     * @description Replaces all operator-placed Player anchors for a Match.
+     */
+    put: operations["replacePlayerAnchors"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/player-tracking": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Player Tracking */
+    get: operations["getPlayerTracking"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/player-tracking/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Cancel Player Tracking
+     * @description Cancels an active background Player Tracking job.
+     */
+    post: operations["cancelPlayerTracking"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/player-tracking/frames": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Player Tracking Frames
+     * @description Windowed detections and resolved Player positions, Zones, and Settled facts.
+     */
+    get: operations["getPlayerTrackingFrames"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/player-tracking/track": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Track Players
+     * @description Explicitly triggers background Player Tracking, prioritising the playhead segment.
+     */
+    post: operations["trackPlayers"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/matches/{match_id}/team-ends": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Team Ends */
+    get: operations["getTeamEnds"];
+    /**
+     * Replace Team Ends
+     * @description Replaces all `team_ends` records for a Match.
+     */
+    put: operations["replaceTeamEnds"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/video": {
     parameters: {
       query?: never;
@@ -279,6 +398,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /**
+     * AnchorKind
+     * @description How an operator anchored a Player on a frame.
+     *
+     *     `identity` binds the Player to the detected person box containing the click and uses its
+     *     detected foot point; `position` overrides the Player's foot position directly without snapping
+     *     back to a detection box.
+     * @enum {string}
+     */
+    AnchorKind: "identity" | "position";
     /**
      * CalibrationIn
      * @description One Calibration's clicked Landmarks; its Camera View is given by the URL.
@@ -403,6 +532,11 @@ export interface components {
      * @enum {string}
      */
     CameraView: "main" | "sideline";
+    /**
+     * Certainty
+     * @enum {string}
+     */
+    Certainty: "observed" | "inferred" | "unknown";
     /** CreateMatchIn */
     CreateMatchIn: {
       /** Footage Url */
@@ -424,6 +558,11 @@ export interface components {
        */
       id: string;
     };
+    /**
+     * DeviceKind
+     * @enum {string}
+     */
+    DeviceKind: "cuda" | "mps" | "cpu";
     /**
      * FetchFootageIn
      * @description Parameters to start fetching or converting footage for a Match.
@@ -474,6 +613,36 @@ export interface components {
       /** Queue Position */
       queue_position: number | null;
       state: components["schemas"]["FootageJobState"];
+    };
+    /**
+     * FrameDetectionOut
+     * @description One kept court-area person detection on a frame (for Monitor boxes and anchor clicks).
+     */
+    FrameDetectionOut: {
+      /** Ankles Visible */
+      ankles_visible: boolean;
+      /** Court X */
+      court_x: number | null;
+      /** Court Y */
+      court_y: number | null;
+      /** Feet Cropped */
+      feet_cropped: boolean;
+      /** Foot X */
+      foot_x: number;
+      /** Foot Y */
+      foot_y: number;
+      /** Player Id */
+      player_id: string | null;
+      /** Score */
+      score: number;
+      /** X1 */
+      x1: number;
+      /** X2 */
+      x2: number;
+      /** Y1 */
+      y1: number;
+      /** Y2 */
+      y2: number;
     };
     /** Franchise */
     Franchise: {
@@ -598,7 +767,7 @@ export interface components {
     };
     /**
      * MatchDetailOut
-     * @description A Match, plus its recorded video metadata and the CLI command that makes it playable.
+     * @description A Match, plus its recorded video metadata, roster IDs, and fix command.
      */
     MatchDetailOut: {
       /** Fix Command */
@@ -615,12 +784,24 @@ export interface components {
       id: string;
       /** Original Present */
       original_present: boolean;
+      /** Players */
+      players: components["schemas"]["MatchPlayerOut"][];
       /** Source Url */
       source_url: string | null;
       /** Team A */
       team_a: [string, string];
+      /**
+       * Team A Id
+       * Format: uuid
+       */
+      team_a_id: string;
       /** Team B */
       team_b: [string, string];
+      /**
+       * Team B Id
+       * Format: uuid
+       */
+      team_b_id: string;
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
@@ -647,6 +828,29 @@ export interface components {
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
+    };
+    /**
+     * MatchPlayerOut
+     * @description One Player in a Match, with their Team assignment.
+     */
+    MatchPlayerOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      /**
+       * Team
+       * @enum {string}
+       */
+      team: "a" | "b";
+      /**
+       * Team Id
+       * Format: uuid
+       */
+      team_id: string;
     };
     /** MatchTeams */
     MatchTeams: {
@@ -696,6 +900,96 @@ export interface components {
       start_frame: number;
     };
     /**
+     * PlayerAnchorIO
+     * @description One operator-placed Player anchor on a frame, in normalised image coordinates (0 to 1).
+     */
+    PlayerAnchorIO: {
+      /** Frame */
+      frame: number;
+      /** Image X */
+      image_x: number;
+      /** Image Y */
+      image_y: number;
+      kind: components["schemas"]["AnchorKind"];
+      /**
+       * Player Id
+       * Format: uuid
+       */
+      player_id: string;
+    };
+    /**
+     * PlayerTrackingFrameOut
+     * @description Resolved Player positions and visible detections for one frame.
+     */
+    PlayerTrackingFrameOut: {
+      /** Detections */
+      detections: components["schemas"]["FrameDetectionOut"][];
+      /** Frame */
+      frame: number;
+      /** Near Team Id */
+      near_team_id: string | null;
+      /** Players */
+      players: components["schemas"]["TrackedPlayerOut"][];
+    };
+    /**
+     * PlayerTrackingFramesOut
+     * @description Windowed per-frame detections and resolved Player positions, Zones, and Settled facts.
+     */
+    PlayerTrackingFramesOut: {
+      /** End Frame */
+      end_frame: number;
+      /** Frames */
+      frames: components["schemas"]["PlayerTrackingFrameOut"][];
+      /** Start Frame */
+      start_frame: number;
+    };
+    /**
+     * PlayerTrackingOut
+     * @description Player Tracking status, progress %, active device badge, and per-segment spans.
+     */
+    PlayerTrackingOut: {
+      device: components["schemas"]["DeviceKind"] | null;
+      /** Error */
+      error: string | null;
+      /**
+       * Opposite End Flip Y Ft
+       * @default 2
+       */
+      opposite_end_flip_y_ft: number;
+      /** Progress */
+      progress: number;
+      /** Spans */
+      spans: components["schemas"]["PlayerTrackingSpanOut"][];
+      status: components["schemas"]["PlayerTrackingStatus"];
+      /** Total Segments */
+      total_segments: number;
+      /** Tracked Segments */
+      tracked_segments: number;
+    };
+    /**
+     * PlayerTrackingSpanOut
+     * @description Layer 1 tracking status for one Play Segment.
+     */
+    PlayerTrackingSpanOut: {
+      camera_view: components["schemas"]["CameraView"];
+      /** End Frame */
+      end_frame: number;
+      /** Start Frame */
+      start_frame: number;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "pending" | "tracking" | "done";
+      /** Tracked */
+      tracked: boolean;
+    };
+    /**
+     * PlayerTrackingStatus
+     * @enum {string}
+     */
+    PlayerTrackingStatus: "no_video" | "idle" | "tracking" | "ready" | "error";
+    /**
      * RallyLogOut
      * @description The Rally Log the app is serving (null until one is chosen), and those opened recently.
      */
@@ -734,6 +1028,19 @@ export interface components {
       name: string;
     };
     /**
+     * TeamEndIO
+     * @description Which Team plays at the near end (y < 0, Main View camera end) from a frame onward.
+     */
+    TeamEndIO: {
+      /** Effective From Frame */
+      effective_from_frame: number;
+      /**
+       * Near Team Id
+       * Format: uuid
+       */
+      near_team_id: string;
+    };
+    /**
      * Tour
      * @enum {string}
      */
@@ -748,6 +1055,52 @@ export interface components {
       /** Name */
       name: string;
       tour: components["schemas"]["Tour"];
+    };
+    /**
+     * TrackPlayersIn
+     * @description Optional parameters for triggering background Player Tracking.
+     */
+    TrackPlayersIn: {
+      /**
+       * Device
+       * @default auto
+       * @enum {string}
+       */
+      device: "auto" | "cuda" | "mps" | "cpu";
+      /** Priority Frame */
+      priority_frame?: number | null;
+      /**
+       * Wait
+       * @default false
+       */
+      wait: boolean;
+    };
+    /**
+     * TrackedPlayerOut
+     * @description One Player's resolved court position, Zone, and Settled fact on one frame.
+     */
+    TrackedPlayerOut: {
+      anchor_kind: components["schemas"]["AnchorKind"] | null;
+      /** Bbox */
+      bbox: number[] | null;
+      /** Image X */
+      image_x: number | null;
+      /** Image Y */
+      image_y: number | null;
+      /**
+       * Player Id
+       * Format: uuid
+       */
+      player_id: string;
+      position_certainty: components["schemas"]["Certainty"];
+      /** Position X */
+      position_x: number | null;
+      /** Position Y */
+      position_y: number | null;
+      /** Settled */
+      settled: boolean | null;
+      settled_certainty: components["schemas"]["Certainty"];
+      zone: components["schemas"]["Zone"] | null;
     };
     /**
      * UnmappedRangeOut
@@ -778,6 +1131,11 @@ export interface components {
      * @enum {string}
      */
     VideoStatus: "none" | "not_converted" | "ready";
+    /**
+     * Zone
+     * @enum {string}
+     */
+    Zone: "frontcourt" | "midcourt" | "backcourt";
   };
   responses: never;
   parameters: never;
@@ -1186,6 +1544,269 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["PlaySegmentIO"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getPlayerAnchors: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerAnchorIO"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  replacePlayerAnchors: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PlayerAnchorIO"][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerAnchorIO"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getPlayerTracking: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerTrackingOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cancelPlayerTracking: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerTrackingOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getPlayerTrackingFrames: {
+    parameters: {
+      query: {
+        start_frame: number;
+        end_frame: number;
+      };
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerTrackingFramesOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  trackPlayers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["TrackPlayersIn"] | null;
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerTrackingOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getTeamEnds: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TeamEndIO"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  replaceTeamEnds: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TeamEndIO"][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TeamEndIO"][];
         };
       };
       /** @description Validation Error */

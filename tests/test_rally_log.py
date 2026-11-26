@@ -6,6 +6,7 @@ import pytest
 
 from pb_tokei.rally_log import (
     UNKNOWN,
+    AnchorKind,
     Calibration,
     CameraView,
     Certainty,
@@ -25,7 +26,9 @@ from pb_tokei.rally_log import (
     Parity,
     PlacedLandmark,
     Player,
+    PlayerAnchor,
     PlayerId,
+    PlayerPosition,
     PlaySegment,
     Rally,
     RallyLog,
@@ -36,6 +39,7 @@ from pb_tokei.rally_log import (
     ShotClass,
     SourceVideo,
     Team,
+    TeamEnd,
     TeamId,
     Tour,
     Tournament,
@@ -45,6 +49,8 @@ from pb_tokei.rally_log import (
     inferred,
     new_id,
     observed,
+    team_end_at,
+    zone_for_y,
 )
 
 TOURNAMENT = Tournament(TournamentId(new_id()), "Test Open", Tour.PPA)
@@ -56,8 +62,8 @@ SERVERS = Team(TeamId(new_id()), (P1.id, P2.id))
 RECEIVERS = Team(TeamId(new_id()), (P3.id, P4.id))
 
 
-def at(x: float, y: float) -> Fact[CourtPoint]:
-    return observed(CourtPoint(x, y))
+def at(x: float, y: float, *, settled: Fact[bool] = UNKNOWN) -> PlayerPosition:
+    return PlayerPosition(observed(CourtPoint(x, y)), settled)
 
 
 def small_match() -> Match:
@@ -72,10 +78,10 @@ def small_match() -> Match:
         atp=observed(False),
         landing=inferred(CourtPoint(2.5, 18.0)),
         positions={
-            P1.id: at(-5.0, -22.0),
-            P2.id: at(5.0, -21.0),
-            P3.id: at(5.0, 22.5),
-            P4.id: at(-4.0, 8.0),
+            P1.id: at(-5.0, -22.0, settled=observed(False)),
+            P2.id: at(5.0, -21.0, settled=observed(False)),
+            P3.id: at(5.0, 22.5, settled=observed(False)),
+            P4.id: at(-4.0, 8.0, settled=observed(True)),
         },
     )
     ret = Shot(
@@ -85,7 +91,11 @@ def small_match() -> Match:
         contact_zone=observed(Zone.BACKCOURT),
         shot_class=observed(ShotClass.HARD),
         contact_kind=observed(ContactKind.BOUNCE),
-        positions={P1.id: at(-5.0, -20.0), P2.id: UNKNOWN, P3.id: at(4.5, 21.0)},
+        positions={
+            P1.id: at(-5.0, -20.0, settled=observed(False)),
+            P2.id: PlayerPosition(UNKNOWN, UNKNOWN),
+            P3.id: at(4.5, 21.0, settled=observed(False)),
+        },
     )
     after_gap = Shot(
         hitter_id=inferred(P2.id),
@@ -137,6 +147,11 @@ def small_match() -> Match:
             PlaySegment(880, 1000, CameraView.SIDELINE),
         ),
         calibrations=(MAIN_CALIBRATION, Calibration(CameraView.SIDELINE, 880, 900)),
+        player_anchors=(
+            PlayerAnchor(120, P1.id, AnchorKind.IDENTITY, 0.35, 0.78),
+            PlayerAnchor(178, P4.id, AnchorKind.POSITION, 0.62, 0.31),
+        ),
+        team_ends=(TeamEnd(0, SERVERS.id), TeamEnd(900, RECEIVERS.id)),
     )
 
 
@@ -579,3 +594,138 @@ def test_opening_an_older_database_allows_one_frame_play_segments(tmp_path: Path
         assert log.get_play_segments(match.id) == (PlaySegment(90, 450, CameraView.MAIN),)
         log.replace_play_segments(match.id, [PlaySegment(7, 7, CameraView.MAIN)])
         assert log.get_play_segments(match.id) == (PlaySegment(7, 7, CameraView.MAIN),)
+
+
+# --- Settled migration, Player anchors, and Team ends -------------------------------------
+
+
+def test_opening_an_older_database_migrates_shot_positions_settled(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_shot_positions.duckdb"
+    match = small_match()
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+
+    with duckdb.connect(str(path)) as conn:
+        # Legacy shot_positions without settled / settled_certainty.
+        conn.execute("DROP TABLE shot_positions")
+        conn.execute(
+            "CREATE TABLE shot_positions ("
+            "match_id UUID NOT NULL, game_number INTEGER NOT NULL, "
+            "rally_number INTEGER NOT NULL, log_position INTEGER NOT NULL, "
+            "player_id UUID NOT NULL REFERENCES players (id), "
+            "position_x DOUBLE, position_y DOUBLE, position_certainty VARCHAR NOT NULL, "
+            "PRIMARY KEY (match_id, game_number, rally_number, log_position, player_id))"
+        )
+        # Backcourt Observed -> settled Observed(False)
+        conn.execute(
+            "INSERT INTO shot_positions VALUES (?, 1, 1, 0, ?, -5.0, -22.0, 'observed')",
+            [match.id, P1.id],
+        )
+        # Midcourt Inferred (|y| > 9.0) -> settled Inferred(False)
+        conn.execute(
+            "INSERT INTO shot_positions VALUES (?, 1, 1, 0, ?, 4.0, 9.5, 'inferred')",
+            [match.id, P2.id],
+        )
+        # Frontcourt boundary (|y| == 9.0) -> settled Unknown
+        conn.execute(
+            "INSERT INTO shot_positions VALUES (?, 1, 1, 0, ?, -2.0, -9.0, 'observed')",
+            [match.id, P3.id],
+        )
+        # Unknown position -> settled Unknown
+        conn.execute(
+            "INSERT INTO shot_positions VALUES (?, 1, 1, 0, ?, NULL, NULL, 'unknown')",
+            [match.id, P4.id],
+        )
+
+    with RallyLog.open(path) as log:
+        reloaded = log.load_match(match.id)
+        positions = reloaded.games[0].rallies[0].shots[0].positions
+        assert positions[P1.id] == PlayerPosition(
+            observed(CourtPoint(-5.0, -22.0)), observed(False)
+        )
+        assert positions[P2.id] == PlayerPosition(inferred(CourtPoint(4.0, 9.5)), inferred(False))
+        assert positions[P3.id] == PlayerPosition(observed(CourtPoint(-2.0, -9.0)), UNKNOWN)
+        assert positions[P4.id] == PlayerPosition(UNKNOWN, UNKNOWN)
+
+
+def test_player_anchors_and_team_ends_can_be_replaced_independently(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+
+    anchors = [
+        PlayerAnchor(300, P2.id, AnchorKind.POSITION, 0.4, 0.6),
+        PlayerAnchor(100, P1.id, AnchorKind.IDENTITY, 0.2, 0.8),
+    ]
+    log.replace_player_anchors(match.id, anchors)
+    assert log.get_player_anchors(match.id) == (anchors[1], anchors[0])
+
+    ends = [TeamEnd(500, RECEIVERS.id), TeamEnd(20, SERVERS.id)]
+    log.replace_team_ends(match.id, ends)
+    assert log.get_team_ends(match.id) == (ends[1], ends[0])
+    assert log.load_match(match.id).games == match.games
+
+
+def test_player_anchors_and_team_ends_validate_bounds_and_membership(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    outsider = Player(PlayerId(new_id()), "Outsider", Handedness.RIGHT)
+    log.save_player(outsider)
+    other_team = Team(TeamId(new_id()), (P1.id, outsider.id))
+    log.save_team(other_team)
+
+    with pytest.raises(ValueError, match="cannot be negative"):
+        PlayerAnchor(-1, P1.id, AnchorKind.IDENTITY, 0.5, 0.5)
+    with pytest.raises(ValueError, match="outside the video frame"):
+        PlayerAnchor(10, P1.id, AnchorKind.POSITION, 1.1, 0.5)
+    with pytest.raises(ValueError, match="two anchors"):
+        log.replace_player_anchors(
+            match.id,
+            [
+                PlayerAnchor(10, P1.id, AnchorKind.IDENTITY, 0.2, 0.3),
+                PlayerAnchor(10, P1.id, AnchorKind.POSITION, 0.4, 0.5),
+            ],
+        )
+    with pytest.raises(ValueError, match="not in Match"):
+        log.replace_player_anchors(
+            match.id, [PlayerAnchor(10, outsider.id, AnchorKind.IDENTITY, 0.5, 0.5)]
+        )
+    with pytest.raises(ValueError, match="cannot be negative"):
+        TeamEnd(-5, SERVERS.id)
+    with pytest.raises(ValueError, match="two TeamEnd"):
+        log.replace_team_ends(match.id, [TeamEnd(10, SERVERS.id), TeamEnd(10, RECEIVERS.id)])
+    with pytest.raises(ValueError, match="not in Match"):
+        log.replace_team_ends(match.id, [TeamEnd(10, other_team.id)])
+
+
+def test_team_end_at_uses_effective_from_semantics() -> None:
+    ends = [TeamEnd(100, SERVERS.id), TeamEnd(500, RECEIVERS.id)]
+    assert team_end_at([], 50) is None
+    assert team_end_at(ends, 50) == TeamEnd(100, SERVERS.id)
+    assert team_end_at(ends, 100) == TeamEnd(100, SERVERS.id)
+    assert team_end_at(ends, 499) == TeamEnd(100, SERVERS.id)
+    assert team_end_at(ends, 500) == TeamEnd(500, RECEIVERS.id)
+
+
+def test_zone_for_y_uses_inclusive_inner_bounds() -> None:
+    assert zone_for_y(0.0) is Zone.FRONTCOURT
+    assert zone_for_y(9.0) is Zone.FRONTCOURT
+    assert zone_for_y(-9.0) is Zone.FRONTCOURT
+    assert zone_for_y(9.01) is Zone.MIDCOURT
+    assert zone_for_y(18.0) is Zone.MIDCOURT
+    assert zone_for_y(-18.0) is Zone.MIDCOURT
+    assert zone_for_y(18.01) is Zone.BACKCOURT
+    assert zone_for_y(-22.0) is Zone.BACKCOURT
+
+
+def test_get_match_roster_returns_teams_and_sorted_players(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+
+    roster = log.get_match_roster(match.id)
+    assert roster.team_a_id == SERVERS.id
+    assert roster.team_b_id == RECEIVERS.id
+    assert [p.name for p in roster.team_a_players] == ["Partner Two", "Server One"]
+    assert [p.name for p in roster.team_b_players] == ["Partner Four", "Returner Three"]
+    assert roster.team_id_for(P1.id) == SERVERS.id
+    assert roster.other_team_id(SERVERS.id) == RECEIVERS.id

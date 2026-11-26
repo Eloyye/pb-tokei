@@ -51,6 +51,14 @@ const GROUPS: [string, [string[], string][]][] = [
     ],
   ],
   [
+    "Players (Calibrate & Annotate)",
+    [
+      [["Click box"], "Bind the selected Player to a detected person (auto-advances)"],
+      [["Drag dot"], "Override a Player's foot position on the Monitor or Court diagram"],
+      [["⌘Z", "⇧⌘Z"], "Undo / redo anchor and end-change edits"],
+    ],
+  ],
+  [
     "App",
     [
       [["?"], "This sheet"],

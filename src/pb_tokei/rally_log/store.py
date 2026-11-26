@@ -15,6 +15,7 @@ import duckdb
 
 from .model import (
     UNKNOWN,
+    AnchorKind,
     Calibration,
     CameraView,
     Certainty,
@@ -33,12 +34,15 @@ from .model import (
     Landmark,
     Match,
     MatchId,
+    MatchRoster,
     MatchSummary,
     ObservationGap,
     Parity,
     PlacedLandmark,
     Player,
+    PlayerAnchor,
     PlayerId,
+    PlayerPosition,
     PlaySegment,
     Rally,
     RefereeCall,
@@ -48,6 +52,7 @@ from .model import (
     ShotClass,
     SourceVideo,
     Team,
+    TeamEnd,
     TeamId,
     Tour,
     Tournament,
@@ -56,6 +61,8 @@ from .model import (
     Zone,
     check_calibrations,
     check_play_segments,
+    check_player_anchors,
+    check_team_ends,
 )
 from .schema import MATCH_CONTENT_TABLES, STATEMENTS, migrate
 
@@ -460,9 +467,65 @@ class RallyLog:
             games=self._load_games(match_id),
             play_segments=self._load_play_segments(match_id),
             calibrations=self._load_calibrations(match_id),
+            player_anchors=self._load_player_anchors(match_id),
+            team_ends=self._load_team_ends(match_id),
         )
 
-    # --- Play Segments and Calibrations ---------------------------------------------------
+    def get_match_roster(self, match_id: MatchId) -> MatchRoster:
+        """The two Teams and four Players of a Match, each Team's Players in name order."""
+        row = self._db.execute(
+            """
+            SELECT m.team_a_id, m.team_b_id,
+                pa1.id, pa1.name, pa1.handedness,
+                pa2.id, pa2.name, pa2.handedness,
+                pb1.id, pb1.name, pb1.handedness,
+                pb2.id, pb2.name, pb2.handedness
+            FROM matches m
+            JOIN teams ta ON ta.id = m.team_a_id
+            JOIN players pa1 ON pa1.id = ta.player_low_id
+            JOIN players pa2 ON pa2.id = ta.player_high_id
+            JOIN teams tb ON tb.id = m.team_b_id
+            JOIN players pb1 ON pb1.id = tb.player_low_id
+            JOIN players pb2 ON pb2.id = tb.player_high_id
+            WHERE m.id = ?
+            """,
+            [match_id],
+        ).fetchone()
+        if row is None:
+            raise MatchNotFound(match_id)
+        (
+            team_a_id,
+            team_b_id,
+            pa1_id,
+            pa1_name,
+            pa1_hand,
+            pa2_id,
+            pa2_name,
+            pa2_hand,
+            pb1_id,
+            pb1_name,
+            pb1_hand,
+            pb2_id,
+            pb2_name,
+            pb2_hand,
+        ) = row
+        team_a_players = _sorted_players(
+            Player(PlayerId(pa1_id), pa1_name, Handedness(pa1_hand)),
+            Player(PlayerId(pa2_id), pa2_name, Handedness(pa2_hand)),
+        )
+        team_b_players = _sorted_players(
+            Player(PlayerId(pb1_id), pb1_name, Handedness(pb1_hand)),
+            Player(PlayerId(pb2_id), pb2_name, Handedness(pb2_hand)),
+        )
+        return MatchRoster(
+            match_id=match_id,
+            team_a_id=TeamId(team_a_id),
+            team_b_id=TeamId(team_b_id),
+            team_a_players=team_a_players,
+            team_b_players=team_b_players,
+        )
+
+    # --- Play Segments, Calibrations, Player Anchors, and Team Ends -----------------------
 
     def get_play_segments(self, match_id: MatchId) -> tuple[PlaySegment, ...]:
         """A Match's Play Segments in frame order, without loading its Games."""
@@ -500,6 +563,40 @@ class RallyLog:
                     [match_id, camera_view.value],
                 )
             self._insert_calibrations(match_id, calibrations)
+
+    def get_player_anchors(self, match_id: MatchId) -> tuple[PlayerAnchor, ...]:
+        """A Match's operator-placed Player anchors, ordered by frame then player_id."""
+        self._require_match(match_id)
+        return self._load_player_anchors(match_id)
+
+    def replace_player_anchors(self, match_id: MatchId, anchors: Sequence[PlayerAnchor]) -> None:
+        """Replaces all of a Match's Player anchors. Validates Players belong to the Match."""
+        check_player_anchors(anchors)
+        with self.transaction():
+            roster = self.get_match_roster(match_id)
+            valid_players = roster.player_ids
+            for anchor in anchors:
+                if anchor.player_id not in valid_players:
+                    raise ValueError(f"Player {anchor.player_id} is not in Match {match_id}")
+            self._db.execute("DELETE FROM player_anchors WHERE match_id = ?", [match_id])
+            self._insert_player_anchors(match_id, anchors)
+
+    def get_team_ends(self, match_id: MatchId) -> tuple[TeamEnd, ...]:
+        """A Match's TeamEnd records, ordered by effective_from_frame."""
+        self._require_match(match_id)
+        return self._load_team_ends(match_id)
+
+    def replace_team_ends(self, match_id: MatchId, team_ends: Sequence[TeamEnd]) -> None:
+        """Replaces all of a Match's TeamEnd records. Validates Teams belong to the Match."""
+        check_team_ends(team_ends)
+        with self.transaction():
+            roster = self.get_match_roster(match_id)
+            valid_teams = (roster.team_a_id, roster.team_b_id)
+            for team_end in team_ends:
+                if team_end.near_team_id not in valid_teams:
+                    raise ValueError(f"Team {team_end.near_team_id} is not in Match {match_id}")
+            self._db.execute("DELETE FROM team_ends WHERE match_id = ?", [match_id])
+            self._insert_team_ends(match_id, team_ends)
 
     def _require_match(self, match_id: MatchId) -> None:
         if not self.has_match(match_id):
@@ -563,12 +660,58 @@ class RallyLog:
         self._many("calibrations", rows)
         self._many("calibration_landmarks", landmark_rows)
 
+    def _load_player_anchors(self, match_id: MatchId) -> tuple[PlayerAnchor, ...]:
+        return tuple(
+            PlayerAnchor(
+                frame=frame,
+                player_id=PlayerId(player_id),
+                kind=AnchorKind(kind),
+                image_x=image_x,
+                image_y=image_y,
+            )
+            for frame, player_id, kind, image_x, image_y in self._all(
+                "SELECT frame, player_id, kind, image_x, image_y "
+                "FROM player_anchors WHERE match_id = ? ORDER BY frame, player_id",
+                match_id,
+            )
+        )
+
+    def _insert_player_anchors(self, match_id: MatchId, anchors: Sequence[PlayerAnchor]) -> None:
+        self._many(
+            "player_anchors",
+            [[match_id, a.frame, a.player_id, a.kind.value, a.image_x, a.image_y] for a in anchors],
+        )
+
+    def _load_team_ends(self, match_id: MatchId) -> tuple[TeamEnd, ...]:
+        return tuple(
+            TeamEnd(effective_from_frame=effective, near_team_id=TeamId(team_id))
+            for effective, team_id in self._all(
+                "SELECT effective_from_frame, near_team_id "
+                "FROM team_ends WHERE match_id = ? ORDER BY effective_from_frame",
+                match_id,
+            )
+        )
+
+    def _insert_team_ends(self, match_id: MatchId, team_ends: Sequence[TeamEnd]) -> None:
+        self._many(
+            "team_ends",
+            [[match_id, te.effective_from_frame, te.near_team_id] for te in team_ends],
+        )
+
     # --- Writing match content ------------------------------------------------------------
 
     def _insert_content(self, match: Match) -> None:
         m = match.id
+        if match.player_anchors:
+            roster = self.get_match_roster(m)
+            valid_players = roster.player_ids
+            for anchor in match.player_anchors:
+                if anchor.player_id not in valid_players:
+                    raise ValueError(f"Player {anchor.player_id} is not in Match {m}")
         self._insert_play_segments(m, match.play_segments)
         self._insert_calibrations(m, match.calibrations)
+        self._insert_player_anchors(m, match.player_anchors)
+        self._insert_team_ends(m, match.team_ends)
         self._many("games", [[m, g.number] for g in match.games])
         rallies, shots, positions, gaps = [], [], [], []
         for game in match.games:
@@ -580,8 +723,15 @@ class RallyLog:
                         gaps.append([*key, entry.missing.value])
                         continue
                     shots.append([*key, *_shot_row(entry)])
-                    for player_id, position in entry.positions.items():
-                        positions.append([*key, player_id, *_point(position)])
+                    for player_id, player_pos in entry.positions.items():
+                        positions.append(
+                            [
+                                *key,
+                                player_id,
+                                *_point(player_pos.position),
+                                *_fact(player_pos.settled),
+                            ]
+                        )
         self._many("rallies", rallies)
         self._many("shots", shots)
         self._many("shot_positions", positions)
@@ -591,11 +741,17 @@ class RallyLog:
 
     def _load_games(self, match_id: MatchId) -> tuple[Game, ...]:
         shots: dict[tuple[int, int], dict[int, Shot | ObservationGap]] = defaultdict(dict)
-        positions: dict[tuple[int, int, int], dict[PlayerId, Fact[CourtPoint]]] = defaultdict(dict)
-        for _, game, rally, pos, player, *point in self._all(
-            "SELECT * FROM shot_positions WHERE match_id = ?", match_id
+        positions: dict[tuple[int, int, int], dict[PlayerId, PlayerPosition]] = defaultdict(dict)
+        for game, rally, pos, player, px, py, pc, settled, sc in self._all(
+            "SELECT game_number, rally_number, log_position, player_id, "
+            "position_x, position_y, position_certainty, settled, settled_certainty "
+            "FROM shot_positions WHERE match_id = ?",
+            match_id,
         ):
-            positions[game, rally, pos][PlayerId(player)] = _read_point(*point)
+            positions[game, rally, pos][PlayerId(player)] = PlayerPosition(
+                position=_read_point(px, py, pc),
+                settled=_read(settled, sc, bool),
+            )
         for _, game, rally, pos, *row in self._all(
             "SELECT * FROM shots WHERE match_id = ?", match_id
         ):
@@ -653,6 +809,11 @@ class RallyLog:
 
 def _pair(a: str, b: str) -> tuple[str, str]:
     first, second = sorted((a, b))
+    return first, second
+
+
+def _sorted_players(a: Player, b: Player) -> tuple[Player, Player]:
+    first, second = sorted((a, b), key=lambda p: (p.name, p.id))
     return first, second
 
 
@@ -789,7 +950,7 @@ def _shot_row(shot: Shot) -> list[Any]:
     ]
 
 
-def _read_shot(row: Sequence[Any], positions: dict[PlayerId, Fact[CourtPoint]]) -> Shot:
+def _read_shot(row: Sequence[Any], positions: dict[PlayerId, PlayerPosition]) -> Shot:
     (
         number,
         number_c,

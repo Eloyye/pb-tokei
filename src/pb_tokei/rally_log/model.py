@@ -20,6 +20,7 @@ inclusive at both ends, for Rallies and Play Segments alike.
 from __future__ import annotations
 
 import itertools
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -90,6 +91,40 @@ class Zone(StrEnum):
     FRONTCOURT = "frontcourt"
     MIDCOURT = "midcourt"
     BACKCOURT = "backcourt"
+
+
+FRONTCOURT_MAX_Y_FT = 9.0
+"""Inclusive outer boundary of the Frontcourt, in feet from the net (kitchen 7 ft + 2 ft)."""
+
+MIDCOURT_MAX_Y_FT = 18.0
+"""Inclusive outer boundary of the Midcourt, in feet from the net."""
+
+
+def zone_for_y(y_ft: float) -> Zone:
+    """Zone for a court `y` coordinate in feet, with inclusive inner bounds."""
+    dist = abs(y_ft)
+    if dist <= FRONTCOURT_MAX_Y_FT:
+        return Zone.FRONTCOURT
+    if dist <= MIDCOURT_MAX_Y_FT:
+        return Zone.MIDCOURT
+    return Zone.BACKCOURT
+
+
+def zone_for_point(point: CourtPoint) -> Zone:
+    """Zone for a `CourtPoint`, ignoring lateral position."""
+    return zone_for_y(point.y)
+
+
+class AnchorKind(StrEnum):
+    """How an operator anchored a Player on a frame.
+
+    `identity` binds the Player to the detected person box containing the click and uses its
+    detected foot point; `position` overrides the Player's foot position directly without snapping
+    back to a detection box.
+    """
+
+    IDENTITY = "identity"
+    POSITION = "position"
 
 
 class ShotClass(StrEnum):
@@ -243,6 +278,14 @@ class Error:
 
 
 @dataclass(frozen=True)
+class PlayerPosition:
+    """One Player's court position and Settled fact at a Shot's contact."""
+
+    position: Fact[CourtPoint] = _unknown()
+    settled: Fact[bool] = _unknown()
+
+
+@dataclass(frozen=True)
 class Shot:
     shot_number: Fact[int] = _unknown()
     hitter_id: Fact[PlayerId] = _unknown()
@@ -254,7 +297,7 @@ class Shot:
     atp: Fact[bool] = _unknown()
     landing: Fact[CourtPoint] = _unknown()
     error: Error | None = None  # set only on the Shot that ended the Rally with an Error
-    positions: dict[PlayerId, Fact[CourtPoint]] = field(default_factory=dict)
+    positions: dict[PlayerId, PlayerPosition] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -428,6 +471,114 @@ class SourceVideo:
 
 
 @dataclass(frozen=True)
+class PlayerAnchor:
+    """An operator-placed anchor for one Player on one frame, in normalised image coordinates."""
+
+    frame: int
+    player_id: PlayerId
+    kind: AnchorKind
+    image_x: float
+    image_y: float
+
+    def __post_init__(self) -> None:
+        if self.frame < 0:
+            raise ValueError(f"Player anchor frame cannot be negative: {self.frame}")
+        if not (
+            math.isfinite(self.image_x)
+            and math.isfinite(self.image_y)
+            and 0.0 <= self.image_x <= 1.0
+            and 0.0 <= self.image_y <= 1.0
+        ):
+            raise ValueError(
+                f"Player anchor point is outside the video frame: ({self.image_x}, {self.image_y})"
+            )
+
+    @property
+    def point(self) -> ImagePoint:
+        return ImagePoint(self.image_x, self.image_y)
+
+
+def check_player_anchors(anchors: Iterable[PlayerAnchor]) -> None:
+    """Raises ValueError if two anchors target the same Player on the same frame."""
+    seen: set[tuple[int, PlayerId]] = set()
+    for anchor in anchors:
+        key = (anchor.frame, anchor.player_id)
+        if key in seen:
+            raise ValueError(f"two anchors for Player {anchor.player_id} on frame {anchor.frame}")
+        seen.add(key)
+
+
+@dataclass(frozen=True)
+class TeamEnd:
+    """Which Team plays at the near end (y < 0, Main View end) from `effective_from_frame`."""
+
+    effective_from_frame: int
+    near_team_id: TeamId
+
+    def __post_init__(self) -> None:
+        if self.effective_from_frame < 0:
+            raise ValueError(f"Team end frame cannot be negative: {self.effective_from_frame}")
+
+
+def check_team_ends(team_ends: Iterable[TeamEnd]) -> None:
+    """Raises ValueError if two TeamEnd records start at the same frame."""
+    seen: set[int] = set()
+    for team_end in team_ends:
+        if team_end.effective_from_frame in seen:
+            raise ValueError(f"two TeamEnd records start at frame {team_end.effective_from_frame}")
+        seen.add(team_end.effective_from_frame)
+
+
+def team_end_at(team_ends: Iterable[TeamEnd], frame: int) -> TeamEnd | None:
+    """The TeamEnd in effect at `frame`: latest starting at or before it, or else the earliest."""
+    ordered = sorted(team_ends, key=lambda te: te.effective_from_frame)
+    started = [te for te in ordered if te.effective_from_frame <= frame]
+    if started:
+        return started[-1]
+    return ordered[0] if ordered else None
+
+
+@dataclass(frozen=True)
+class MatchRoster:
+    """The two Teams and four Players of a Match, each Team's Players in name order."""
+
+    match_id: MatchId
+    team_a_id: TeamId
+    team_b_id: TeamId
+    team_a_players: tuple[Player, Player]
+    team_b_players: tuple[Player, Player]
+
+    @property
+    def players(self) -> tuple[Player, Player, Player, Player]:
+        return (*self.team_a_players, *self.team_b_players)
+
+    @property
+    def player_ids(self) -> frozenset[PlayerId]:
+        return frozenset(p.id for p in self.players)
+
+    def team_id_for(self, player_id: PlayerId) -> TeamId:
+        if any(p.id == player_id for p in self.team_a_players):
+            return self.team_a_id
+        if any(p.id == player_id for p in self.team_b_players):
+            return self.team_b_id
+        raise ValueError(f"Player {player_id} is not in Match {self.match_id}")
+
+    def team_players(self, team_id: TeamId) -> tuple[Player, Player]:
+        if team_id == self.team_a_id:
+            return self.team_a_players
+        if team_id == self.team_b_id:
+            return self.team_b_players
+        raise ValueError(f"Team {team_id} is not in Match {self.match_id}")
+
+    def other_team_id(self, team_id: TeamId) -> TeamId:
+        if team_id == self.team_a_id:
+            return self.team_b_id
+        if team_id == self.team_b_id:
+            return self.team_a_id
+        raise ValueError(f"Team {team_id} is not in Match {self.match_id}")
+
+
+@dataclass(frozen=True)
 class Match:
     """A Match between two Teams. In an MLP Franchise Match, Team A plays for Franchise A."""
 
@@ -440,12 +591,19 @@ class Match:
     games: tuple[Game, ...] = ()
     play_segments: tuple[PlaySegment, ...] = ()
     calibrations: tuple[Calibration, ...] = ()
+    player_anchors: tuple[PlayerAnchor, ...] = ()
+    team_ends: tuple[TeamEnd, ...] = ()
 
     def __post_init__(self) -> None:
         if self.team_a_id == self.team_b_id:
             raise ValueError("a Match needs two different Teams")
         check_play_segments(self.play_segments)
         check_calibrations(self.calibrations)
+        check_player_anchors(self.player_anchors)
+        check_team_ends(self.team_ends)
+        for team_end in self.team_ends:
+            if team_end.near_team_id not in (self.team_a_id, self.team_b_id):
+                raise ValueError(f"Team {team_end.near_team_id} is not in Match {self.id}")
 
     def other_team_id(self, team_id: TeamId) -> TeamId:
         """The Receiving Team, given the Serving Team (and the other way round)."""

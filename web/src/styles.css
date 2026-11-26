@@ -1185,6 +1185,323 @@ fieldset.transport-group {
   fill: var(--team-b);
 }
 
+.court.placing {
+  cursor: crosshair;
+}
+
+.court-player circle {
+  stroke: #121212;
+  stroke-width: 1.8;
+}
+
+.court-player text {
+  fill: #121212;
+  font: 700 8px var(--mono);
+  pointer-events: none;
+  user-select: none;
+}
+
+.court-player.team-a circle {
+  fill: var(--team-a);
+}
+
+.court-player.team-b circle {
+  fill: var(--team-b);
+}
+
+.court-player.inferred {
+  opacity: 0.55;
+}
+
+.court-player.unknown circle {
+  fill: none;
+  stroke-dasharray: 3 2;
+  stroke-width: 1.6;
+}
+
+.court-player.unknown.team-a circle {
+  stroke: var(--team-a);
+}
+
+.court-player.unknown.team-b circle {
+  stroke: var(--team-b);
+}
+
+.court-player.unknown.team-a text {
+  fill: var(--team-a);
+}
+
+.court-player.unknown.team-b text {
+  fill: var(--team-b);
+}
+
+.court-player.selected circle {
+  stroke: var(--accent);
+  stroke-width: 2.6;
+}
+
+.court-player.draggable {
+  cursor: grab;
+}
+
+/* --- Player Tracking overlay & panel ------------------------------------------------------- */
+
+.monitor-player-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+  padding-right: 6px;
+  border-right: 1px solid var(--line);
+}
+
+.monitor-player-tools .icon-button {
+  font-size: 11px;
+}
+
+.monitor-player-tools .icon-button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.player-layer {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.player-layer.placing {
+  cursor: crosshair;
+}
+
+.player-box {
+  position: absolute;
+  border: 1.5px dashed rgb(226 226 226 / 55%);
+  border-radius: 2px;
+  background: rgb(255 255 255 / 4%);
+  pointer-events: none;
+}
+
+.player-box.team-a {
+  border-style: solid;
+  border-color: var(--team-a);
+  background: rgb(43 179 163 / 8%);
+}
+
+.player-box.team-b {
+  border-style: solid;
+  border-color: var(--team-b);
+  background: rgb(155 124 246 / 8%);
+}
+
+.player-box.selected {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.player-box.cropped {
+  border-bottom-style: dotted;
+  border-bottom-color: var(--warn);
+}
+
+.player-box-foot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: rgb(226 226 226 / 75%);
+}
+
+.player-dot {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  padding: 0;
+  border: 2px solid #121212;
+  border-radius: 50%;
+  color: #121212;
+  font: 700 9px/1 var(--mono);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 55%);
+}
+
+.player-dot.team-a {
+  background: var(--team-a);
+}
+
+.player-dot.team-b {
+  background: var(--team-b);
+}
+
+.player-dot.inferred {
+  opacity: 0.6;
+}
+
+.player-dot.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.player-dot.anchored {
+  border-color: #ffffff;
+}
+
+.players-panel .players-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.device-badge {
+  padding: 1px 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--text);
+  font: 600 10px/14px var(--mono);
+  letter-spacing: 0.04em;
+}
+
+.players-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.players-spans {
+  margin-top: 6px !important;
+}
+
+.players-spans .span-status.done {
+  color: var(--ok);
+}
+
+.players-spans .span-status.tracking {
+  color: var(--accent);
+}
+
+.players-spans .span-status.pending {
+  color: var(--faint);
+}
+
+.players-swap-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.players-swap-bar .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+.players-rows {
+  display: grid;
+  gap: 2px;
+}
+
+.player-row {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px !important;
+  border-radius: 3px !important;
+  color: var(--text) !important;
+}
+
+.player-row.selected {
+  background: var(--accent-soft) !important;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.player-id-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.player-initials {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.player-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-facts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.fact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font: 10px/14px var(--mono);
+  white-space: nowrap;
+}
+
+.fact-chip.cert-inferred {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.fact-chip.cert-unknown {
+  padding: 0 4px;
+  border: 1px dashed var(--line-2);
+  border-radius: 2px;
+  color: var(--faint);
+}
+
+.inf-tag {
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--raised);
+  color: var(--dim);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.players-court-wrap {
+  height: 220px;
+  display: flex;
+}
+
+.players-court-wrap svg {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+
+.anchor-kind-tag {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.team-a-text {
+  color: var(--team-a);
+}
+
+.team-b-text {
+  color: var(--team-b);
+}
+
 /* --- Calibration --------------------------------------------------------------------------- */
 
 .cal-view {
