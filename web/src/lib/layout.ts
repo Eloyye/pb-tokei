@@ -72,21 +72,27 @@ export interface CourtLayout {
   orientation: Record<CourtSlot, CourtOrientation>;
 }
 
-const COURT_LAYOUT_KEY = "pb-tokei:court-layout";
+export const COURT_LAYOUT_KEY = "pb-tokei:court-layout";
 const DEFAULT_COURT_LAYOUT: CourtLayout = {
   swapped: false,
   orientation: { main: "horizontal", side: "vertical" },
 };
+
+function loadOrientation(value: unknown, slot: CourtSlot): CourtOrientation {
+  return value === "horizontal" || value === "vertical"
+    ? value
+    : DEFAULT_COURT_LAYOUT.orientation[slot];
+}
 
 export function loadCourtLayout(): CourtLayout {
   try {
     const stored = window.localStorage.getItem(COURT_LAYOUT_KEY);
     const saved = stored ? (JSON.parse(stored) as Partial<CourtLayout> | null) : null;
     return {
-      swapped: saved?.swapped === true,
+      swapped: typeof saved?.swapped === "boolean" ? saved.swapped : DEFAULT_COURT_LAYOUT.swapped,
       orientation: {
-        main: saved?.orientation?.main === "vertical" ? "vertical" : "horizontal",
-        side: saved?.orientation?.side === "horizontal" ? "horizontal" : "vertical",
+        main: loadOrientation(saved?.orientation?.main, "main"),
+        side: loadOrientation(saved?.orientation?.side, "side"),
       },
     };
   } catch {

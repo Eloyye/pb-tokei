@@ -266,21 +266,60 @@ describe("Workspace Court layout", () => {
       const drawing = svg.querySelector(".surround")!.parentElement!;
       expect(drawing.getAttribute("transform")).toBe("matrix(1.5 0 0 1.5 0 0)");
 
-      fireEvent.keyDown(window, { key: " " });
+      const fit = screen.getByRole("button", { name: "Fit" });
+      if (workspace === "annotate") fit.focus();
+      const keyTarget = workspace === "annotate" ? fit : window;
+      fireEvent.keyDown(keyTarget, { key: " " });
       fireEvent.pointerDown(svg, { pointerId: 1, clientX: 160, clientY: 336 });
       fireEvent.pointerMove(svg, { pointerId: 1, clientX: 190, clientY: 360 });
       fireEvent.pointerUp(svg, { pointerId: 1, clientX: 190, clientY: 360 });
-      fireEvent.keyUp(window, { key: " " });
+      expect(fireEvent.keyUp(keyTarget, { key: " " })).toBe(false);
       expect(drawing.getAttribute("transform")).toBe("matrix(1.5 0 0 1.5 30 24)");
       expect(play).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+      fireEvent.click(fit);
       expect(drawing.getAttribute("transform")).toBe("matrix(1 0 0 1 0 0)");
       fireEvent.keyDown(window, { key: " " });
       fireEvent.keyUp(window, { key: " " });
       expect(play).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("drops a pending Space playback action on blur or when focus moves into a text input", () => {
+    const { container } = renderWorkspace("annotate", []);
+    const play = vi.spyOn(loadVideoMetadata(container), "play").mockResolvedValue();
+
+    fireEvent.keyDown(window, { key: " " });
+    fireEvent.blur(window);
+    fireEvent.keyUp(window, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: " " });
+    fireEvent.keyDown(window, { key: "/" });
+    const input = screen.getByRole("textbox", { name: /go to a frame number/i });
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyUp(input, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("replays the selected Rally from its start on Space release at its end", async () => {
+    const { container } = renderWorkspace("annotate", sampleGames());
+    const video = loadVideoMetadata(container);
+    const play = vi.spyOn(video, "play").mockResolvedValue();
+    await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    fireEvent.click(container.querySelector(".r-row")!);
+    fireEvent.keyDown(window, { key: "/" });
+    const input = screen.getByRole("textbox", { name: /go to a frame number/i });
+    fireEvent.change(input, { target: { value: "300" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(video.currentTime).toBe(frameToSeekTime(300));
+
+    fireEvent.keyDown(window, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+    fireEvent.keyUp(window, { key: " " });
+    expect(video.currentTime).toBe(frameToSeekTime(100));
+    expect(play).toHaveBeenCalledTimes(1);
+  });
 });
 
 function loadVideoMetadata(container: HTMLElement) {

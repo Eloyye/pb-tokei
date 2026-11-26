@@ -173,7 +173,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [calibrateTab, setCalibrateTab] = useState<CalibrateTab>("landmarks");
   const [courtLayout, setCourtLayout] = useState(loadCourtLayout);
   const [courtView, setCourtView] = useState<CourtView>(FIT_COURT);
-  const spaceKey = useRef<"up" | "held" | "used">("up");
+  const spaceKey = useRef<"up" | "play" | "control" | "used">("up");
   const swapped = !calibrating && courtLayout.swapped;
   const courtSlot: CourtSlot = swapped ? "main" : "side";
   const courtNavigation: CourtNavigation = {
@@ -810,8 +810,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       (event.key === " " || event.key === "Enter") &&
       event.target instanceof Element &&
       event.target.closest("button[data-court-control]")
-    )
+    ) {
+      if (!event.repeat && keyAction(event, speed)?.type === "togglePlay") {
+        spaceKey.current = "control";
+      }
       return;
+    }
     if (!calibrating && isPanelSwapKey(event)) {
       event.preventDefault();
       if (!event.repeat) swapPanels();
@@ -873,7 +877,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     if (event.repeat && action.type !== "step") return;
     if (action.type === "togglePlay" && (!calibrating || calibrateTab === "players")) {
       // Wait to see whether the operator uses Space for a Court pan.
-      spaceKey.current = "held";
+      spaceKey.current = "play";
       return;
     }
     run(action);
@@ -883,7 +887,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     if (event.key !== " " && event.code !== "Space") return;
     const previous = spaceKey.current;
     spaceKey.current = "up";
-    if (previous === "held" && !event.defaultPrevented && !isTextEntry(event.target)) {
+    if (previous === "used") {
+      // A pan can start with a header button focused. Release must not activate that button.
+      event.preventDefault();
+    } else if (previous === "play" && !event.defaultPrevented && !isTextEntry(event.target)) {
       playPause();
     }
   });

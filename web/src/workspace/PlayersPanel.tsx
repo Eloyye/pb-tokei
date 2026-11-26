@@ -235,7 +235,6 @@ export function PlayersPanel({
             onMovePlayer={onMovePlayerOnCourt}
             onPlaceOnCourt={onPlacePlayerOnCourt}
             navigation={courtNavigation}
-            placementTarget={frame}
           />
         </div>
       </section>

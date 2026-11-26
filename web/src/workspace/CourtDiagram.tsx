@@ -122,8 +122,8 @@ export function CourtDiagram({
   /** Fired when the court (not a dot) is clicked, e.g. to set a Shot's landing. */
   onClickCourt?: (courtPoint: Point) => void;
   navigation?: CourtNavigation;
-  /** The Shot or live frame an empty-court click would edit. */
-  placementTarget?: object | number;
+  /** Changing Shots invalidates a pending landing click. Live clicks capture their own frame. */
+  placementTarget?: object;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const surroundRef = useRef<SVGRectElement>(null);
@@ -304,7 +304,7 @@ export function CourtDiagram({
         if (!place) return;
         const at = transform.toCourt(pt);
         if (setView && target === surroundRef.current) {
-          // Delay just the surround, where a second click may be Fit rather than an edit.
+          // A second click on the surround may be Fit. Keep the callback for the clicked frame.
           pendingClick.current = {
             target: placementTarget,
             playerId: selectedPlayerId,

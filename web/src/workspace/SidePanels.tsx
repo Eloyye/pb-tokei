@@ -145,7 +145,7 @@ export function CourtPanel({
           landing={landing}
           onClickCourt={shot ? onSetLanding : undefined}
           navigation={navigation}
-          placementTarget={shot ?? frame}
+          placementTarget={shot}
         />
         <div className="court-note">
           {shot

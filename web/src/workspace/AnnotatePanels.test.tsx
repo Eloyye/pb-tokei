@@ -501,6 +501,45 @@ describe("CourtPanel with a Shot selected", () => {
     }
   });
 
+  it("places an Unknown Player at the live frame clicked even if playback moves on", () => {
+    vi.useFakeTimers();
+    try {
+      const placePlayer = vi.fn<(frame: number, point: { x: number; y: number }) => void>();
+      const liveCourt = (frame: number) => (
+        <CourtPanel
+          match={MATCH}
+          focused={false}
+          frame={frame}
+          selectedPlayerId="a1"
+          onMovePlayer={() => {}}
+          onPlaceOnCourt={(point) => placePlayer(frame, point)}
+          navigation={{
+            orientation: "vertical",
+            view: FIT_COURT,
+            setView: () => {},
+            consumeSpaceForPan: () => false,
+            toggleOrientation: () => {},
+          }}
+        />
+      );
+      const { container, rerender } = render(liveCourt(120));
+      const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 320, height: 672 }),
+      );
+      fireEvent.pointerDown(svg.querySelector(".surround")!, {
+        pointerId: 1,
+        clientX: 280,
+        clientY: 216,
+      });
+      rerender(liveCourt(150));
+      act(() => vi.runOnlyPendingTimers());
+      expect(placePlayer).toHaveBeenCalledExactlyOnceWith(120, { x: 12, y: 12 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("draws a Player standing well behind the baseline where they are", () => {
     const { games } = annotated();
     const serve = games[0]!.rallies[0]!.entries[0];
