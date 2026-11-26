@@ -42,6 +42,8 @@ export type Match = Awaited<ReturnType<typeof listMatches>>[number];
 export type MatchDetail = Awaited<ReturnType<typeof getMatch>>;
 export type CreateMatchIn = Schemas["CreateMatchIn"];
 export type Roster = Awaited<ReturnType<typeof getRoster>>;
+export type OperatorTime = Schemas["OperatorTimeOut"];
+export type OperatorSessionIn = Schemas["OperatorSessionIn"];
 
 /** The Rally Log the app has open. A tab that hasn't loaded one yet takes it as its own. */
 export async function getRallyLog(): Promise<RallyLogInfo> {
@@ -86,6 +88,26 @@ export async function getMatch(matchId: string) {
   const { data, error, response } = await api.GET("/api/matches/{match_id}", {
     params: { path: { match_id: matchId } },
   });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function upsertOperatorSession(
+  matchId: string,
+  sessionId: string,
+  body: OperatorSessionIn,
+  options?: { keepalive?: boolean; rallyLog?: string },
+): Promise<OperatorTime> {
+  const rallyLog = options?.rallyLog ?? tabRallyLog;
+  const { data, error, response } = await api.PUT(
+    "/api/matches/{match_id}/operator-sessions/{session_id}",
+    {
+      params: { path: { match_id: matchId, session_id: sessionId } },
+      body,
+      headers: rallyLog === null ? undefined : { [RALLY_LOG_HEADER]: encodeURIComponent(rallyLog) },
+      keepalive: options?.keepalive,
+    },
+  );
   if (data === undefined) throw apiError(response, error);
   return data;
 }

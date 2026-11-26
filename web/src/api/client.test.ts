@@ -120,4 +120,28 @@ describe("the tab's Rally Log", () => {
     expect(requests.at(-1)!.headers.get("X-Rally-Log")).toBe(encodeURIComponent(ONE));
     expect(client.getTabRallyLog()).toBe(TWO);
   });
+
+  it("keeps a closing session bound to the Rally Log where it started", async () => {
+    const client = await freshClient();
+    await client.getRallyLog();
+    rallyLogPath = TWO;
+    await client.openRallyLog(TWO, false);
+    const body = {
+      workspace: "annotate",
+      started_at: "2026-01-01T00:00:00Z",
+      ended_at: "2026-01-01T00:00:10Z",
+      active_seconds: 10,
+    } as const;
+    await client.upsertOperatorSession("match", "session", body, {
+      keepalive: true,
+      rallyLog: ONE,
+    });
+
+    const request = requests.at(-1)!;
+    expect(new URL(request.url).pathname).toBe("/api/matches/match/operator-sessions/session");
+    expect(request.method).toBe("PUT");
+    expect(request.keepalive).toBe(true);
+    expect(request.headers.get("X-Rally-Log")).toBe(encodeURIComponent(ONE));
+    expect(await request.json()).toEqual(body);
+  });
 });

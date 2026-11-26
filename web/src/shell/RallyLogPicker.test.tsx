@@ -10,7 +10,7 @@ import {
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RallyLogInfo } from "../api/client";
-import { reportSaveStatus } from "../lib/unsavedChanges";
+import { registerOperatorTimeFlush, reportSaveStatus } from "../lib/unsavedChanges";
 import { AppShell } from "./AppShell";
 import { rallyLogFolder } from "./rallyLog";
 
@@ -81,6 +81,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   reportSaveStatus(editor, null);
   vi.clearAllMocks();
 });
@@ -122,6 +123,48 @@ describe("Rally Log picker", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("503 Service Unavailable");
     expect(openRallyLog).not.toHaveBeenCalled();
+  });
+
+  it("gives the old Rally Log a chance to save time and ignores a flush failure", async () => {
+    let fail!: (error: Error) => void;
+    const pendingTime = new Promise<void>((_resolve, reject) => {
+      fail = reject;
+    });
+    const flush = vi.fn<() => Promise<void>>(() => pendingTime);
+    const unregister = registerOperatorTimeFlush(flush);
+    try {
+      renderShell();
+      await openPicker();
+      fireEvent.click(screen.getByTitle(TWO));
+      await waitFor(() => expect(flush).toHaveBeenCalledOnce());
+      expect(openRallyLog).not.toHaveBeenCalled();
+
+      await act(async () => fail(new Error("Busy")));
+      expect(openRallyLog).toHaveBeenCalledWith(TWO, false);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("opens the next Rally Log after the time flush deadline", async () => {
+    const unregister = registerOperatorTimeFlush(() => new Promise<void>(() => {}));
+    try {
+      renderShell();
+      await openPicker();
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByTitle(TWO));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1999);
+      });
+      expect(openRallyLog).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(openRallyLog).toHaveBeenCalledWith(TWO, false);
+    } finally {
+      unregister();
+    }
   });
 
   it("creates a new Rally Log at the typed path, starting from the open one's folder", async () => {

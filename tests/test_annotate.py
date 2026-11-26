@@ -32,6 +32,12 @@ URL = "https://www.youtube.com/watch?v=abc123"
 VIDEO_BYTES = bytes(range(256)) * 40
 # The app only answers requests addressed to this machine (see test_other_hosts_are_refused).
 LOCAL = "http://127.0.0.1"
+NO_OPERATOR_TIME = {
+    "active_seconds": 0,
+    "calibrate_seconds": 0,
+    "annotate_seconds": 0,
+    "review_seconds": 0,
+}
 
 
 def add_match(db: Path, *, tournament: str = "PPA Atlanta Open 2026") -> MatchId:
@@ -109,6 +115,10 @@ def test_lists_matches_with_roster_and_video_status(
             "franchise_a": None,
             "franchise_b": None,
             "video_status": "none",
+            "annotation_mode": "gold",
+            "broadcast_seconds": None,
+            "operator_time": NO_OPERATOR_TIME,
+            "operator_time_ratio": None,
             "footage_job": None,
         },
         {
@@ -119,9 +129,122 @@ def test_lists_matches_with_roster_and_video_status(
             "franchise_a": None,
             "franchise_b": None,
             "video_status": "ready",
+            "annotation_mode": "gold",
+            "broadcast_seconds": None,
+            "operator_time": NO_OPERATOR_TIME,
+            "operator_time_ratio": None,
             "footage_job": None,
         },
     ]
+
+
+@pytest.mark.parametrize("list_view", [False, True])
+def test_broadcast_duration_backfills_and_survives_offline_footage(
+    client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, list_view: bool
+) -> None:
+    match_id = add_match(db)
+    original = footage(tmp_path, converted=True)
+    converted = original.with_name("abc123.60fps.mp4")
+    set_video(db, match_id, Path("footage/abc123.webm"))
+
+    def probe(path: Path) -> int:
+        assert path == converted
+        return 3600
+
+    monkeypatch.setattr("pb_tokei.annotate.app.video_frame_count", probe)
+    result = client.get("/api/matches" if list_view else f"/api/matches/{match_id}").json()
+    live = result[0] if list_view else result
+    assert live["video_status"] == "ready"
+    assert live["broadcast_seconds"] == 60
+    assert live["operator_time_ratio"] == 0
+    with RallyLog.open(db) as log:
+        assert log.load_match(match_id).source_video_frames == 3600
+
+    converted.unlink()
+    snapshot = {
+        "workspace": "annotate",
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": "2026-01-01T00:00:30Z",
+        "active_seconds": 15,
+    }
+    assert (
+        client.put(
+            f"/api/matches/{match_id}/operator-sessions/{uuid4()}", json=snapshot
+        ).status_code
+        == 200
+    )
+    offline = client.get(f"/api/matches/{match_id}").json()
+    assert offline["video_status"] == "not_converted"
+    assert offline["broadcast_seconds"] == 60
+    assert offline["operator_time_ratio"] == 0.25
+
+
+def test_operator_session_put_is_monotonic_and_bound_to_the_named_log(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    match_id = add_match(db)
+    path = f"/api/matches/{match_id}/operator-sessions/{uuid4()}"
+    snapshot = {
+        "workspace": "calibrate",
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": "2026-01-01T00:00:30Z",
+        "active_seconds": 15,
+    }
+    assert (
+        client.put(path, json=snapshot, headers={"Origin": "http://example.com"}).status_code == 403
+    )
+    assert client.put(path, json=snapshot).json() == {
+        **NO_OPERATOR_TIME,
+        "active_seconds": 15,
+        "calibrate_seconds": 15,
+    }
+    stale = client.put(path, json={**snapshot, "active_seconds": 4})
+    assert stale.json()["active_seconds"] == 15
+    assert client.put(path, json={**snapshot, "workspace": "review"}).status_code == 422
+    unknown_match = f"/api/matches/{uuid4()}/operator-sessions/{uuid4()}"
+    assert client.put(unknown_match, json=snapshot).status_code == 404
+
+    other = tmp_path / "other.duckdb"
+    add_match(other)
+    _open(client, other)
+    old_log = {"X-Rally-Log": quote(str(db.resolve()))}
+    assert (
+        client.put(path, json={**snapshot, "active_seconds": 20}, headers=old_log).status_code
+        == 409
+    )
+    with RallyLog.open(db) as log:
+        assert log.get_operator_time(match_id).total_seconds == 15
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("active_seconds", -1),
+        ("active_seconds", float("nan")),
+        ("active_seconds", float("inf")),
+        ("ended_at", "2025-12-31T00:00:00Z"),
+        ("started_at", "2026-01-01T00:00:00"),
+        ("workspace", "home"),
+    ],
+)
+def test_operator_session_rejects_invalid_input(
+    client: TestClient, db: Path, field: str, value: object
+) -> None:
+    match_id = add_match(db)
+    body = {
+        "workspace": "review",
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": "2026-01-01T00:00:30Z",
+        "active_seconds": 10,
+        field: value,
+    }
+    result = client.put(
+        f"/api/matches/{match_id}/operator-sessions/{uuid4()}",
+        content=json.dumps(body),
+        headers={"Content-Type": "application/json"},
+    )
+    assert result.status_code == 422
+    assert client.get(f"/api/matches/{match_id}").json()["operator_time"] == NO_OPERATOR_TIME
 
 
 def test_rally_log_endpoint_returns_absolute_path(

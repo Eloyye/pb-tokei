@@ -17,12 +17,14 @@ import duckdb
 from .model import (
     FRONTCOURT_MAX_Y_FT,
     AnchorKind,
+    AnnotationMode,
     CameraView,
     Certainty,
     ContactKind,
     ErrorKind,
     Handedness,
     Landmark,
+    OperatorWorkspace,
     Parity,
     RefereeCall,
     Ruling,
@@ -104,12 +106,80 @@ CREATE TABLE IF NOT EXISTS {name} (
 )"""
 
 
+def matches_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    id UUID PRIMARY KEY,
+    tournament_id UUID NOT NULL REFERENCES tournaments (id),
+    team_a_id UUID NOT NULL REFERENCES teams (id),
+    team_b_id UUID NOT NULL REFERENCES teams (id),
+    franchise_match_id UUID REFERENCES franchise_matches (id),
+    source_video_url VARCHAR,
+    source_video_id VARCHAR,
+    source_video_path VARCHAR,
+    source_video_frames INTEGER CHECK (source_video_frames > 0),
+    annotation_mode VARCHAR NOT NULL DEFAULT '{AnnotationMode.GOLD}'
+        {_one_of("annotation_mode", AnnotationMode)},
+    CHECK (team_a_id <> team_b_id),
+    CHECK (
+        (source_video_url IS NULL AND source_video_id IS NULL AND source_video_path IS NULL)
+        OR (
+            source_video_url IS NOT NULL
+            AND source_video_id IS NOT NULL
+            AND source_video_path IS NOT NULL
+        )
+    ),
+    CHECK (source_video_frames IS NULL OR source_video_path IS NOT NULL)
+)"""
+
+
+def _migrate_matches(db: duckdb.DuckDBPyConnection) -> None:
+    columns = {
+        name
+        for (name,) in db.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'matches'"
+        ).fetchall()
+    }
+    if {"source_video_frames", "annotation_mode"} <= columns:
+        return
+
+    # Older logs can also predate SourceVideo. Absent columns take the new table defaults.
+    copied = ", ".join(
+        name
+        for name in (
+            "id",
+            "tournament_id",
+            "team_a_id",
+            "team_b_id",
+            "franchise_match_id",
+            "source_video_url",
+            "source_video_id",
+            "source_video_path",
+            "source_video_frames",
+            "annotation_mode",
+        )
+        if name in columns
+    )
+    db.execute("BEGIN TRANSACTION")
+    try:
+        db.execute(matches_table("matches_migrated"))
+        db.execute(f"INSERT INTO matches_migrated ({copied}) SELECT {copied} FROM matches")
+        db.execute("DROP TABLE matches")
+        db.execute("ALTER TABLE matches_migrated RENAME TO matches")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+    db.execute("COMMIT")
+
+
 def migrate(db: duckdb.DuckDBPyConnection) -> None:
     """Brings a Rally Log made by an older version up to the current schema.
 
     Run after `STATEMENTS`. DuckDB can't alter a CHECK, so a table whose check changed is copied
     into a fresh one.
     """
+    _migrate_matches(db)
+
     old_check = db.execute(
         "SELECT 1 FROM duckdb_constraints() WHERE table_name = 'play_segments' "
         "AND constraint_type = 'CHECK' AND expression = '(start_frame < end_frame)'"
@@ -262,29 +332,18 @@ CREATE TABLE IF NOT EXISTS franchise_matches (
     franchise_a_id UUID NOT NULL REFERENCES franchises (id),
     franchise_b_id UUID NOT NULL REFERENCES franchises (id)
 )""",
-    """
-CREATE TABLE IF NOT EXISTS matches (
-    id UUID PRIMARY KEY,
-    tournament_id UUID NOT NULL REFERENCES tournaments (id),
-    team_a_id UUID NOT NULL REFERENCES teams (id),
-    team_b_id UUID NOT NULL REFERENCES teams (id),
-    franchise_match_id UUID REFERENCES franchise_matches (id),
-    source_video_url VARCHAR,
-    source_video_id VARCHAR,
-    source_video_path VARCHAR,
-    CHECK (team_a_id <> team_b_id),
-    CHECK (
-        (source_video_url IS NULL AND source_video_id IS NULL AND source_video_path IS NULL)
-        OR (
-            source_video_url IS NOT NULL
-            AND source_video_id IS NOT NULL
-            AND source_video_path IS NOT NULL
-        )
-    )
+    matches_table("matches"),
+    f"""
+CREATE TABLE IF NOT EXISTS operator_sessions (
+    match_id UUID NOT NULL,
+    session_id UUID NOT NULL,
+    workspace VARCHAR NOT NULL {_one_of("workspace", OperatorWorkspace)},
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ NOT NULL,
+    active_seconds DOUBLE NOT NULL CHECK (isfinite(active_seconds) AND active_seconds >= 0),
+    CHECK (ended_at >= started_at),
+    PRIMARY KEY (match_id, session_id)
 )""",
-    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_url VARCHAR",
-    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_id VARCHAR",
-    "ALTER TABLE matches ADD COLUMN IF NOT EXISTS source_video_path VARCHAR",
     play_segments_table("play_segments"),
     f"""
 CREATE TABLE IF NOT EXISTS calibrations (

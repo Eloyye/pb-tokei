@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { openRallyLog, type RallyLogInfo } from "../api/client";
-import { waitUntilSaved } from "../lib/unsavedChanges";
+import { flushOperatorTimeBeforeSwitch, waitUntilSaved } from "../lib/unsavedChanges";
 import { announceRallyLogSwitch, rallyLogFileName, rallyLogFolder } from "./rallyLog";
 
 /**
@@ -42,6 +42,7 @@ export function RallyLogPicker({
       setBusy("Saving changes…");
       await waitUntilSaved();
       setBusy(create ? "Creating…" : "Opening…");
+      await flushOperatorTimeBeforeSwitch();
       const info = await openRallyLog(path.trim(), create);
       announceRallyLogSwitch();
       queryClient.setQueryData(["rally-log"], info);

@@ -261,7 +261,7 @@ h1 {
 }
 
 .match-table {
-  min-width: 760px;
+  min-width: 990px;
   overflow: hidden;
   background: var(--panel);
   border-radius: 4px;
@@ -269,7 +269,10 @@ h1 {
 
 .match-table .tr {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(140px, 1.2fr) 136px;
+  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(
+      140px,
+      1.2fr
+    ) 136px 68px 60px 50px;
   gap: 16px;
   align-items: center;
   padding: 7px 12px;
@@ -295,6 +298,28 @@ h1 {
 
 .match-table .dimmed {
   color: var(--dim);
+}
+
+.match-table .number {
+  text-align: right;
+}
+
+.ratio {
+  color: var(--dim);
+}
+
+.ratio.within-budget {
+  color: var(--ok);
+}
+
+.ratio.over-budget {
+  color: var(--warn);
+}
+
+.ratio-note {
+  margin: 8px 0 0;
+  color: var(--dim);
+  font-size: 11px;
 }
 
 .teams-cell {
@@ -2280,6 +2305,10 @@ fieldset.transport-group {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text);
+}
+
+.statusbar .active-time.idle {
+  color: var(--faint);
 }
 
 .statusbar button {

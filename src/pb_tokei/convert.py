@@ -25,8 +25,9 @@ from pb_tokei.process import (
     as_stream_runner,
     stream_subprocess,
 )
+from pb_tokei.rally_log import BROADCAST_FPS
 
-TARGET_FPS = 60
+TARGET_FPS = BROADCAST_FPS
 KEYFRAME_INTERVAL = 30
 VIDEO_CRF = 18
 VIDEO_PRESET = "fast"

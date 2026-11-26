@@ -300,7 +300,7 @@ handedness = "right"
 _setup_lock = Lock()
 
 
-def set_up_match(log: RallyLog, roster: Roster) -> Match:
+def set_up_match(log: RallyLog, roster: Roster, *, source_video_frames: int | None = None) -> Match:
     """Creates the Match a Roster describes in one transaction.
 
     After trimming outer whitespace, an exact name reuses the stored Player, Franchise or
@@ -308,10 +308,10 @@ def set_up_match(log: RallyLog, roster: Roster) -> Match:
     raises RosterError. Tournament names are checked across Tours. Only new records are written.
     """
     with _setup_lock, log.transaction():
-        return _set_up_match(log, roster)
+        return _set_up_match(log, roster, source_video_frames)
 
 
-def _set_up_match(log: RallyLog, roster: Roster) -> Match:
+def _set_up_match(log: RallyLog, roster: Roster, source_video_frames: int | None) -> Match:
     if log.has_match(roster.match_id):
         raise RosterError(f"Match {roster.match_id} already exists")
     new: list[Callable[[], None]] = []
@@ -385,6 +385,7 @@ def _set_up_match(log: RallyLog, roster: Roster) -> Match:
         team_b_id=team_b.id,
         franchise_match_id=None if franchise_match is None else franchise_match.id,
         source_video=roster.video,
+        source_video_frames=source_video_frames,
     )
     for save in new:
         save()

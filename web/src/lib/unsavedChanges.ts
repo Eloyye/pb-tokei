@@ -6,6 +6,7 @@ import { combineStatus, type SaveStatus } from "./saveQueue";
 
 const statuses = new Map<object, SaveStatus>();
 const listeners = new Set<() => void>();
+const operatorTimeFlushes = new Set<() => Promise<void>>();
 
 /** Records an editor's save status; null when the editor closes. */
 export function reportSaveStatus(owner: object, status: SaveStatus | null): void {
@@ -48,4 +49,28 @@ export function waitUntilSaved(timeoutMs = SAVE_WAIT_MS): Promise<void> {
     listeners.add(check);
     check();
   });
+}
+
+/** Background timing has its own best-effort flush, independent of annotation saves. */
+export function registerOperatorTimeFlush(flush: () => Promise<void>): () => void {
+  operatorTimeFlushes.add(flush);
+  return () => operatorTimeFlushes.delete(flush);
+}
+
+export async function flushOperatorTimeBeforeSwitch(timeoutMs = 2000): Promise<void> {
+  if (operatorTimeFlushes.size === 0) return;
+  const pending = Promise.allSettled(
+    [...operatorTimeFlushes].map((flush) => Promise.resolve().then(flush)),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      pending,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

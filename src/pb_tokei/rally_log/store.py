@@ -6,6 +6,7 @@ import os
 from collections import defaultdict
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
+from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -16,6 +17,7 @@ import duckdb
 from .model import (
     UNKNOWN,
     AnchorKind,
+    AnnotationMode,
     Calibration,
     CameraView,
     Certainty,
@@ -37,6 +39,9 @@ from .model import (
     MatchRoster,
     MatchSummary,
     ObservationGap,
+    OperatorSession,
+    OperatorTimeSummary,
+    OperatorWorkspace,
     Parity,
     PlacedLandmark,
     Player,
@@ -70,6 +75,12 @@ Row = tuple[Any, ...]
 
 DEFAULT_DB_PATH = Path("rally_log.duckdb")
 """Fallback Rally Log filename in the current directory when `--db` and state aren't set."""
+
+_OPERATOR_TOTALS = """
+    COALESCE(SUM(active_seconds) FILTER (WHERE workspace = 'calibrate'), 0) AS calibrate_seconds,
+    COALESCE(SUM(active_seconds) FILTER (WHERE workspace = 'annotate'), 0) AS annotate_seconds,
+    COALESCE(SUM(active_seconds) FILTER (WHERE workspace = 'review'), 0) AS review_seconds
+"""
 
 
 def stored_video_path(video_path: Path, db_path: Path) -> Path:
@@ -318,7 +329,8 @@ class RallyLog:
     def save_match(self, match: Match) -> None:
         """Saves a Match and replaces everything recorded under it (Games, Rallies, Shots...).
 
-        If `match.source_video` is None, any source video already recorded on the Match is kept.
+        Keeps operator sessions and any recorded video omitted by the caller. A frame count
+        belongs to the recorded video and is kept when that video is unchanged.
         """
         video = match.source_video
         with self.transaction():
@@ -332,8 +344,10 @@ class RallyLog:
                     franchise_match_id,
                     source_video_url,
                     source_video_id,
-                    source_video_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    source_video_path,
+                    source_video_frames,
+                    annotation_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO UPDATE SET
                     tournament_id = excluded.tournament_id,
                     team_a_id = excluded.team_a_id,
@@ -347,7 +361,18 @@ class RallyLog:
                     ),
                     source_video_path = COALESCE(
                         excluded.source_video_path, matches.source_video_path
-                    )
+                    ),
+                    source_video_frames = CASE
+                        WHEN excluded.source_video_frames IS NOT NULL
+                            THEN excluded.source_video_frames
+                        WHEN excluded.source_video_path IS NULL OR (
+                            excluded.source_video_url = matches.source_video_url
+                            AND excluded.source_video_id = matches.source_video_id
+                            AND excluded.source_video_path = matches.source_video_path
+                        ) THEN matches.source_video_frames
+                        ELSE NULL
+                    END,
+                    annotation_mode = excluded.annotation_mode
                 """,
                 [
                     match.id,
@@ -358,6 +383,8 @@ class RallyLog:
                     None if video is None else video.url,
                     None if video is None else video.video_id,
                     None if video is None else str(video.path),
+                    match.source_video_frames,
+                    match.annotation_mode,
                 ],
             )
             for table in MATCH_CONTENT_TABLES:
@@ -368,13 +395,118 @@ class RallyLog:
         row = self._db.execute("SELECT 1 FROM matches WHERE id = ?", [match_id]).fetchone()
         return row is not None
 
-    def set_match_source_video(self, match_id: MatchId, source_video: SourceVideo) -> None:
+    def set_match_source_video(
+        self, match_id: MatchId, source_video: SourceVideo, *, frames: int | None = None
+    ) -> None:
         """Records the downloaded broadcast video against an existing Match."""
+        if frames is not None and frames <= 0:
+            raise ValueError("Source video frame count must be positive")
         self._require_match(match_id)
         self._db.execute(
-            "UPDATE matches SET source_video_url = ?, source_video_id = ?, source_video_path = ? "
-            "WHERE id = ?",
-            [source_video.url, source_video.video_id, str(source_video.path), match_id],
+            """
+            UPDATE matches SET source_video_url = ?, source_video_id = ?,
+                source_video_path = ?, source_video_frames = ?
+            WHERE id = ?
+            """,
+            [source_video.url, source_video.video_id, str(source_video.path), frames, match_id],
+        )
+
+    def set_match_video_frames(
+        self,
+        match_id: MatchId,
+        frames: int | None,
+        *,
+        expected_source: SourceVideo | None = None,
+    ) -> None:
+        """Caches the converted frame count, skipping a probe for any superseded source."""
+        if frames is not None and frames <= 0:
+            raise ValueError("Source video frame count must be positive")
+        self._require_match(match_id)
+        if expected_source is not None:
+            self._db.execute(
+                """
+                UPDATE matches SET source_video_frames = ?
+                WHERE id = ? AND source_video_url = ? AND source_video_id = ?
+                      AND source_video_path = ?
+                """,
+                [
+                    frames,
+                    match_id,
+                    expected_source.url,
+                    expected_source.video_id,
+                    str(expected_source.path),
+                ],
+            )
+            return
+        updated = self._db.execute(
+            """
+            UPDATE matches SET source_video_frames = ?
+            WHERE id = ? AND (? IS NULL OR source_video_path IS NOT NULL)
+            RETURNING id
+            """,
+            [frames, match_id, frames],
+        ).fetchone()
+        if updated is None:
+            raise ValueError("Source video frames require a recorded source video")
+
+    def upsert_operator_session(
+        self, match_id: MatchId, session: OperatorSession
+    ) -> OperatorTimeSummary:
+        """Records a cumulative snapshot, safe to replay or receive out of order."""
+        self._require_match(match_id)
+        updated = self._db.execute(
+            """
+            INSERT INTO operator_sessions (
+                match_id, session_id, workspace, started_at, ended_at, active_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (match_id, session_id) DO UPDATE SET
+                started_at = LEAST(operator_sessions.started_at, excluded.started_at),
+                ended_at = GREATEST(operator_sessions.ended_at, excluded.ended_at),
+                active_seconds = GREATEST(operator_sessions.active_seconds, excluded.active_seconds)
+            WHERE operator_sessions.workspace = excluded.workspace
+            RETURNING session_id
+            """,
+            [
+                match_id,
+                session.session_id,
+                session.workspace,
+                session.started_at,
+                session.ended_at,
+                session.active_seconds,
+            ],
+        ).fetchone()
+        if updated is None:
+            raise ValueError("An operator session cannot change workspace")
+        return self.get_operator_time(match_id)
+
+    def get_operator_time(self, match_id: MatchId) -> OperatorTimeSummary:
+        return OperatorTimeSummary(
+            *self._one(
+                f"SELECT {_OPERATOR_TOTALS} FROM operator_sessions WHERE match_id = ?",
+                match_id,
+            )
+        )
+
+    def get_operator_sessions(self, match_id: MatchId) -> tuple[OperatorSession, ...]:
+        # Read UTC wall times explicitly so DuckDB's Python client doesn't require pytz.
+        rows = self._all(
+            """
+            SELECT session_id, workspace, started_at AT TIME ZONE 'UTC',
+                ended_at AT TIME ZONE 'UTC', active_seconds
+            FROM operator_sessions WHERE match_id = ?
+            ORDER BY started_at, session_id
+            """,
+            match_id,
+        )
+        return tuple(
+            OperatorSession(
+                session_id,
+                OperatorWorkspace(workspace),
+                start.replace(tzinfo=UTC),
+                end.replace(tzinfo=UTC),
+                seconds,
+            )
+            for session_id, workspace, start, end, seconds in rows
         )
 
     def list_matches(self, tournament: str | None = None) -> list[MatchSummary]:
@@ -395,7 +527,10 @@ class RallyLog:
             SELECT m.id, t.name,
                 pa1.name, pa2.name, pb1.name, pb2.name,
                 fa.name, fb.name,
-                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id
+                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id,
+                m.source_video_frames, m.annotation_mode,
+                COALESCE(ot.calibrate_seconds, 0), COALESCE(ot.annotate_seconds, 0),
+                COALESCE(ot.review_seconds, 0)
             FROM matches m
             JOIN tournaments t ON t.id = m.tournament_id
             JOIN teams ta ON ta.id = m.team_a_id
@@ -407,6 +542,9 @@ class RallyLog:
             LEFT JOIN franchise_matches fm ON fm.id = m.franchise_match_id
             LEFT JOIN franchises fa ON fa.id = fm.franchise_a_id
             LEFT JOIN franchises fb ON fb.id = fm.franchise_b_id
+            LEFT JOIN (
+                SELECT match_id, {_OPERATOR_TOTALS} FROM operator_sessions GROUP BY match_id
+            ) ot ON ot.match_id = m.id
             WHERE {where}
             ORDER BY t.name, m.id
             """,
@@ -422,6 +560,9 @@ class RallyLog:
                 franchise_b=fb,
                 source_video=_source_video(video_url, video_id, video_path),
                 franchise_match_id=None if fm_id is None else FranchiseMatchId(fm_id),
+                annotation_mode=AnnotationMode(mode),
+                source_video_frames=frames,
+                operator_time=OperatorTimeSummary(calibrate, annotate, review),
             )
             for (
                 id_,
@@ -436,6 +577,11 @@ class RallyLog:
                 video_id,
                 video_path,
                 fm_id,
+                frames,
+                mode,
+                calibrate,
+                annotate,
+                review,
             ) in rows
         ]
 
@@ -448,9 +594,12 @@ class RallyLog:
             video_url,
             video_id,
             video_path,
+            video_frames,
+            mode,
         ) = self._one(
             "SELECT tournament_id, team_a_id, team_b_id, franchise_match_id, "
-            "source_video_url, source_video_id, source_video_path "
+            "source_video_url, source_video_id, source_video_path, "
+            "source_video_frames, annotation_mode "
             "FROM matches WHERE id = ?",
             match_id,
         )
@@ -464,6 +613,8 @@ class RallyLog:
             if franchise_match is None
             else FranchiseMatchId(franchise_match),
             source_video=source_video,
+            source_video_frames=video_frames,
+            annotation_mode=AnnotationMode(mode),
             games=self._load_games(match_id),
             play_segments=self._load_play_segments(match_id),
             calibrations=self._load_calibrations(match_id),

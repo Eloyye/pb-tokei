@@ -31,6 +31,15 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
     franchise_b: null,
     video_status: "none",
     footage_job: null,
+    annotation_mode: "gold",
+    broadcast_seconds: null,
+    operator_time: {
+      active_seconds: 0,
+      calibrate_seconds: 0,
+      annotate_seconds: 0,
+      review_seconds: 0,
+    },
+    operator_time_ratio: null,
     ...overrides,
   };
 }
@@ -109,4 +118,45 @@ describe("MatchList Video pills", () => {
     }
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
+});
+
+it("shows Mode, Active and Ratio in Match order with the Assisted budget", async () => {
+  const operator_time = {
+    active_seconds: 900,
+    calibrate_seconds: 240,
+    annotate_seconds: 600,
+    review_seconds: 60,
+  };
+  vi.mocked(listMatches).mockResolvedValue([
+    makeMatch("gold"),
+    makeMatch("at-budget", {
+      annotation_mode: "assisted",
+      operator_time,
+      broadcast_seconds: 3600,
+      operator_time_ratio: 0.25,
+    }),
+    makeMatch("over-budget", {
+      annotation_mode: "assisted",
+      operator_time,
+      broadcast_seconds: 3000,
+      operator_time_ratio: 0.3,
+    }),
+  ]);
+  renderList();
+
+  expect((await screen.findByText("Mode")).parentElement?.textContent).toBe(
+    "TournamentMatchFranchise MatchVideoModeActiveRatio",
+  );
+  expect(screen.getByText("Gold").classList.contains("pill-none")).toBe(true);
+  expect(
+    screen.getAllByText("Assisted").every((pill) => pill.classList.contains("pill-active")),
+  ).toBe(true);
+  expect(screen.getByText("0:00")).toBeTruthy();
+  expect(screen.getAllByTitle("Calibrate 4:00 · Annotate 10:00 · Review 1:00")).toHaveLength(2);
+  expect(screen.getByText("0.25").classList.contains("within-budget")).toBe(true);
+  expect(screen.getByText("0.30").classList.contains("over-budget")).toBe(true);
+  const unknown = screen.getByText("Gold").closest("a")?.querySelector(".ratio");
+  expect(unknown?.textContent).toBe("—");
+  expect(unknown?.classList.contains("within-budget")).toBe(false);
+  expect(screen.getByText(/Assisted Annotation has a 0.25 budget/)).toBeTruthy();
 });

@@ -256,7 +256,10 @@ def test_streaming_runner_reports_download_and_convert_progress_and_cli_prints_i
 # --- FootageJobService: queue, cancel, failure, shared broadcast --------------------------
 
 
-def test_footage_queue_runs_one_at_a_time_in_fifo_order(tmp_path: Path) -> None:
+def test_footage_queue_runs_one_at_a_time_in_fifo_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("pb_tokei.annotate.footage_jobs.video_frame_count", lambda _: 6000)
     db = tmp_path / "log.duckdb"
     m1, m2, m3 = _add_match(db), _add_match(db), _add_match(db)
 
@@ -298,6 +301,8 @@ def test_footage_queue_runs_one_at_a_time_in_fifo_order(tmp_path: Path) -> None:
         assert service.status(m1).state is FootageJobState.IDLE
         assert service.status(m2).state is FootageJobState.IDLE
         assert service.status(m3).state is FootageJobState.IDLE
+        with RallyLog.open(db) as log:
+            assert [log.load_match(mid).source_video_frames for mid in (m1, m2, m3)] == [6000] * 3
     finally:
         release_first.set()
         service.close()
@@ -409,8 +414,9 @@ def test_cancel_while_converting_deletes_temp_file_and_advances_queue(tmp_path: 
 
 
 def test_failure_mid_conversion_leaves_source_video_recorded_and_retries_convert_only(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("pb_tokei.annotate.footage_jobs.video_frame_count", lambda _: 6000)
     db = tmp_path / "log.duckdb"
     match_id = _add_match(db)
     runner = FakeStreamRunner(convert_error="x264 encoder crashed\ndisk full")
@@ -439,7 +445,9 @@ def test_failure_mid_conversion_leaves_source_video_recorded_and_retries_convert
     assert detail["footage_job"] == {"state": "error", "queue_position": None, "percent": None}
 
     with RallyLog.open(db) as log:
-        assert log.load_match(match_id).source_video == SourceVideo(
+        match = log.load_match(match_id)
+        assert match.source_video_frames is None
+        assert match.source_video == SourceVideo(
             url=URL_A,
             video_id=_video_id_for_url(URL_A),
             path=Path("footage") / f"{_video_id_for_url(URL_A)}.mkv",
@@ -450,10 +458,11 @@ def test_failure_mid_conversion_leaves_source_video_recorded_and_retries_convert
     runner.convert_error = None
     retry = client.post(f"/api/matches/{match_id}/footage/fetch", json={})
     assert retry.status_code == 200
-    _wait_until(lambda: client.get(f"/api/matches/{match_id}").json()["video_status"] == "ready")
+    _wait_until(lambda: client.get(f"/api/matches/{match_id}/footage").json()["state"] == "idle")
 
     assert len(runner.download_calls) == dl_count_before
-    assert client.get(f"/api/matches/{match_id}/footage").json()["state"] == "idle"
+    with RallyLog.open(db) as log:
+        assert log.load_match(match_id).source_video_frames == 6000
 
 
 def test_replacing_url_only_updates_source_video_after_download_succeeds(tmp_path: Path) -> None:

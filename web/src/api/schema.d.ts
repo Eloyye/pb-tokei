@@ -193,6 +193,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/operator-sessions/{session_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Upsert Operator Session */
+    put: operations["upsertOperatorSession"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/play-segments": {
     parameters: {
       query?: never;
@@ -408,6 +425,11 @@ export interface components {
      * @enum {string}
      */
     AnchorKind: "identity" | "position";
+    /**
+     * AnnotationMode
+     * @enum {string}
+     */
+    AnnotationMode: "gold" | "assisted";
     /**
      * CalibrationIn
      * @description One Calibration's clicked Landmarks; its Camera View is given by the URL.
@@ -770,6 +792,9 @@ export interface components {
      * @description A Match, plus its recorded video metadata, roster IDs, and fix command.
      */
     MatchDetailOut: {
+      annotation_mode: components["schemas"]["AnnotationMode"];
+      /** Broadcast Seconds */
+      broadcast_seconds: number | null;
       /** Fix Command */
       fix_command: string | null;
       footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
@@ -782,6 +807,9 @@ export interface components {
        * Format: uuid
        */
       id: string;
+      operator_time: components["schemas"]["OperatorTimeOut"];
+      /** Operator Time Ratio */
+      operator_time_ratio: number | null;
       /** Original Present */
       original_present: boolean;
       /** Players */
@@ -808,9 +836,12 @@ export interface components {
     };
     /**
      * MatchOut
-     * @description A Match's roster by name and whether its 60 fps video can be played.
+     * @description A Match's roster, footage status and active operator time.
      */
     MatchOut: {
+      annotation_mode: components["schemas"]["AnnotationMode"];
+      /** Broadcast Seconds */
+      broadcast_seconds: number | null;
       footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
       /** Franchise A */
       franchise_a: string | null;
@@ -821,6 +852,9 @@ export interface components {
        * Format: uuid
        */
       id: string;
+      operator_time: components["schemas"]["OperatorTimeOut"];
+      /** Operator Time Ratio */
+      operator_time_ratio: number | null;
       /** Team A */
       team_a: [string, string];
       /** Team B */
@@ -876,6 +910,38 @@ export interface components {
       /** Path */
       path: string;
     };
+    /** OperatorSessionIn */
+    OperatorSessionIn: {
+      /** Active Seconds */
+      active_seconds: number;
+      /**
+       * Ended At
+       * Format: date-time
+       */
+      ended_at: string;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      workspace: components["schemas"]["OperatorWorkspace"];
+    };
+    /** OperatorTimeOut */
+    OperatorTimeOut: {
+      /** Active Seconds */
+      active_seconds: number;
+      /** Annotate Seconds */
+      annotate_seconds: number;
+      /** Calibrate Seconds */
+      calibrate_seconds: number;
+      /** Review Seconds */
+      review_seconds: number;
+    };
+    /**
+     * OperatorWorkspace
+     * @enum {string}
+     */
+    OperatorWorkspace: "calibrate" | "annotate" | "review";
     /**
      * PlacedLandmarkIO
      * @description A Landmark clicked on a video frame, in normalised coordinates (0 to 1).
@@ -1478,6 +1544,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["FootageJobOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  upsertOperatorSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+        session_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["OperatorSessionIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OperatorTimeOut"];
         };
       };
       /** @description Validation Error */

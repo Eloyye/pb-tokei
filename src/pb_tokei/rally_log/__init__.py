@@ -1,10 +1,13 @@
 """The Rally Log: the hand-edited record every stat is derived from (ADR 0001)."""
 
 from .model import (
+    ASSISTED_RATIO_BUDGET,
+    BROADCAST_FPS,
     FRONTCOURT_MAX_Y_FT,
     MIDCOURT_MAX_Y_FT,
     UNKNOWN,
     AnchorKind,
+    AnnotationMode,
     Calibration,
     CameraView,
     Certainty,
@@ -27,6 +30,9 @@ from .model import (
     MatchRoster,
     MatchSummary,
     ObservationGap,
+    OperatorSession,
+    OperatorTimeSummary,
+    OperatorWorkspace,
     Parity,
     PlacedLandmark,
     Player,
@@ -69,11 +75,14 @@ from .store import (
 )
 
 __all__ = [
+    "ASSISTED_RATIO_BUDGET",
+    "BROADCAST_FPS",
     "DEFAULT_DB_PATH",
     "FRONTCOURT_MAX_Y_FT",
     "MIDCOURT_MAX_Y_FT",
     "UNKNOWN",
     "AnchorKind",
+    "AnnotationMode",
     "Calibration",
     "CameraView",
     "Certainty",
@@ -97,6 +106,9 @@ __all__ = [
     "MatchRoster",
     "MatchSummary",
     "ObservationGap",
+    "OperatorSession",
+    "OperatorTimeSummary",
+    "OperatorWorkspace",
     "Parity",
     "PlacedLandmark",
     "PlaySegment",

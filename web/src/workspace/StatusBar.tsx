@@ -1,6 +1,17 @@
-import { formatLength } from "../lib/frames";
+import type { MatchDetail } from "../api/client";
+import { FPS, formatLength } from "../lib/frames";
+import {
+  ASSISTED_RATIO_BUDGET,
+  formatActiveTime,
+  formatRatio,
+  operatorRatio,
+  operatorTimeTitle,
+  ratioClassName,
+} from "../lib/operatorTime";
 import type { SaveStatus } from "../lib/saveQueue";
+import type { Workspace } from "../lib/workspaces";
 import { useOpenHelp } from "../shell/help";
+import { useOperatorTime } from "./useOperatorTime";
 
 const SAVE_LABELS: Record<SaveStatus["state"], string> = {
   saved: "Saved",
@@ -10,19 +21,31 @@ const SAVE_LABELS: Record<SaveStatus["state"], string> = {
 };
 
 /**
- * The strip under the workspace: save state, the current hint, facts about the video, `?`.
+ * Save state, the current hint, operator time, and the shortcut button.
  */
 export function StatusBar({
   message,
   saveStatus,
-  totalFrames,
+  match,
+  workspace,
 }: {
   message: string;
   saveStatus: SaveStatus;
-  totalFrames: number;
+  match: Pick<
+    MatchDetail,
+    "id" | "video_status" | "operator_time" | "annotation_mode" | "broadcast_seconds"
+  >;
+  workspace: Workspace;
 }) {
   const openHelp = useOpenHelp();
   const failed = saveStatus.state === "retrying" || saveStatus.state === "refused";
+  const { time, idle } = useOperatorTime(match, workspace);
+  const ratio = operatorRatio(time.active_seconds, match.broadcast_seconds);
+  const budget = match.annotation_mode === "assisted" || workspace === "review";
+  const length =
+    match.broadcast_seconds === null
+      ? "broadcast length unavailable"
+      : formatLength(match.broadcast_seconds * FPS);
   return (
     <footer className="statusbar">
       <output
@@ -33,11 +56,19 @@ export function StatusBar({
         {failed && "error" in saveStatus && `: ${saveStatus.error}`}
       </output>
       <span className="message">{message}</span>
-      {totalFrames > 0 && (
-        <span className="mono">
-          {totalFrames.toLocaleString("en-US")} frames · {formatLength(totalFrames)}
-        </span>
-      )}
+      <span
+        className={`mono active-time${idle ? " idle" : ""}`}
+        title={`${operatorTimeTitle(time)}${idle ? " (paused — idle)" : ""}`}
+      >
+        Active {formatActiveTime(time.active_seconds)}
+      </span>
+      <span
+        className={`mono ${ratioClassName(ratio, budget)}`}
+        title={`Operator minutes ÷ broadcast minutes (${length})${budget ? " · Assisted budget 0.25" : ""}`}
+      >
+        Ratio {formatRatio(ratio)}
+        {budget && ratio !== null && ` / ${formatRatio(ASSISTED_RATIO_BUDGET)}`}
+      </span>
       <span>
         <button type="button" onClick={openHelp}>
           <kbd>?</kbd> shortcuts

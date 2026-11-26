@@ -2,6 +2,7 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
 from uuid import UUID, uuid4
@@ -15,6 +16,8 @@ from pb_tokei.rally_log import (
     Game,
     Handedness,
     MatchId,
+    OperatorSession,
+    OperatorWorkspace,
     Player,
     PlayerId,
     RallyLog,
@@ -63,7 +66,9 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
 # --- CLI round trip -----------------------------------------------------------------------
 
 
-def test_new_add_list_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_new_add_list_round_trip(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = str(tmp_path / "log.duckdb")
     roster_file = tmp_path / "rosters" / "atlanta" / "qf.toml"
 
@@ -78,23 +83,42 @@ def test_new_add_list_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[s
         video={"url": "https://youtu.be/abc", "video_id": "abc", "path": "../../footage/abc.mp4"},
     )
     roster_file.write_text(filled)
+    converted = tmp_path / "footage" / "abc.60fps.mp4"
+    converted.parent.mkdir()
+    converted.touch()
+
+    def probe(path: Path) -> int:
+        assert path == converted and path.is_file()
+        return 216_000
+
+    monkeypatch.setattr("pb_tokei.camera_motion.video_frame_count", probe)
     code, out, err = run(capsys, "match", "add", str(roster_file), "--db", db)
     assert code == 0
     assert out.strip() == str(match_id)
     assert f"Rally Log: {Path(db).resolve()}" in err
 
+    with RallyLog.open(db) as log:
+        match = log.load_match(MatchId(match_id))
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        log.upsert_operator_session(
+            match.id,
+            OperatorSession(
+                uuid4(), OperatorWorkspace.ANNOTATE, start, start + timedelta(minutes=15), 900
+            ),
+        )
+    converted.unlink()
     code, out, err = run(capsys, "match", "list", "--db", db)
     assert code == 0
     assert f"Rally Log: {Path(db).resolve()}" in err
     assert out.splitlines() == [
-        f"{match_id}  PPA Atlanta Open 2026  Anna Bright / Ben Johns  vs  Cara Lee / Dan Kim  video"
+        f"{match_id}  PPA Atlanta Open 2026  Anna Bright / Ben Johns  vs  Cara Lee / Dan Kim"
+        "  video  Gold  active 15:00  ratio 0.25"
     ]
 
-    with RallyLog.open(db) as log:
-        match = log.load_match(MatchId(match_id))
     assert match.games == ()
     assert match.source_video is not None
     assert match.source_video.path == Path("footage/abc.mp4")
+    assert match.source_video_frames == 216_000
 
 
 def test_roster_video_path_recording_rules(
