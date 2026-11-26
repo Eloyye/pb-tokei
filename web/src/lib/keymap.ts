@@ -114,6 +114,13 @@ export function segmentKeyAction(event: KeyInput): SegmentAction | null {
   }
 }
 
+/** `F8` jumps to the next rule issue and `Shift+F8` to the previous one; `null` for anything else. */
+export function ruleIssueKeyAction(event: KeyInput): 1 | -1 | null {
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  if (event.key !== "F8") return null;
+  return event.shiftKey ? -1 : 1;
+}
+
 /** `⌘Z` (`Ctrl+Z`) undoes and `⇧⌘Z` (`Ctrl+Shift+Z`, `Ctrl+Y`) redoes; `null` for anything else. */
 export function historyKeyAction(event: KeyInput): "undo" | "redo" | null {
   if (event.altKey || !(event.metaKey || event.ctrlKey)) return null;

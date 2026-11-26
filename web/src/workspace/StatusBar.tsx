@@ -7,6 +7,7 @@ import {
   operatorTimeTitle,
   ratioClassName,
 } from "../lib/operatorTime";
+import type { IssueCounts } from "../lib/ruleChecks";
 import type { SaveStatus } from "../lib/saveQueue";
 import type { Workspace } from "../lib/workspaces";
 import { useOpenHelp } from "../shell/help";
@@ -27,6 +28,8 @@ export function StatusBar({
   saveStatus,
   match,
   workspace,
+  issueCounts,
+  onNextIssue,
 }: {
   message: string;
   saveStatus: SaveStatus;
@@ -40,6 +43,8 @@ export function StatusBar({
     | "assisted_ratio_budget"
   >;
   workspace: Workspace;
+  issueCounts?: IssueCounts;
+  onNextIssue?: () => void;
 }) {
   const openHelp = useOpenHelp();
   const failed = saveStatus.state === "retrying" || saveStatus.state === "refused";
@@ -54,6 +59,8 @@ export function StatusBar({
     match.broadcast_seconds === null
       ? "broadcast length unavailable"
       : formatLength(match.broadcast_seconds * FPS);
+  const showIssues = workspace !== "calibrate" && issueCounts !== undefined;
+  const totalIssues = showIssues ? issueCounts.red + issueCounts.amber : 0;
   return (
     <footer className="statusbar">
       <output
@@ -77,6 +84,24 @@ export function StatusBar({
         Ratio {formatRatio(ratio)}
         {budget !== null && ratio !== null && ` / ${budgetLabel}`}
       </span>
+      {showIssues && (
+        <span>
+          <button
+            type="button"
+            className="sb-issues"
+            title={
+              totalIssues > 0
+                ? "Jump to next rule issue (F8; Shift+F8 for previous)"
+                : "No rule issues in this Match (F8)"
+            }
+            onClick={onNextIssue}
+          >
+            {issueCounts.red > 0 && <span className="sb-red">● {issueCounts.red}</span>}
+            {issueCounts.amber > 0 && <span className="sb-amber">● {issueCounts.amber}</span>}
+            <span>{totalIssues === 0 ? "No issues" : totalIssues === 1 ? "issue" : "issues"}</span>
+          </button>
+        </span>
+      )}
       <span>
         <button type="button" onClick={openHelp}>
           <kbd>?</kbd> shortcuts

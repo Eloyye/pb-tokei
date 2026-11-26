@@ -63,6 +63,7 @@ const GROUPS: [string, [string[], string][]][] = [
       [["Enter"], "Mark the Rally Done and go to the next"],
       [["⇧Enter"], "Start the next Game"],
       [["PgUp", "PgDn"], "Previous / next Rally"],
+      [["F8", "⇧F8"], "Next / previous rule issue"],
       [["Space"], "Play; pauses at the Rally's end (again replays it until Done)"],
     ],
   ],

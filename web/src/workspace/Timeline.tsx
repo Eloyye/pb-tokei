@@ -2,6 +2,7 @@ import { type PointerEvent, useEffect, useEffectEvent, useRef, useState } from "
 import type { Game, PlaySegment, UnmappedRangeOut } from "../api/client";
 import type { Selection } from "../lib/annotate";
 import { formatScore, type Roster, teamKey, teamOf } from "../lib/rallyLog";
+import { type RuleIssue, timelineIssueMarkers } from "../lib/ruleChecks";
 import { clampFrame, formatTimecode } from "../lib/frames";
 import { describe, moveEdge, type PendingSegment, VIEW_LABELS } from "../lib/segments";
 import {
@@ -46,14 +47,16 @@ type TimelineDrag = { pointerId: number; clientX: number } & (
 
 const STATUS_MARK = { empty: "○", in_progress: "●", done: "✓" } as const;
 
-/** Rally Log content for the Rallies and Shots tracks (Annotate). */
+/** Rally Log content for the Rallies, Shots, and Issues tracks (Annotate and Review). */
 export interface TimelineRallies {
   games: readonly Game[];
   selection: Selection;
   roster: Roster;
+  issues?: readonly RuleIssue[];
   onSelectRally: (game: number, rally: number) => void;
   onSelectEntry: (game: number, rally: number, entry: number) => void;
   onMoveContact: (game: number, rally: number, entry: number, frame: number) => void;
+  onSelectIssue?: (issue: RuleIssue) => void;
   /** Fits the view to the selected Rally (or the whole video without one). */
   onFitRally: () => void;
 }
@@ -409,19 +412,23 @@ export function Timeline({
                   />
                 ))}
               {track.id === "issues" &&
-                unmappedRanges?.map((range) => (
-                  <button
-                    key={`issue-unmapped:${range.start_frame}-${range.end_frame}`}
-                    type="button"
-                    className="issue-unmapped"
-                    style={{
-                      left: `${toPercent(view, range.start_frame)}%`,
-                      width: `${toPercent(view, range.end_frame + 1) - toPercent(view, range.start_frame)}%`,
-                    }}
-                    title={`Unmapped frames ${range.start_frame}–${range.end_frame}: click to seek and re-anchor`}
-                    aria-label={`Unmapped frames ${range.start_frame} to ${range.end_frame}`}
-                    onClick={() => onSeek(range.start_frame)}
-                  />
+                (rallyLog ? (
+                  <IssueMarks rallyLog={rallyLog} view={view} />
+                ) : (
+                  unmappedRanges?.map((range) => (
+                    <button
+                      key={`issue-unmapped:${range.start_frame}-${range.end_frame}`}
+                      type="button"
+                      className="issue-unmapped"
+                      style={{
+                        left: `${toPercent(view, range.start_frame)}%`,
+                        width: `${toPercent(view, range.end_frame + 1) - toPercent(view, range.start_frame)}%`,
+                      }}
+                      title={`Unmapped frames ${range.start_frame}–${range.end_frame}: click to seek and re-anchor`}
+                      aria-label={`Unmapped frames ${range.start_frame} to ${range.end_frame}`}
+                      onClick={() => onSeek(range.start_frame)}
+                    />
+                  ))
                 ))}
             </div>
           </div>
@@ -587,6 +594,43 @@ function ShotMarks({
           });
         }),
       )}
+    </>
+  );
+}
+
+function IssueMarks({ rallyLog, view }: { rallyLog: TimelineRallies; view: FrameRange }) {
+  const issues = rallyLog.issues;
+  if (!issues || issues.length === 0) return null;
+  const { rallies, shots } = timelineIssueMarkers(rallyLog.games, issues);
+  return (
+    <>
+      {rallies.map((marker) => (
+        <button
+          key={`issue-bar-${marker.key}`}
+          type="button"
+          className={`issue-bar ${marker.severity}`}
+          style={{
+            left: `${toPercent(view, marker.startFrame)}%`,
+            width: `${toPercent(view, marker.endFrame + 1) - toPercent(view, marker.startFrame)}%`,
+          }}
+          title={marker.tooltip}
+          aria-label={`Rally issue G${marker.gameNumber} R${marker.rallyNumber}: ${marker.tooltip}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => rallyLog.onSelectIssue?.(marker.primaryIssue)}
+        />
+      ))}
+      {shots.map((marker) => (
+        <button
+          key={`issue-tri-${marker.key}`}
+          type="button"
+          className={`issue-tri ${marker.severity}`}
+          style={{ left: `${toPercent(view, marker.shotFrame)}%` }}
+          title={marker.tooltip}
+          aria-label={`Shot issue at frame ${marker.shotFrame}: ${marker.tooltip}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => rallyLog.onSelectIssue?.(marker.primaryIssue)}
+        />
+      ))}
     </>
   );
 }

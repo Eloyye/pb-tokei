@@ -34,10 +34,12 @@ import {
   teamStatuses,
 } from "../lib/derived";
 import { formatTimecode } from "../lib/frames";
+import type { RuleIssue } from "../lib/ruleChecks";
 import { manualWinner } from "../lib/sideout";
 import {
   type Fact,
   formatScore,
+  isShot,
   observed,
   parseScore,
   playerName,
@@ -91,6 +93,7 @@ function Row({
   onClick,
   children,
   keys,
+  issues,
   readOnly = false,
 }: {
   label: string;
@@ -98,6 +101,7 @@ function Row({
   onClick?: () => void;
   children: ReactNode;
   keys?: ReactNode;
+  issues?: readonly RuleIssue[];
   readOnly?: boolean;
 }) {
   return (
@@ -112,6 +116,11 @@ function Row({
       )}
       <span>{children}</span>
       {keys ?? <span />}
+      {issues?.map((issue) => (
+        <div key={issue.id} className={`badge ${issue.severity}`}>
+          {issue.message}
+        </div>
+      ))}
     </div>
   );
 }
@@ -137,6 +146,8 @@ export function InspectorPanel({
   onMoveContactHere,
   onSyncFromTracking,
   onDeleteRally,
+  issues = [],
+  onSelectIssue,
 }: {
   focused: boolean;
   tab: InspectorTab;
@@ -154,9 +165,33 @@ export function InspectorPanel({
   onMoveContactHere: () => void;
   onSyncFromTracking: () => void;
   onDeleteRally: () => void;
+  issues?: readonly RuleIssue[];
+  onSelectIssue?: (issue: RuleIssue) => void;
 }) {
   const rally = selectedRally(games, selection);
   const entry = selectedEntry(games, selection);
+  const rallyIssues =
+    selection.rally === null
+      ? []
+      : issues.filter(
+          (i) =>
+            i.gameIndex === selection.game &&
+            i.rallyIndex === selection.rally &&
+            i.entryIndex === null,
+        );
+  const rallyShotIssues =
+    selection.rally === null
+      ? []
+      : issues.filter(
+          (i) =>
+            i.gameIndex === selection.game &&
+            i.rallyIndex === selection.rally &&
+            i.entryIndex !== null,
+        );
+  const currentShotIssues =
+    selection.rally === null || selection.entry === null
+      ? []
+      : rallyShotIssues.filter((i) => i.entryIndex === selection.entry);
   return (
     <Panel
       id="inspector"
@@ -210,6 +245,7 @@ export function InspectorPanel({
               onEdit={onEdit}
               onMoveContactHere={onMoveContactHere}
               onSyncFromTracking={onSyncFromTracking}
+              issues={currentShotIssues}
             />
           )
         ) : !rally ? (
@@ -229,6 +265,9 @@ export function InspectorPanel({
             onCloseForm={onCloseForm}
             onEdit={onEdit}
             onDeleteRally={onDeleteRally}
+            issues={rallyIssues}
+            shotIssues={rallyShotIssues}
+            onSelectIssue={onSelectIssue}
           />
         )}
       </div>
@@ -268,6 +307,7 @@ function ShotTab({
   onEdit,
   onMoveContactHere,
   onSyncFromTracking,
+  issues,
 }: {
   shot: Shot;
   rally: Rally;
@@ -279,6 +319,7 @@ function ShotTab({
   onEdit: (edit: (ctx: AnnotateContext) => AnnotateEdit) => void;
   onMoveContactHere: () => void;
   onSyncFromTracking: () => void;
+  issues: readonly RuleIssue[];
 }) {
   const [checklistOpen, setChecklistOpen] = useState(() => {
     try {
@@ -290,8 +331,10 @@ function ShotTab({
   const contact = shot.contact_frame.value;
   const number = shot.shot_number.value;
   const at = shotFieldIndex;
+  const issuesFor = (field: ShotField) => issues.filter((i) => i.field === field);
   const row = (field: ShotField) => ({
     cursor: cursor === at(field),
+    issues: issuesFor(field),
   });
   const click = (field: ShotField, edit?: (ctx: AnnotateContext) => AnnotateEdit) => () => {
     onCursor(at(field));
@@ -544,6 +587,9 @@ function RallyTab({
   onCloseForm,
   onEdit,
   onDeleteRally,
+  issues,
+  shotIssues,
+  onSelectIssue,
 }: {
   rally: Rally;
   gameNumber: number;
@@ -555,10 +601,15 @@ function RallyTab({
   onCloseForm: () => void;
   onEdit: (edit: (ctx: AnnotateContext) => AnnotateEdit) => void;
   onDeleteRally: () => void;
+  issues: readonly RuleIssue[];
+  shotIssues: readonly RuleIssue[];
+  onSelectIssue?: (issue: RuleIssue) => void;
 }) {
   const at = rallyFieldIndex;
+  const issuesFor = (field: RallyField) => issues.filter((i) => i.field === field);
   const row = (field: RallyField) => ({
     cursor: cursor === at(field),
+    issues: issuesFor(field),
     onClick: () => {
       onCursor(at(field));
       if (
@@ -681,6 +732,27 @@ function RallyTab({
           {{ empty: "○ Empty", in_progress: "● In progress", done: "✓ Done" }[rally.status]}
         </span>
       </Row>
+      {shotIssues.length > 0 && (
+        <>
+          <div className="sect">Shot issues in this Rally</div>
+          <div className="rally-shot-issues">
+            {shotIssues.map((issue) => {
+              const entry = issue.entryIndex === null ? undefined : rally.entries[issue.entryIndex];
+              const num = isShot(entry) ? entry.shot_number.value : null;
+              return (
+                <button
+                  key={issue.id}
+                  type="button"
+                  className={`badge ${issue.severity} clickable`}
+                  onClick={() => onSelectIssue?.(issue)}
+                >
+                  Shot {num ?? "?"}: {issue.message}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </>
   );
 }

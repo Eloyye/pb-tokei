@@ -1,6 +1,7 @@
 import type { Game, RallyStatus } from "../api/client";
 import type { Selection } from "../lib/annotate";
 import { formatScore, type Roster, teamKey } from "../lib/rallyLog";
+import { countIssuesByRally, rallyIssueKey, type RuleIssue } from "../lib/ruleChecks";
 import { Panel, PanelTitle } from "./Panel";
 
 const STATUS_MARK: Record<RallyStatus, string> = { empty: "○", in_progress: "●", done: "✓" };
@@ -19,6 +20,7 @@ export function RalliesPanel({
   games,
   selection,
   roster,
+  issues,
   onSelectRally,
   onSelectGame,
   onAddUnseen,
@@ -29,6 +31,7 @@ export function RalliesPanel({
   games: readonly Game[];
   selection: Selection;
   roster: Roster;
+  issues?: readonly RuleIssue[];
   onSelectRally: (game: number, rally: number) => void;
   onSelectGame: (game: number) => void;
   onAddUnseen: () => void;
@@ -37,6 +40,7 @@ export function RalliesPanel({
 }) {
   const all = games.flatMap((g) => g.rallies);
   const done = all.filter((r) => r.status === "done").length;
+  const countsByRally = issues ? countIssuesByRally(issues) : null;
   return (
     <Panel
       id="rallies"
@@ -101,6 +105,8 @@ export function RalliesPanel({
             {game.rallies.map((rally, ri) => {
               const team = teamKey(roster, rally.serving_team_id.value);
               const on = gi === selection.game && ri === selection.rally;
+              const counts = countsByRally?.get(rallyIssueKey(gi, ri));
+              const hasIssues = Boolean(counts && (counts.red > 0 || counts.amber > 0));
               return (
                 <button
                   key={ri}
@@ -116,10 +122,32 @@ export function RalliesPanel({
                     <span className={`swatch ${team ? `team-${team}` : "unknown"}`} />
                     {formatScore(rally.score)}
                   </span>
-                  <span className="frames">
-                    {rally.start_frame === null
-                      ? "unseen"
-                      : `${rally.start_frame}–${rally.end_frame ?? "…"}`}
+                  <span className="r-meta">
+                    <span className="frames">
+                      {rally.start_frame === null
+                        ? "unseen"
+                        : `${rally.start_frame}–${rally.end_frame ?? "…"}`}
+                    </span>
+                    {hasIssues && counts && (
+                      <span className="iss">
+                        {counts.red > 0 && (
+                          <span
+                            className="red"
+                            title={`${counts.red} red ${counts.red === 1 ? "issue" : "issues"}`}
+                          >
+                            {counts.red}
+                          </span>
+                        )}
+                        {counts.amber > 0 && (
+                          <span
+                            className="amber"
+                            title={`${counts.amber} amber ${counts.amber === 1 ? "issue" : "issues"}`}
+                          >
+                            {counts.amber}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </span>
                 </button>
               );
