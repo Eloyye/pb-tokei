@@ -24,6 +24,12 @@ const GROUPS: [string, [string[], string][]][] = [
       [["⇧Scroll", "Swipe ↔"], "Pan the Timeline"],
       [["Scroll on Overview"], "Move the visible window"],
       [["Drag"], "Scrub on the ruler or tracks"],
+      [
+        ["Drag Rally edge"],
+        "Move its start or end in Annotate and Review. Open-ended Rallies have a start handle",
+      ],
+      [["Drag Play Segment edge"], "Move its start or end in any workspace"],
+      [["⌘Z", "⇧⌘Z"], "Undo / redo a Timeline edit in any workspace"],
     ],
   ],
   [
@@ -34,7 +40,6 @@ const GROUPS: [string, [string[], string][]][] = [
       [["1", "2"], "Main View / Sideline View"],
       [["⌫"], "Remove the segment under the playhead"],
       [["Esc"], "Drop a segment not yet ended"],
-      [["Drag"], "Move a segment's edge on the Segments track"],
       [["⌘Z", "⇧⌘Z"], "Undo / redo"],
     ],
   ],

@@ -227,6 +227,85 @@ function lastShotFrame(rally: Rally): number | null {
   return shotsOf(rally).at(-1)?.contact_frame.value ?? null;
 }
 
+export type RallyEdge = "start" | "end";
+
+/** The nearest legal frame for a Rally edge drag, and why it stopped there. */
+export function moveRallyEdge(
+  games: readonly Game[],
+  selection: Selection,
+  edge: RallyEdge,
+  frame: number,
+): { frame: number | null; reason: string | null } {
+  const rally = selectedRally(games, selection);
+  if (!rally || rally.start_frame === null) {
+    return { frame: null, reason: "Select a framed Rally first" };
+  }
+  const start = edge === "start";
+  const current = start ? rally.start_frame : rally.end_frame;
+  if (current === null) {
+    return { frame: null, reason: "Set the open-ended Rally's end with Shift+O" };
+  }
+
+  // The Timeline covers every Game. An earlier open Rally still has a start that this
+  // Rally can't move past. Other earlier Rallies might extend past that start.
+  const ordered = framedRallies(games).toSorted(
+    (a, b) => a.value.start_frame! - b.value.start_frame!,
+  );
+  const at = ordered.findIndex((r) => r.game === selection.game && r.rally === selection.rally);
+  const neighbours = start ? ordered.slice(0, at) : ordered.slice(at + 1, at + 2);
+  let outerFrame = start ? 0 : Infinity;
+  let outerReason = "Stopped at the start of the video (frame 0)";
+  for (const { value: other, gameNumber } of neighbours) {
+    const boundary = start ? (other.end_frame ?? other.start_frame!) + 1 : other.start_frame! - 1;
+    if (start ? boundary < outerFrame : boundary > outerFrame) continue;
+    outerFrame = boundary;
+    const label = `G${gameNumber} R${other.number}`;
+    const limit = start && other.end_frame === null ? `the start of ${label}` : label;
+    outerReason = `Stopped ${start ? "after" : "before"} ${limit} (frame ${boundary})`;
+  }
+
+  let innerFrame = start ? (rally.end_frame ?? Infinity) : rally.start_frame;
+  let innerLabel = start ? "this Rally's end" : "this Rally's start";
+  for (const shot of shotsOf(rally)) {
+    const contact = shot.contact_frame.value;
+    if (contact === null || (start ? contact > innerFrame : contact < innerFrame)) continue;
+    innerFrame = contact;
+    const number = shot.shot_number.value;
+    innerLabel = number === null ? "a Shot's contact" : `Shot ${number}'s contact`;
+  }
+
+  const [low, high] = start ? [outerFrame, innerFrame] : [innerFrame, outerFrame];
+  if (low > high) {
+    return { frame: current, reason: `No frame fits this Rally's ${edge} limits` };
+  }
+  if (frame < low || frame > high) {
+    const clamped = frame < low ? low : high;
+    const stoppedOutside = start ? frame < low : frame > high;
+    return {
+      frame: clamped,
+      reason: stoppedOutside ? outerReason : `Stopped at ${innerLabel} (frame ${clamped})`,
+    };
+  }
+  return { frame, reason: null };
+}
+
+/** Replaces one bound on a copy of the Rally, for preview and commit. */
+export function withRallyEdge(rally: Rally, edge: RallyEdge, frame: number): Rally {
+  return edge === "start" ? { ...rally, start_frame: frame } : { ...rally, end_frame: frame };
+}
+
+/** Commits a Timeline edge drag without changing the selected entry or the Rally's order. */
+export function setRallyEdge(ctx: AnnotateContext, edge: RallyEdge, target: number): AnnotateEdit {
+  const { frame, reason } = moveRallyEdge(ctx.games, ctx.selection, edge, target);
+  const rally = selectedRally(ctx.games, ctx.selection);
+  if (!rally || frame === null) return unchanged(ctx, reason ?? "");
+  const current = edge === "start" ? rally.start_frame : rally.end_frame;
+  const label = rallyLabel(ctx.games[ctx.selection.game]!, rally);
+  if (current === frame) return unchanged(ctx, reason ?? `${label} unchanged`);
+  const edit = editRally(ctx, (r) => withRallyEdge(r, edge, frame));
+  return { ...edit, message: reason ?? `${label} ${edge}s at frame ${frame}` };
+}
+
 /**
  * `Shift+I`: starts a new open-ended Rally at the playhead (when none is selected, or the
  * playhead is past the selected Rally's end), or moves the selected Rally's start here.

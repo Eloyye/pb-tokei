@@ -3,8 +3,10 @@ import { clampFrame, frameCount, frameToSeekTime, mediaTimeToFrame } from "../li
 import type { Speed } from "../lib/keymap";
 
 export interface PlayerState {
-  /** The frame on screen: the canonical position. */
+  /** The canonical playhead position. */
   frame: number;
+  /** A temporary Monitor frame while dragging a Timeline edge. */
+  previewFrame: number | null;
   totalFrames: number;
   playing: boolean;
   speed: Speed;
@@ -12,6 +14,8 @@ export interface PlayerState {
 
 export interface PlayerControls {
   seek(frame: number): void;
+  /** Shows a frame without moving the playhead. Pass null to return to it. */
+  preview(frame: number | null): void;
   step(frames: number, pause: boolean): void;
   togglePlay(): void;
   /** Pauses if playing. */
@@ -29,12 +33,14 @@ export function usePlayer(
   videoRef: RefObject<HTMLVideoElement | null>,
 ): [PlayerState, PlayerControls] {
   const [frame, setFrame] = useState(0);
+  const [previewFrame, setPreviewFrame] = useState<number | null>(null);
   const [totalFrames, setTotalFrames] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeedState] = useState<Speed>(1);
   // The latest frame shown or asked for. Seeks start from it, so a held arrow key moves on
   // from the last step even while the browser is still seeking.
   const frameRef = useRef(0);
+  const previewRef = useRef<number | null>(null);
   const totalRef = useRef(0);
 
   const seek = useCallback(
@@ -44,7 +50,21 @@ export function usePlayer(
       const target = clampFrame(n, totalRef.current);
       frameRef.current = target;
       setFrame(target);
-      video.currentTime = frameToSeekTime(target);
+      if (previewRef.current === null) video.currentTime = frameToSeekTime(target);
+    },
+    [videoRef],
+  );
+
+  const preview = useCallback(
+    (n: number | null) => {
+      const video = videoRef.current;
+      if (!video || totalRef.current === 0) return;
+      const target = n === null ? null : clampFrame(n, totalRef.current);
+      if (target === previewRef.current) return;
+      previewRef.current = target;
+      setPreviewFrame(target);
+      if (!video.paused) video.pause();
+      video.currentTime = frameToSeekTime(target ?? frameRef.current);
     },
     [videoRef],
   );
@@ -61,7 +81,7 @@ export function usePlayer(
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
-    if (!video || totalRef.current === 0) return;
+    if (!video || totalRef.current === 0 || previewRef.current !== null) return;
     if (!video.paused) {
       video.pause();
     } else if (frameRef.current < totalRef.current - 1) {
@@ -77,7 +97,7 @@ export function usePlayer(
 
   const play = useCallback(() => {
     const video = videoRef.current;
-    if (!video || totalRef.current === 0 || !video.paused) return;
+    if (!video || totalRef.current === 0 || !video.paused || previewRef.current !== null) return;
     if (frameRef.current < totalRef.current - 1) video.play().catch(() => {});
   }, [videoRef]);
 
@@ -106,13 +126,18 @@ export function usePlayer(
     const onPause = () => {
       setPlaying(false);
       // Settle on the frame last shown, at its midpoint, so stepping on from here is exact.
-      if (Math.abs(video.currentTime - frameToSeekTime(frameRef.current)) > 1e-6) {
+      if (
+        previewRef.current === null &&
+        Math.abs(video.currentTime - frameToSeekTime(frameRef.current)) > 1e-6
+      ) {
         seek(frameRef.current);
       }
     };
 
     let callbackId = 0;
     const onFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+      callbackId = video.requestVideoFrameCallback(onFrame);
+      if (previewRef.current !== null) return;
       const shown = clampFrame(mediaTimeToFrame(metadata.mediaTime), totalRef.current);
       if (!video.paused) {
         frameRef.current = shown;
@@ -131,7 +156,6 @@ export function usePlayer(
       }
       // Otherwise, when paused, the frame is whatever was last asked for: a callback from an
       // earlier seek must not move it back.
-      callbackId = video.requestVideoFrameCallback(onFrame);
     };
     callbackId = video.requestVideoFrameCallback(onFrame);
 
@@ -148,7 +172,7 @@ export function usePlayer(
   }, [videoRef, seek]);
 
   return [
-    { frame, totalFrames, playing, speed },
-    { seek, step, togglePlay, pause, play, setSpeed },
+    { frame, previewFrame, totalFrames, playing, speed },
+    { seek, preview, step, togglePlay, pause, play, setSpeed },
   ];
 }

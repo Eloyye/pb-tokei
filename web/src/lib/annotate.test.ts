@@ -13,6 +13,7 @@ import {
   markRallyEnd,
   markRallyStart,
   moveContact,
+  moveRallyEdge,
   moveShotPosition,
   NO_SELECTION,
   nextRallySelection,
@@ -23,6 +24,7 @@ import {
   setError,
   setLanding,
   setRallyDetails,
+  setRallyEdge,
   setRefereeCall,
   startNextGame,
   swapHitterToPartner,
@@ -30,7 +32,7 @@ import {
   switchHitterTeam,
   toggleGap,
 } from "./annotate";
-import { inferred, observed, UNKNOWN } from "./rallyLog";
+import { inferred, newRally, newShot, numberShots, observed, UNKNOWN } from "./rallyLog";
 import { ROSTER } from "./testRoster";
 
 function ctx(games: Game[] = [], selection: Selection = NO_SELECTION, frame = 0): AnnotateContext {
@@ -186,6 +188,104 @@ describe("framing Rallies", () => {
     expect(rally.referee_call).toEqual(observed("side_out"));
     const cleared = setRefereeCall(ctx(edit.games, edit.selection), "side_out");
     expect(selectedRally(cleared.games, cleared.selection)!.referee_call).toEqual(UNKNOWN);
+  });
+});
+
+describe("dragging Rally edges", () => {
+  const selection = { game: 1, rally: 1, entry: null };
+  const rally = numberShots({
+    ...newRally(2, 300),
+    end_frame: 500,
+    entries: [newShot(330), newShot(480)],
+  });
+  function gamesWith(target = rally): Game[] {
+    return [
+      { number: 1, rallies: [{ ...newRally(1, 100), end_frame: 200 }] },
+      { number: 2, rallies: [newRally(1), target] },
+      { number: 3, rallies: [newRally(1, 600)] },
+    ];
+  }
+
+  it.each([
+    ["start", 100, 201, "Stopped after G1 R1 (frame 201)"],
+    ["start", 450, 330, "Stopped at Shot 1's contact (frame 330)"],
+    ["end", 400, 480, "Stopped at Shot 2's contact (frame 480)"],
+    ["end", 650, 599, "Stopped before G3 R1 (frame 599)"],
+  ] as const)("clamps the %s at frame %i to %i", (edge, target, frame, reason) => {
+    expect(moveRallyEdge(gamesWith(), selection, edge, target)).toEqual({ frame, reason });
+  });
+
+  it("moves freely within the limits and stops at the other edge when there are no Shots", () => {
+    const games = gamesWith({ ...rally, entries: [] });
+    expect(moveRallyEdge(games, selection, "start", 390)).toEqual({ frame: 390, reason: null });
+    expect(moveRallyEdge(games, selection, "start", 550)).toEqual({
+      frame: 500,
+      reason: "Stopped at this Rally's end (frame 500)",
+    });
+    expect(moveRallyEdge(games, selection, "end", 250)).toEqual({
+      frame: 300,
+      reason: "Stopped at this Rally's start (frame 300)",
+    });
+  });
+
+  it("offers only the start edge on an open-ended Rally and neither edge on an Unseen Rally", () => {
+    const games = gamesWith({ ...rally, end_frame: null });
+    expect(moveRallyEdge(games, selection, "start", 320)).toEqual({ frame: 320, reason: null });
+    expect(moveRallyEdge(games, selection, "start", 450).frame).toBe(330);
+    expect(moveRallyEdge(games, selection, "end", 450).frame).toBeNull();
+    expect(moveRallyEdge(games, { ...selection, rally: 0 }, "start", 250).frame).toBeNull();
+  });
+
+  it("keeps a start edge after an earlier open-ended Rally's start", () => {
+    const games: Game[] = [
+      {
+        number: 1,
+        rallies: [{ ...newRally(1, 0), end_frame: 40 }, newRally(2, 100), { ...rally, number: 3 }],
+      },
+    ];
+    expect(moveRallyEdge(games, { game: 0, rally: 2, entry: null }, "start", 50)).toEqual({
+      frame: 101,
+      reason: "Stopped after the start of G1 R2 (frame 101)",
+    });
+  });
+
+  it("stops at frame zero and respects an unnumbered Shot's known contact", () => {
+    const games = [{ number: 1, rallies: [{ ...rally, entries: [newShot(330)] }] }];
+    const first = { game: 0, rally: 0, entry: null };
+    expect(moveRallyEdge(games, first, "start", -10)).toEqual({
+      frame: 0,
+      reason: "Stopped at the start of the video (frame 0)",
+    });
+    expect(moveRallyEdge(games, first, "start", 400)).toEqual({
+      frame: 330,
+      reason: "Stopped at a Shot's contact (frame 330)",
+    });
+  });
+
+  it("commits a clamped frame and keeps the selected Shot", () => {
+    const games = gamesWith();
+    const pickedShot = { ...selection, entry: 1 };
+    const edit = setRallyEdge(ctx(games, pickedShot), "start", 450);
+    expect(edit.selection).toEqual(pickedShot);
+    expect(selectedRally(edit.games, pickedShot)).toMatchObject({
+      start_frame: 330,
+      end_frame: 500,
+      status: "in_progress",
+    });
+    expect(selectedRally(games, pickedShot)?.start_frame).toBe(300);
+  });
+
+  it("leaves the Rally alone if no end frame fits between the last Shot and next Rally", () => {
+    const games = gamesWith({ ...rally, entries: [newShot(620)] });
+    const edit = setRallyEdge(ctx(games, selection), "end", 580);
+    expect(edit.games).toBe(games);
+    expect(edit.message).toBe("No frame fits this Rally's end limits");
+  });
+
+  it("keeps Shift+O's warning for an end before the last Shot", () => {
+    const edit = markRallyEnd(ctx(gamesWith(), selection, 400));
+    expect(selectedRally(edit.games, selection)?.end_frame).toBe(400);
+    expect(edit.message).toContain("before its last Shot (frame 480)");
   });
 });
 

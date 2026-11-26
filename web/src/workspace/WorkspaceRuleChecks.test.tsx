@@ -15,6 +15,7 @@ import type {
   PlaySegment,
   TeamEnd,
 } from "../api/client";
+import { frameToSeekTime } from "../lib/frames";
 import { newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { ROSTER } from "../lib/testRoster";
 import { ShortcutSheet } from "../shell/ShortcutSheet";
@@ -22,6 +23,7 @@ import { Workspace } from "./Workspace";
 
 const apiMocks = vi.hoisted(() => ({
   getPlaySegments: vi.fn<() => Promise<PlaySegment[]>>(),
+  replacePlaySegments: vi.fn<(id: string, segments: PlaySegment[]) => Promise<PlaySegment[]>>(),
   getCalibrations: vi.fn<() => Promise<CalibrationOut[]>>(),
   getPlayerAnchors: vi.fn<() => Promise<PlayerAnchor[]>>(),
   getTeamEnds: vi.fn<() => Promise<TeamEnd[]>>(),
@@ -38,6 +40,7 @@ vi.mock("../api/client", async (importOriginal) => {
   return {
     ...actual,
     getPlaySegments: apiMocks.getPlaySegments,
+    replacePlaySegments: apiMocks.replacePlaySegments,
     getCalibrations: apiMocks.getCalibrations,
     getPlayerAnchors: apiMocks.getPlayerAnchors,
     getTeamEnds: apiMocks.getTeamEnds,
@@ -124,6 +127,7 @@ beforeEach(() => {
   HTMLVideoElement.prototype.requestVideoFrameCallback = () => 1;
   HTMLVideoElement.prototype.cancelVideoFrameCallback = () => {};
   apiMocks.getPlaySegments.mockResolvedValue([]);
+  apiMocks.replacePlaySegments.mockImplementation(async (_id, segments) => segments);
   apiMocks.getCalibrations.mockResolvedValue([]);
   apiMocks.getPlayerAnchors.mockResolvedValue([]);
   apiMocks.getTeamEnds.mockResolvedValue([]);
@@ -168,6 +172,12 @@ function loadVideoMetadata(container: HTMLElement) {
   const video = container.querySelector<HTMLVideoElement>("video")!;
   Object.defineProperty(video, "duration", { value: 20, configurable: true });
   fireEvent(video, new Event("loadedmetadata"));
+  return video;
+}
+
+function mockFullTimelineRuler(container: HTMLElement) {
+  const ruler = container.querySelector<HTMLElement>(".ruler")!;
+  vi.spyOn(ruler, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 1200 }));
 }
 
 describe("Workspace live rule checks and F8 navigation", () => {
@@ -244,7 +254,7 @@ describe("Workspace live rule checks and F8 navigation", () => {
     const { container } = renderWorkspace("review", sampleGames());
     await screen.findByRole("button", { name: /● 2\s*issues/ });
 
-    // F8 in Review cycles through issues and shows hints via reviewMessage.
+    // F8 in Review cycles through issues and shows hints in the status bar.
     fireEvent.keyDown(window, { key: "F8" });
     expect(screen.getByText(/Issue 1\/2 · G1 R1 · Shot 2 must be a Bounce/)).toBeTruthy();
     expect(
@@ -295,5 +305,68 @@ describe("Workspace live rule checks and F8 navigation", () => {
     expect(screen.getByText("Next / previous rule issue")).toBeTruthy();
     expect(screen.getByText("F8")).toBeTruthy();
     expect(screen.getByText("⇧F8")).toBeTruthy();
+  });
+});
+
+describe("Workspace Timeline edge edits", () => {
+  it.each(["annotate", "review"] as const)(
+    "renders and commits Play Segment edges in %s",
+    async (workspace) => {
+      apiMocks.getPlaySegments.mockResolvedValue([
+        { start_frame: 400, end_frame: 600, camera_view: "main" },
+        { start_frame: 650, end_frame: 800, camera_view: "sideline" },
+      ]);
+      const { container } = renderWorkspace(workspace, sampleGames());
+      loadVideoMetadata(container);
+      mockFullTimelineRuler(container);
+      const segment = await screen.findByTitle("Main View Play Segment, frames 400–600");
+      expect(segment.querySelector(".seg-handle.start")).toBeTruthy();
+      const handle = segment.querySelector(".seg-handle.end")!;
+      fireEvent.pointerDown(handle, { pointerId: 1, clientX: 601 });
+      fireEvent.pointerMove(handle, { pointerId: 1, clientX: 700 });
+      expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+
+      fireEvent.pointerUp(handle, { pointerId: 1, clientX: 700 });
+      await waitFor(() =>
+        expect(apiMocks.replacePlaySegments).toHaveBeenCalledExactlyOnceWith(MATCH.id, [
+          { start_frame: 400, end_frame: 649, camera_view: "main" },
+          { start_frame: 650, end_frame: 800, camera_view: "sideline" },
+        ]),
+      );
+    },
+  );
+
+  it("previews the pointer frame and records one undoable Rally edit in Review", async () => {
+    const games = sampleGames();
+    const { container } = renderWorkspace("review", games);
+    const video = loadVideoMetadata(container);
+    mockFullTimelineRuler(container);
+    const clip = await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    const handle = clip.querySelector(".seg-handle.end")!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 301 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 120 });
+    expect(screen.getByText("Stopped at Shot 2's contact (frame 150)")).toBeTruthy();
+    expect(video.currentTime).toBe(frameToSeekTime(120));
+    expect(container.querySelector<HTMLElement>(".playhead")?.style.left).toBe("0%");
+    expect(screen.getByRole("tab", { name: "Rally" }).getAttribute("aria-selected")).toBe("true");
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 120 });
+    expect(video.currentTime).toBe(frameToSeekTime(0));
+    expect(screen.getByTitle("Game 1 Rally 1: frames 100–150")).toBe(clip);
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalledTimes(1));
+
+    fireEvent.pointerDown(handle, { pointerId: 2, clientX: 151 });
+    fireEvent.pointerMove(handle, { pointerId: 2, clientX: 200 });
+    expect(video.currentTime).toBe(frameToSeekTime(200));
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    expect(video.currentTime).toBe(frameToSeekTime(0));
+    fireEvent.pointerUp(handle, { pointerId: 2, clientX: 200 });
+    expect(screen.getByTitle("Game 1 Rally 1: frames 100–300")).toBe(clip);
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, games));
+
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    expect(screen.getByText("Nothing to undo")).toBeTruthy();
+    expect(apiMocks.replaceGames).toHaveBeenCalledTimes(2);
   });
 });

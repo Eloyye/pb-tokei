@@ -8,7 +8,7 @@ A clickable prototype with sample data and working keys lives in [design/annotat
 
 - **Premiere-style editor.** Dense, dark, panel-based. It is a pro tool used for hours, not a web form.
 - **Rally by Rally.** The operator works on one Rally at a time and moves to the next with one key. The timeline gives orientation across the whole Game.
-- **Keyboard first, modeless.** Letter keys always act on the current Shot, so there is no edit mode to enter. The mouse is only for the court diagram (landing spots, position fixes) and for navigation.
+- **Keyboard first, modeless.** Letter keys always act on the current Shot, so there is no edit mode to enter. Use the pointer to navigate, edit the Court diagram and adjust frames on the Timeline.
 - **Facts show how we know them.** Every Rally Log value shows whether it is Observed, Inferred or Unknown, using one visual rule everywhere.
 - **Derived things are visibly derived.** Shot Type, Rally Phase and Team Status appear read-only and labeled as computed (ADR 0003).
 - **Nothing blocks.** Rule checks flag; they never stop saving or moving on.
@@ -221,10 +221,10 @@ Side-out pre-fill (Inferred, never overwriting Observed):
 - **Track headers** on the left, Premiere-style, with the current timecode above them.
 - **Zoom.** Scroll up to zoom in and down to zoom out, or pinch. Over the ruler and lanes, zoom follows the pointer while paused. During playback or over the track headers and timecode, zoom follows the playhead.
 - **Pan.** Swipe horizontally or hold `Shift` while scrolling. During playback, the view follows the playhead again on the next frame.
-- During a scrub or Play Segment edge drag, the drag follows the frame under the pointer after zooming or panning.
+- Scrubs and edge drags follow the frame under the pointer as you zoom or pan. An edge drag pauses playback and previews that frame in the Monitor. Releasing returns the Monitor to the playhead and saves the changed edge as one undo step.
 - **Tracks:**
-  - **Segments.** Play Segments colored by Camera View (Main blue-gray, Sideline brown). Editable only in Calibrate.
-  - **Rallies.** One clip per framed Rally in the Serving Team's color, labeled with status, number and score; an open-ended Rally has a dashed end. The current clip is outlined. Click to select.
+  - **Segments.** Play Segments are colored by Camera View (Main blue-gray, Sideline brown). Drag either edge in Calibrate, Annotate or Review. The edge stops at the closest adjacent Play Segment or the segment's other edge. Create, delete and relabel Play Segments in Calibrate.
+  - **Rallies.** Each framed Rally gets a clip in the Serving Team's color with its status, number and score. Click a clip to select it and show its outline. In Annotate and Review, hover near an edge to see its handle, then drag to preview the new bounds in the track and the Overview bar. Dragging an unselected clip's edge selects that Rally. The start can go as early as one frame after the previous Rally's end (its start when open-ended) and as late as the first Shot's contact. The end can go as early as the last Shot's contact and as late as one frame before the next Rally's start. Either edge can meet the other at a single frame. The status bar explains which limit stopped the drag. Open-ended Rallies have a dashed end and a start handle. In Annotate, use `Shift+O` to set their end. `Shift+O` can also move a Rally's end before its last Shot, with a warning.
   - **Shots.** A pin per Shot in the hitter's Team color (dimmed when the hitter is Inferred), labeled with its Shot Number (`?` after an Observation Gap). The current Shot has a white ring. Click a pin to select the Shot, or drag it to move its contact frame (Shots re-sort if it passes another). Observation Gaps appear as hatched dashed pills ("odd gap" / "even gap") halfway between the Shots around them; click one to select it.
   - **Issues.** In Calibrate, clickable amber bars for unmapped Camera Motion ranges (#10). In Annotate and Review, clickable merged markers for rule checks (#13): one triangle per offending Shot at its contact frame and one bar per offending framed or open-ended Rally (Unseen Rallies are omitted from the Timeline). Red takes precedence over amber when mixed; hovering lists every message on that Shot or Rally, and clicking selects the offending Rally/Shot, switches to its Inspector tab, and focuses its first offending field (red before amber).
   - Space is reserved for an audio waveform track later (#26).
@@ -287,6 +287,8 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Next / previous rule issue (chronological across Games, wraps around) | `F8` / `Shift+F8` | ✓ (Annotate and Review) |
 | Zoom the Timeline | `-` / `=`, vertical scroll or pinch | ✓ |
 | Pan the Timeline | Horizontal swipe, `Shift`+scroll, or scroll on the Overview bar | ✓ |
+| Move a Rally's start or end (start only when open-ended) | Drag a clip edge on the Rallies track | ✓ in Annotate and Review |
+| Move a Play Segment's start or end | Drag a clip edge on the Segments track | ✓ in all workspaces |
 | Move field cursor | `Tab` / `Shift+Tab` | ✓ (in Calibrate, `Tab` skips to the next Landmark) |
 | Rally start / end at playhead (starts a new open-ended Rally when none is selected or past its end) | `Shift+I` / `Shift+O` | ✓ (in Calibrate: Play Segment start / end) |
 | Rally details form (score, Serving Team, Server, Returner, scoreboard, winner in play) | `Shift+S` | ✓ |
@@ -307,7 +309,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Mark Rally Done (Review: accept), go to next | `Enter` | ✓ in Annotate |
 | Close an inline form | `Esc` | ✓ |
 | Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
-| Undo / redo (Rally Log, anchors and Team ends alike) | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate and Annotate |
+| Undo / redo (Rally Log, anchors and Team ends alike) | `⌘Z` / `⇧⌘Z` | ✓ in all workspaces |
 | Shortcut sheet | `?` | ✓ |
 
 Premiere's `J/K/L` shuttle is deliberately left out: `L` is Lob, and `Space` plus `[ ]` cover shuttling. Premiere's `I`/`O` move to `Shift+I`/`Shift+O` because `O` is Overhead.
