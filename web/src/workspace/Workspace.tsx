@@ -418,12 +418,17 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       controls.seek(entry.contact_frame.value);
   };
 
-  /** Deselects the selected Shot or Observation Gap, keeping the Rally and switching to its tab. */
-  const deselectCurrentEntry = (next: Selection) => {
-    const wasShot = isShot(selectedEntry(games, current));
+  /** Applies a deselection step, choosing the Inspector tab, form reset, and status hint. */
+  const applyDeselect = (next: Selection) => {
+    if (next.rally === current.rally && next.entry === current.entry) return;
     setRallySelection(next);
+    if (next.rally === null) {
+      setForm(null);
+      recording.notify("Rally deselected");
+      return;
+    }
     setInspectorTab("rally");
-    if (!wasShot) {
+    if (!isShot(selectedEntry(games, current))) {
       recording.notify("Observation Gap deselected");
       return;
     }
@@ -435,34 +440,18 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     }
   };
 
-  /** Deselects the selected Rally (and any Shot), keeping the active Game. */
-  const deselectCurrentRally = (next: Selection) => {
-    setRallySelection(next);
-    setForm(null);
-    recording.notify("Rally deselected");
-  };
-
   /** Selects a Rally, or deselects it when clicked again. */
   const selectOrToggleRally = (gi: number, ri: number) => {
     const next = toggleRally(games, current, gi, ri);
-    if (next.rally === null) {
-      deselectCurrentRally(next);
-    } else {
-      goToRally(next);
-    }
+    if (next.rally === null) applyDeselect(next);
+    else goToRally(next);
   };
 
   /** `Esc`: closes an open popup or inline form first, then steps selection Shot → Rally → none. */
   const handleEscape = () => {
     if (gotoOpen) return setGotoOpen(false);
     if (form !== null) return setForm(null);
-    const next = deselectSelection(current);
-    if (next === current) return;
-    if (current.entry !== null) {
-      deselectCurrentEntry(next);
-    } else {
-      deselectCurrentRally(next);
-    }
+    applyDeselect(deselectSelection(current));
   };
   /** Navigates straight to a rule issue's Game, Rally, Shot, Inspector tab, and field cursor. */
   const jumpToIssue = (issue: RuleIssue) => {
@@ -847,6 +836,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return;
       }
     }
+    // Review does not run `annotateKeyAction`, so handle unmodified `Esc` here to match Annotate's
+    // form-close and Shot → Rally deselection.
     if (
       reviewing &&
       recordingState.recording &&
@@ -1146,8 +1137,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   annotateEdit((c) => moveShotPosition(c, playerId, point))
                 }
                 onDeselectShot={() => {
-                  if (current.entry === null) return;
-                  deselectCurrentEntry({ ...current, entry: null });
+                  if (current.entry !== null) applyDeselect({ ...current, entry: null });
                 }}
               />
               <InspectorPanel
@@ -1263,7 +1253,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   onSelectEntry: (gi, ri, ei) => {
                     const next = toggleShot(current, gi, ri, ei);
                     if (next.entry === null) {
-                      deselectCurrentEntry(next);
+                      applyDeselect(next);
                     } else {
                       setInspectorTab("shot");
                       goToEntry(next);

@@ -318,11 +318,12 @@ function renderInteractiveTimeline(initialSelection: Selection = { game: 0, rall
   const onMoveContact = vi.fn<TimelineRallies["onMoveContact"]>();
 
   function Harness() {
+    const [view, setView] = useState({ start: 0, end: 1000 });
     const [selection, setSelection] = useState<Selection>(initialSelection);
     return (
       <Timeline
-        view={{ start: 0, end: 1000 }}
-        onViewChange={vi.fn<() => void>()}
+        view={view}
+        onViewChange={setView}
         frame={150}
         totalFrames={3000}
         playing={false}
@@ -415,5 +416,36 @@ describe("Timeline Shot pin selection and drag", () => {
     expect(onSelectRally).toHaveBeenCalledExactlyOnceWith(0, 0, undefined);
     expect(container.querySelector(".clip.on")).toBeNull();
     expect(container.querySelector(".pin.on")).toBeNull();
+  });
+
+  it("moves contact without deselecting when wheel panning changes the frame under a held pin", () => {
+    const { onSelectEntry, onMoveContact } = renderInteractiveTimeline();
+    const pin = screen.getByRole("button", { name: "Shot 1 at frame 150" });
+
+    fireEvent.pointerDown(pin, { pointerId: 1, clientX: 150 });
+    act(() => {
+      fireEvent(pin, wheelEvent({ clientX: 150, deltaX: 60 }));
+      fireEvent.pointerUp(pin, { pointerId: 1, clientX: 150 });
+    });
+
+    expect(onMoveContact).toHaveBeenCalledExactlyOnceWith(0, 0, 0, 210);
+    expect(onSelectEntry).not.toHaveBeenCalled();
+    expect(pin.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("still resolves as a click when a wheel event leaves the held pin on its original frame", () => {
+    const { onSelectEntry, onMoveContact } = renderInteractiveTimeline();
+    const pin = screen.getByRole("button", { name: "Shot 1 at frame 150" });
+
+    fireEvent.pointerDown(pin, { pointerId: 1, clientX: 150 });
+    act(() => {
+      // Zooming centered on the pin's frame (x = 150 -> frame 150) keeps target === drag.from.
+      fireEvent(pin, wheelEvent({ clientX: 150, deltaY: -100, ctrlKey: true }));
+      fireEvent.pointerUp(pin, { pointerId: 1, clientX: 150 });
+    });
+
+    expect(onMoveContact).not.toHaveBeenCalled();
+    expect(onSelectEntry).toHaveBeenCalledExactlyOnceWith(0, 0, 0);
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
   });
 });

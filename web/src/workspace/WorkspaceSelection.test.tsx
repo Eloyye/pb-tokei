@@ -195,18 +195,22 @@ function liveTrackingFrames(): PlayerTrackingFramesOut {
   };
 }
 
-function renderAnnotateWorkspace(games = sampleGames()) {
+function renderWorkspace(workspace: "annotate" | "review", games = sampleGames()) {
   apiMocks.getGames.mockResolvedValue(games);
   apiMocks.replaceGames.mockImplementation(async (_id: string, next: Game[]) => next);
   const view = render(
     <QueryClientProvider client={new QueryClient()}>
-      <Workspace match={MATCH} workspace="annotate" />
+      <Workspace match={MATCH} workspace={workspace} />
     </QueryClientProvider>,
   );
   const video = view.container.querySelector<HTMLVideoElement>("video")!;
   Object.defineProperty(video, "duration", { value: 20, configurable: true });
   fireEvent(video, new Event("loadedmetadata"));
   return { ...view, video };
+}
+
+function renderAnnotateWorkspace(games = sampleGames()) {
+  return renderWorkspace("annotate", games);
 }
 
 beforeEach(() => {
@@ -405,6 +409,84 @@ describe("Workspace Shot and Rally deselection", () => {
       expect(container.querySelector(".court-mode")?.textContent).toBe("Live · 00:00:05:05"),
     );
     expect(pauseSpy).not.toHaveBeenCalled();
+  });
+
+  it("deselects an Observation Gap without consuming the one-time Shot deselect hint", async () => {
+    const games = sampleGames();
+    const rally = games[0]!.rallies[0]!;
+    rally.entries = [rally.entries[0]!, { type: "gap", missing: "odd" }, rally.entries[1]!];
+
+    const { container } = renderAnnotateWorkspace(games);
+    const rallyList = container.querySelector<HTMLElement>(".rally-list")!;
+    const rallyRow = await within(rallyList).findByRole("button", { name: /R1/ });
+    const gapPill = container.querySelector<HTMLButtonElement>(".gap-pill")!;
+
+    // Select the Observation Gap, then click it again to deselect.
+    fireEvent.click(gapPill);
+    expect(gapPill.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(gapPill);
+    expect(gapPill.getAttribute("aria-pressed")).toBe("false");
+    expect(rallyRow.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Rally" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Observation Gap deselected")).toBeTruthy();
+
+    // Selecting the gap and pressing Esc also deselects it and keeps the Rally.
+    fireEvent.click(gapPill);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(gapPill.getAttribute("aria-pressed")).toBe("false");
+    expect(rallyRow.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Rally" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Observation Gap deselected")).toBeTruthy();
+
+    // The one-time Shot hint is still unused: deselecting a Shot shows the full message.
+    const pin1 = screen.getByRole("button", { name: "Shot 1 at frame 120" });
+    fireEvent.pointerDown(pin1, { pointerId: 1, clientX: 120 });
+    fireEvent.pointerUp(pin1, { pointerId: 1, clientX: 120 });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByText("Shot deselected: Court shows live tracking (Esc)")).toBeTruthy();
+  });
+
+  it("handles Esc in Review mode (closes form first, steps Shot → Rally, ignores repeat/modifiers)", async () => {
+    const { container } = renderWorkspace("review");
+    const rallyList = container.querySelector<HTMLElement>(".rally-list")!;
+    const rallyRow = await within(rallyList).findByRole("button", { name: /R1/ });
+
+    // Select Rally 1 (selects Shot 1).
+    fireEvent.click(rallyRow);
+    expect(container.querySelector(".court-mode")?.textContent).toBe(
+      "Shot 1 · contact 00:00:02:00",
+    );
+
+    // Repeat and modified Esc presses do nothing.
+    fireEvent.keyDown(window, { key: "Escape", repeat: true });
+    fireEvent.keyDown(window, { key: "Escape", shiftKey: true });
+    fireEvent.keyDown(window, { key: "Escape", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "Escape", metaKey: true });
+    fireEvent.keyDown(window, { key: "Escape", altKey: true });
+    expect(container.querySelector(".court-mode")?.textContent).toBe(
+      "Shot 1 · contact 00:00:02:00",
+    );
+
+    // Open Rally details form via the Rally tab; Esc closes only the form, keeping Shot 1 selected.
+    fireEvent.click(screen.getByRole("tab", { name: "Rally" }));
+    fireEvent.click(screen.getByRole("button", { name: "Score called" }));
+    expect(screen.getByRole("form", { name: "Rally details" })).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("form", { name: "Rally details" })).toBeNull();
+    expect(container.querySelector(".court-mode")?.textContent).toBe(
+      "Shot 1 · contact 00:00:02:00",
+    );
+
+    // First Esc with no form open deselects Shot 1 (keeps Rally 1).
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(container.querySelector(".court-mode")?.textContent).toBe("Live · 00:00:02:00");
+    expect(rallyRow.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Rally" }).getAttribute("aria-selected")).toBe("true");
+
+    // Second Esc deselects Rally 1.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(rallyRow.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText("Rally deselected")).toBeTruthy();
   });
 
   it("documents Esc deselection in the ShortcutSheet", () => {
