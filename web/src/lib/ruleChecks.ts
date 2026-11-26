@@ -9,6 +9,7 @@ import {
 } from "./annotate";
 import {
   isGap,
+  isRosterTeam,
   isShot,
   known,
   otherTeam,
@@ -19,10 +20,9 @@ import {
   teamPlayers,
 } from "./rallyLog";
 import {
+  applyBoxStep,
   type Box,
-  expectedPlayerForBox,
-  flipBox,
-  inferEvenRightPlayer,
+  boxParityPlayer,
   isOpeningScore,
   nextSideoutOutcomes,
   nextSideoutState,
@@ -138,10 +138,6 @@ const OUTCOME_LABELS: Record<SideoutOutcome, string> = {
   second_server: "Second server",
   side_out: "Side out",
 };
-
-function isRosterTeam(roster: Roster, teamId: string): boolean {
-  return teamId === roster.teamA || teamId === roster.teamB;
-}
 
 function knownTeam(
   roster: Roster,
@@ -472,15 +468,12 @@ function nextLegalBox(
       const matched = outcomes.find(
         (step) => sameScore(currScore, step.score) && currServing === step.serving_team_id,
       );
-      if (matched) {
-        return matched.box === "right" ? "right" : prevBox === null ? null : flipBox(prevBox);
-      }
-      return null;
+      return matched ? applyBoxStep(matched.box, prevBox) : null;
     }
     if (prevWinner !== null) {
       const step = nextSideoutState(roster, prevScore, prevServing, prevWinner);
       if (currServing !== null && currServing !== step.serving_team_id) return null;
-      return step.box === "right" ? "right" : prevBox === null ? null : flipBox(prevBox);
+      return applyBoxStep(step.box, prevBox);
     }
     if (currServing !== null && currServing !== prevServing && prevScore.server_number === 2) {
       return "right";
@@ -635,12 +628,14 @@ function checkWinnerAgreement(roster: Roster, rally: Rally, emit: RallyEmitter):
   }
 }
 
+type SameTurnOutcome = Exclude<SideoutOutcome, "side_out">;
+
 /** Infers the expected side-out outcome after `prev` when at least one adjacent score is Unknown. */
 function outcomeWithoutBothScores(
   prevServing: string,
   prevWinner: string | null,
   prevServerNum: 1 | 2 | null,
-  prevCall: "point" | "second_server" | "side_out" | null,
+  prevCall: SideoutOutcome | null,
 ): SideoutOutcome | null {
   if (prevWinner === prevServing) return "point";
   if (prevWinner !== null) {
@@ -653,12 +648,13 @@ function outcomeWithoutBothScores(
 
 /** Infers whether an adjacent same-Serving-Team transition was a Point or Second server. */
 function sameTurnStep(
+  roster: Roster,
   prevServing: string,
   prevWinner: string | null,
   prevScore: Score | null,
   score: Score | null,
-  prevCall: "point" | "second_server" | "side_out" | null,
-): "point" | "second_server" | null {
+  prevCall: SideoutOutcome | null,
+): SameTurnOutcome | null {
   if (prevWinner === prevServing) return "point";
   if (prevWinner !== null) {
     const prevServerNum = prevScore?.server_number ?? null;
@@ -668,22 +664,10 @@ function sameTurnStep(
     return null;
   }
   if (prevScore !== null && score !== null) {
-    if (
-      score.serving === prevScore.serving + 1 &&
-      score.receiving === prevScore.receiving &&
-      score.server_number === prevScore.server_number
-    ) {
-      return "point";
-    }
-    if (
-      score.serving === prevScore.serving &&
-      score.receiving === prevScore.receiving &&
-      prevScore.server_number === 1 &&
-      score.server_number === 2
-    ) {
-      return "second_server";
-    }
-    return null;
+    const matched = nextSideoutOutcomes(roster, prevScore, prevServing).find(
+      (step) => step.serving_team_id === prevServing && sameScore(score, step.score),
+    );
+    return matched && matched.outcome !== "side_out" ? matched.outcome : null;
   }
   return prevCall === "point" || prevCall === "second_server" ? prevCall : null;
 }
@@ -759,7 +743,7 @@ function checkAdjacentTransition(
 
   // 11d: Server & Returner continuity within a service turn.
   if (servingTeam !== prevServing) return;
-  const turnStep = sameTurnStep(prevServing, prevWinner, prevScore, score, prevCall);
+  const turnStep = sameTurnStep(roster, prevServing, prevWinner, prevScore, score, prevCall);
   if (turnStep === null) return;
 
   const serverId = known(rally.server_id) ? rally.server_id.value : null;
@@ -825,7 +809,7 @@ function checkServingBoxParity(
   if (serverId !== null && teamOf(roster, serverId) === servingTeam) {
     const evenS = evenRight.get(servingTeam);
     if (evenS !== undefined) {
-      const expectedServer = expectedPlayerForBox(roster, evenS, score.serving, legalServingBox);
+      const expectedServer = boxParityPlayer(roster, evenS, score.serving, legalServingBox);
       if (expectedServer !== null && serverId !== expectedServer && !flags.serverFlagged) {
         emit(
           "server_parity",
@@ -835,7 +819,7 @@ function checkServingBoxParity(
         );
       }
     } else {
-      const learned = inferEvenRightPlayer(roster, serverId, score.serving, legalServingBox);
+      const learned = boxParityPlayer(roster, serverId, score.serving, legalServingBox);
       if (learned !== null) evenRight.set(servingTeam, learned);
     }
   }
@@ -843,12 +827,7 @@ function checkServingBoxParity(
   if (returnerId !== null && teamOf(roster, returnerId) === receiving) {
     const evenR = evenRight.get(receiving);
     if (evenR !== undefined) {
-      const expectedReturner = expectedPlayerForBox(
-        roster,
-        evenR,
-        score.receiving,
-        legalServingBox,
-      );
+      const expectedReturner = boxParityPlayer(roster, evenR, score.receiving, legalServingBox);
       if (expectedReturner !== null && returnerId !== expectedReturner && !flags.returnerFlagged) {
         emit(
           "returner_parity",
@@ -858,7 +837,7 @@ function checkServingBoxParity(
         );
       }
     } else {
-      const learned = inferEvenRightPlayer(roster, returnerId, score.receiving, legalServingBox);
+      const learned = boxParityPlayer(roster, returnerId, score.receiving, legalServingBox);
       if (learned !== null) evenRight.set(receiving, learned);
     }
   }

@@ -2,6 +2,7 @@ import type { Game, Rally, Score, WinnerSource } from "../api/client";
 import {
   type Fact,
   inferred,
+  isRosterTeam,
   known,
   numberShots,
   observed,
@@ -78,36 +79,29 @@ export function flipBox(box: Box): Box {
   return box === "right" ? "left" : "right";
 }
 
+/** Advances the legal serving box by one `SideoutStep` transition (`"right"` or `"flip"`). */
+export function applyBoxStep(step: SideoutStep["box"], previous: Box | null): Box | null {
+  if (step === "right") return "right";
+  return previous === null ? null : flipBox(previous);
+}
+
 function inferredOrUnknown(value: string | null): Fact<string> {
   return value === null ? UNKNOWN : inferred(value);
 }
 
 /**
- * The Player legally standing in `box` at `teamScore`, given the Player on that Team who stands
- * in the right-hand court on an even score (stacking-safe: depends only on score parity and box).
+ * Symmetric score-parity / serving-box mapping (stacking-safe: depends only on score parity and
+ * legal serving box). Passing a Team's even-score right-court Player returns who legally stands
+ * in `box` at `teamScore`; passing the Player seen in `box` at `teamScore` returns who stands in
+ * the right-hand court on an even score (the relation is its own inverse).
  */
-export function expectedPlayerForBox(
-  roster: Roster,
-  evenRightPlayer: string,
-  teamScore: number,
-  box: Box,
-): string | null {
-  return (box === "right") === (teamScore % 2 === 0)
-    ? evenRightPlayer
-    : partnerOf(roster, evenRightPlayer);
-}
-
-/**
- * Which Player on `playerId`'s Team stands in the right-hand court on an even score, inferred
- * from seeing `playerId` legally stand in `box` at `teamScore`.
- */
-export function inferEvenRightPlayer(
+export function boxParityPlayer(
   roster: Roster,
   playerId: string,
   teamScore: number,
   box: Box,
 ): string | null {
-  return expectedPlayerForBox(roster, playerId, teamScore, box);
+  return (box === "right") === (teamScore % 2 === 0) ? playerId : partnerOf(roster, playerId);
 }
 
 /** The single exact next `(score, serving_team_id, box)` under side-out doubles rules. */
@@ -162,7 +156,7 @@ function rightCourtPlayer(
 ): string | null {
   const even = state.evenRight.get(team);
   if (even === undefined) return null;
-  return expectedPlayerForBox(roster, even, score, "right");
+  return boxParityPlayer(roster, even, score, "right");
 }
 
 /** What Rally k + 1 should be, from Rally k, and the legal serving box for it. */
@@ -170,7 +164,7 @@ function transition(
   roster: Roster,
   state: WalkState,
   previous: Rally,
-): { expected: Expected; box: Box | "flip" | null } {
+): { expected: Expected; box: SideoutStep["box"] | null } {
   const score = previous.score.value;
   const serving = previous.serving_team_id.value;
   const winner = previous.winner_id.value;
@@ -239,11 +233,11 @@ function learn(roster: Roster, state: WalkState, rally: Rally, box: Box | null):
   const server = rally.server_id.value;
   const returner = rally.returner_id.value;
   if (server !== null) {
-    const even = inferEvenRightPlayer(roster, server, score.serving, box);
+    const even = boxParityPlayer(roster, server, score.serving, box);
     if (even !== null) state.evenRight.set(serving, even);
   }
   if (returner !== null) {
-    const even = inferEvenRightPlayer(roster, returner, score.receiving, box);
+    const even = boxParityPlayer(roster, returner, score.receiving, box);
     if (even !== null) state.evenRight.set(receiving, even);
   }
 }
@@ -297,7 +291,7 @@ function playWinnerFromError(roster: Roster, rally: Rally): string | null {
 export function refereeCallWinner(roster: Roster, rally: Rally): string | null {
   if (!known(rally.referee_call) || !known(rally.serving_team_id)) return null;
   const serving = rally.serving_team_id.value;
-  if (serving !== roster.teamA && serving !== roster.teamB) return null;
+  if (!isRosterTeam(roster, serving)) return null;
   return rally.referee_call.value === "point" ? serving : otherTeam(roster, serving);
 }
 
@@ -382,7 +376,7 @@ export function normalizeGame(game: Game, roster: Roster, fromIndex: number): Ga
     if (i > 0) {
       const step = transition(roster, state, rallies[i - 1]!);
       expected = step.expected;
-      nextBox = step.box === "flip" ? (box === null ? null : flipBox(box)) : step.box;
+      nextBox = step.box === null ? null : applyBoxStep(step.box, box);
     }
     if (i > fromIndex) rally = prefill(rally, expected);
     rally = syncFromShots(roster, rally);

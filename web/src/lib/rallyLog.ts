@@ -50,6 +50,11 @@ export function rosterOf(match: Pick<MatchDetail, "team_a_id" | "team_b_id" | "p
   return { teamA: match.team_a_id, teamB: match.team_b_id, players: match.players };
 }
 
+/** Whether `teamId` is one of the two Teams on `roster`. */
+export function isRosterTeam(roster: Roster, teamId: string): boolean {
+  return teamId === roster.teamA || teamId === roster.teamB;
+}
+
 export function otherTeam(roster: Roster, teamId: string): string {
   return teamId === roster.teamA ? roster.teamB : roster.teamA;
 }

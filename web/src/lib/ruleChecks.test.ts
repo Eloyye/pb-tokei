@@ -948,4 +948,135 @@ describe("ruleChecks: merging, counts, and chronological F8 cycling", () => {
     // Empty list returns null.
     expect(nextRuleIssue([], ctx, 1)).toBeNull();
   });
+
+  it("navigates across multiple Games, Game-only selections, position-based fallbacks, wraps, and single-issue lists", () => {
+    const g1 = game(
+      [
+        rally(1, {
+          score: observed(score(-1, 0, 2)), // i0: G1 R1 score
+          serving_team_id: observed("A"),
+          server_id: observed("b1"), // i1: G1 R1 server_id
+          entries: [
+            shot(1010, { hitter_id: UNKNOWN }),
+            shot(1050, { hitter_id: observed("b1"), contact_kind: observed("volley") }), // i2: G1 R1 entry 1 contact_kind
+          ],
+        }),
+      ],
+      1,
+    );
+    const g2 = game(
+      [
+        rally(1, {
+          score: observed(score(0, 0, 1)), // i3: G2 R1 score
+          serving_team_id: observed("A"),
+        }),
+        rally(2, {
+          score: observed(score(-2, 0, 2)), // i4: G2 R2 score
+          serving_team_id: observed("A"),
+        }),
+      ],
+      2,
+    );
+
+    const issues = checkMatch([g1, g2], ROSTER);
+    expect(
+      issues.map((i) => `${i.gameNumber}:${i.rallyNumber}:${i.entryIndex ?? "r"}:${i.field}`),
+    ).toEqual([
+      "1:1:r:score",
+      "1:1:r:server_id",
+      "1:1:1:contact_kind",
+      "2:1:r:score",
+      "2:2:r:score",
+    ]);
+
+    // Game-only selection on Game 2 ({ game: 1, rally: null }): F8 -> G2 first, Shift+F8 -> G1 last.
+    expect(
+      nextRuleIssue(
+        issues,
+        {
+          selection: { game: 1, rally: null, entry: null },
+          inspectorTab: "shot",
+          focusedField: undefined,
+          lastIssueId: null,
+        },
+        1,
+      )?.issue.id,
+    ).toBe(issues[3]!.id);
+    expect(
+      nextRuleIssue(
+        issues,
+        {
+          selection: { game: 1, rally: null, entry: null },
+          inspectorTab: "shot",
+          focusedField: undefined,
+          lastIssueId: null,
+        },
+        -1,
+      )?.issue.id,
+    ).toBe(issues[2]!.id);
+    // Game-only Shift+F8 from Game 1 wraps to the last issue in Game 2.
+    expect(
+      nextRuleIssue(
+        issues,
+        {
+          selection: { game: 0, rally: null, entry: null },
+          inspectorTab: "shot",
+          focusedField: undefined,
+          lastIssueId: null,
+        },
+        -1,
+      )?.issue.id,
+    ).toBe(issues[4]!.id);
+
+    // Position-based fallback (lastIssueId null / stale): cursor on G1 R1 serving_team_id sits between score (i0) and server_id (i1).
+    const betweenRallyFields = {
+      selection: { game: 0, rally: 0, entry: null },
+      inspectorTab: "rally" as const,
+      focusedField: "serving_team_id" as const,
+      lastIssueId: "stale-id",
+    };
+    expect(nextRuleIssue(issues, betweenRallyFields, 1)?.issue.id).toBe(issues[1]!.id);
+    expect(nextRuleIssue(issues, betweenRallyFields, -1)?.issue.id).toBe(issues[0]!.id);
+
+    // Position-based fallback crossing from Game 1's last Shot issue into Game 2 (and back).
+    const atG1LastShot = {
+      selection: { game: 0, rally: 0, entry: 1 },
+      inspectorTab: "shot" as const,
+      focusedField: "contact_kind" as const,
+      lastIssueId: null,
+    };
+    expect(nextRuleIssue(issues, atG1LastShot, 1)?.issue.id).toBe(issues[3]!.id);
+    expect(nextRuleIssue(issues, atG1LastShot, -1)?.issue.id).toBe(issues[1]!.id);
+
+    // Wrapping from position-based fallback past the last issue -> first issue; before first -> last.
+    expect(
+      nextRuleIssue(
+        issues,
+        {
+          selection: { game: 1, rally: 1, entry: null },
+          inspectorTab: "rally",
+          focusedField: "status",
+          lastIssueId: null,
+        },
+        1,
+      )?.issue.id,
+    ).toBe(issues[0]!.id);
+    expect(
+      nextRuleIssue(
+        issues,
+        {
+          selection: { game: 0, rally: 0, entry: null },
+          inspectorTab: "rally",
+          focusedField: "frames",
+          lastIssueId: null,
+        },
+        -1,
+      )?.issue.id,
+    ).toBe(issues[4]!.id);
+
+    // Single-issue list always returns that issue in both directions.
+    const single = [issues[0]!];
+    expect(nextRuleIssue(single, betweenRallyFields, 1)).toEqual({ issue: single[0], index: 0 });
+    expect(nextRuleIssue(single, betweenRallyFields, -1)).toEqual({ issue: single[0], index: 0 });
+  });
 });
