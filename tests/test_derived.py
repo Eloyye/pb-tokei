@@ -667,6 +667,39 @@ def test_a_winner_from_the_hitters_own_side_falls_back_to_the_landing() -> None:
     assert last(derive(hit(B1), shot, winner=TEAM_A)).target_id == B2.id
 
 
+def test_a_winner_hit_from_on_the_net_measures_the_whole_path() -> None:
+    """A1 on the net at (0, 0) hits to (8, 10): the whole path is on Team B's side. B1 stands
+    just off its start; B2 stands nearer the landing."""
+    positions = {
+        A1.id: PlayerPosition(observed(CourtPoint(0.0, 0.0))),
+        B1.id: PlayerPosition(observed(CourtPoint(1.0, 2.0))),
+        B2.id: PlayerPosition(observed(CourtPoint(8.0, 14.0))),
+    }
+    shot = hit(A1, HARD, FRONT, positions=positions, landing=CourtPoint(8.0, 10.0))
+    assert last(derive(hit(B1), shot, winner=TEAM_A)).target_id == B1.id
+
+
+def test_an_overturned_body_hit_winner_takes_its_target_from_the_path() -> None:
+    """The Body Hit on B2 was overturned, so the Error no longer names the Target: B1, nearest
+    the path, does."""
+    positions = {
+        A1.id: PlayerPosition(observed(CourtPoint(0.0, -5.0))),
+        B1.id: PlayerPosition(observed(CourtPoint(2.0, 2.5))),
+        B2.id: PlayerPosition(observed(CourtPoint(8.0, 14.0))),
+    }
+    shot = hit(
+        A1,
+        HARD,
+        FRONT,
+        positions=positions,
+        landing=CourtPoint(8.0, 10.0),
+        error=error(ErrorKind.BODY_HIT, B2),
+    )
+    derived = derive(hit(B1), shot, winner=TEAM_A, challenge=OVERTURNED)
+    assert last(derived).is_winner is True
+    assert last(derived).target_id == B1.id
+
+
 # --- Put-away -----------------------------------------------------------------------------
 
 
@@ -715,6 +748,13 @@ def test_a_reply_error_by_an_unknown_player_is_judged_by_the_replier() -> None:
     assert derive(*serve_return(), bang(A2), unknown_kind).shots[2].is_put_away is None
 
 
+def test_a_reply_error_by_an_unknown_player_on_the_attackers_side_is_not_known() -> None:
+    by_partner = hit(A1, SOFT, FRONT, error=error(ErrorKind.OUT, None))
+    body_hit = dink(B1, error=error(ErrorKind.BODY_HIT, None))
+    assert derive(*serve_return(), bang(A2), by_partner).shots[2].is_put_away is None
+    assert derive(*serve_return(), bang(A2), body_hit).shots[2].is_put_away is None
+
+
 def test_a_clean_last_reply_means_the_attack_was_not_a_put_away() -> None:
     assert derive(*serve_return(), bang(A2), dink(B1), winner=TEAM_B).shots[2].is_put_away is False
 
@@ -725,6 +765,9 @@ def test_an_overturned_challenge_decides_a_put_away_on_the_reply() -> None:
     assert overturned.shots[2].is_put_away is False
     unknown = derive(*serve_return(), bang(A2), reply, challenge=OVERTURNED)
     assert unknown.shots[2].is_put_away is None
+    # A clean reply called in, overturned to out: the attacker's Team won.
+    called_in = derive(*serve_return(), bang(A2), dink(B1), winner=TEAM_A, challenge=OVERTURNED)
+    assert called_in.shots[2].is_put_away is True
 
 
 def test_put_away_needs_the_attackers_team() -> None:

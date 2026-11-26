@@ -3,6 +3,8 @@
 from .derived import (
     ESTABLISHED_KEEP_MAX_Y_FT,
     OPENING_LAST_SHOT_NUMBER,
+    RETURN_SHOT_NUMBER,
+    SERVE_SHOT_NUMBER,
     TARGET_TIE_TOLERANCE_FT,
     ArrivalStatus,
     AttackExchange,
@@ -25,6 +27,8 @@ from .derived import (
 __all__ = [
     "ESTABLISHED_KEEP_MAX_Y_FT",
     "OPENING_LAST_SHOT_NUMBER",
+    "RETURN_SHOT_NUMBER",
+    "SERVE_SHOT_NUMBER",
     "TARGET_TIE_TOLERANCE_FT",
     "ArrivalStatus",
     "AttackExchange",

@@ -23,6 +23,7 @@ from enum import StrEnum
 from pb_tokei.rally_log.model import (
     FRONTCOURT_MAX_Y_FT,
     CourtPoint,
+    Error,
     ErrorKind,
     Fact,
     Game,
@@ -44,6 +45,9 @@ from pb_tokei.rally_log.model import (
 ESTABLISHED_KEEP_MAX_Y_FT = 12.0
 """Inclusive depth, in feet from the net, an Established Team's Players may drop back to and
 stay Established; going strictly deeper breaks it."""
+
+SERVE_SHOT_NUMBER = 1
+RETURN_SHOT_NUMBER = 2
 
 OPENING_LAST_SHOT_NUMBER = 5
 """The last Shot Number in the Opening."""
@@ -361,21 +365,25 @@ def _contact_zone(shot: Shot, hitter_id: PlayerId | None) -> Zone | None:
     return None if point is None else zone_for_point(point)
 
 
+def _might_be_return(number: int | None, min_number: int) -> bool:
+    """Whether a Shot of Unknown Shot Number could still be the Return (after a leading odd
+    Observation Gap), so the Serve and Return rules may apply to it."""
+    return number is None and min_number <= RETURN_SHOT_NUMBER
+
+
 def _is_attack(shot_class: ShotClass | None, number: int | None, min_number: int) -> bool | None:
-    if number in (1, 2):
+    if number in (SERVE_SHOT_NUMBER, RETURN_SHOT_NUMBER):
         return False  # a Serve or Return is never an Attack
     if shot_class in (ShotClass.SOFT, ShotClass.LOB):
         return False
-    if shot_class is None:
+    if shot_class is None or _might_be_return(number, min_number):
         return None
-    if number is None and min_number <= 2:
-        return None  # might be the Return
     return True
 
 
 def _in_opening(number: int | None, min_number: int) -> bool | None:
     if number is not None:
-        return 1 <= number <= OPENING_LAST_SHOT_NUMBER
+        return SERVE_SHOT_NUMBER <= number <= OPENING_LAST_SHOT_NUMBER
     if min_number > OPENING_LAST_SHOT_NUMBER:
         return False
     return None
@@ -387,11 +395,11 @@ def _rally_phase(
     established: Mapping[TeamId, bool | None],
     in_scramble: Mapping[TeamId, bool | None],
 ) -> RallyPhase | None:
-    if number == 1:
+    if number == SERVE_SHOT_NUMBER:
         return RallyPhase.SERVE
-    if number == 2:
+    if number == RETURN_SHOT_NUMBER:
         return RallyPhase.RETURN
-    if number is None and min_number <= 2:
+    if _might_be_return(number, min_number):
         return None
     if any(s is True for s in in_scramble.values()):
         return RallyPhase.SCRAMBLE
@@ -412,11 +420,11 @@ def _shot_type(
     number: int | None,
     min_number: int,
 ) -> ShotType | None:
-    if number == 1:
+    if number == SERVE_SHOT_NUMBER:
         return ShotType.SERVE
-    if number == 2:
+    if number == RETURN_SHOT_NUMBER:
         return ShotType.RETURN
-    if number is None and min_number <= 2:
+    if _might_be_return(number, min_number):
         return None
     match shot_class:
         case ShotClass.OVERHEAD:
@@ -555,6 +563,12 @@ def _won_by(rally: Rally, team_id: TeamId) -> bool | None:
     return None if winner is None else winner == team_id
 
 
+def _team_at_fault(roster: MatchRoster, error: Error) -> TeamId | None:
+    """The Team whose Error it was (for a Body Hit, the Team of the Player hit), if known."""
+    erring = error.player_id.value
+    return None if erring is None else roster.team_id_for(erring)
+
+
 def _rally_outcome_for(
     rally: Rally, roster: MatchRoster, team_id: TeamId | None
 ) -> ExchangeOutcome | None:
@@ -563,9 +577,9 @@ def _rally_outcome_for(
     if winner is None and not _overturned(rally):
         last = rally.entries[-1] if rally.entries else None
         if isinstance(last, Shot) and last.error is not None:
-            erring = last.error.player_id.value
-            if erring is not None:
-                winner = roster.other_team_id(roster.team_id_for(erring))
+            at_fault = _team_at_fault(roster, last.error)
+            if at_fault is not None:
+                winner = roster.other_team_id(at_fault)
     if winner is None or team_id is None:
         return None
     return ExchangeOutcome.WON if winner == team_id else ExchangeOutcome.LOST
@@ -584,9 +598,9 @@ def _is_winner(rally: Rally, roster: MatchRoster, derived: DerivedShot, last: in
     if kind in _PLAYED_ERROR_KINDS:
         return False
     # A Body Hit, or an Error of Unknown kind: whoever's Error it is lost the Rally.
-    erring = error.player_id.value
-    if erring is not None:
-        return roster.team_id_for(erring) != hitter_team
+    at_fault = _team_at_fault(roster, error)
+    if at_fault is not None:
+        return at_fault != hitter_team
     return _won_by(rally, hitter_team)
 
 
@@ -618,8 +632,10 @@ def _winner_target(rally: Rally, roster: MatchRoster, derived: DerivedShot) -> P
     if first_point is None or second_point is None:
         return None
     hitter_point = None if derived.hitter_id is None else _position(shot, derived.hitter_id)
-    if hitter_point is not None and hitter_point.y * landing.y < 0:
-        # Only the part of the ball's path on the opponents' side of the net counts.
+    if hitter_point is not None and hitter_point.y * landing.y <= 0 and hitter_point.y != landing.y:
+        # Only the part of the ball's path on the opponents' side of the net counts: from where
+        # it crosses the net (the hitter's own point when the hitter is on the net) to the
+        # landing.
         t = hitter_point.y / (hitter_point.y - landing.y)
         crossing = CourtPoint(hitter_point.x + t * (landing.x - hitter_point.x), 0.0)
     else:
@@ -674,9 +690,9 @@ def _is_put_away(
     error = next_shot.shot.error
     if error is None:
         return False
-    erring = error.player_id.value
-    if erring is not None:
-        return roster.team_id_for(erring) != hitter_team
+    at_fault = _team_at_fault(roster, error)
+    if at_fault is not None:
+        return at_fault != hitter_team
     replier_team = next_shot.hitter_team_id
     if (
         error.kind.value in _PLAYED_ERROR_KINDS
