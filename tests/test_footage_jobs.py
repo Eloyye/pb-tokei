@@ -465,6 +465,51 @@ def test_failure_mid_conversion_leaves_source_video_recorded_and_retries_convert
         assert log.load_match(match_id).source_video_frames == 6000
 
 
+@pytest.mark.parametrize("convert_only", [False, True])
+def test_conversion_keeps_the_frame_count_of_a_replaced_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, convert_only: bool
+) -> None:
+    db = tmp_path / "log.duckdb"
+    match_id = _add_match(db)
+    footage_dir = tmp_path / "footage"
+    original = footage_dir / f"{_video_id_for_url(URL_A)}.mkv"
+    converted = original.with_suffix(".60fps.mp4")
+    replacement = SourceVideo(URL_B, _video_id_for_url(URL_B), Path("footage/replacement.mkv"))
+
+    if convert_only:
+        footage_dir.mkdir()
+        original.write_bytes(b"downloaded-video-bytes")
+        with RallyLog.open(db) as log:
+            log.set_match_source_video(
+                match_id, SourceVideo(URL_A, _video_id_for_url(URL_A), original)
+            )
+
+    def replace_source(source: Path, _output: Path, _cancel: threading.Event | None) -> None:
+        assert source == original
+        with RallyLog.open(db) as log:
+            log.set_match_source_video(match_id, replacement, frames=1200)
+
+    def probe(path: Path) -> int:
+        assert path == converted and path.is_file()
+        return 6000
+
+    monkeypatch.setattr("pb_tokei.annotate.footage_jobs.video_frame_count", probe)
+    service = FootageJobService(db, runner=FakeStreamRunner(on_convert_start=replace_source))
+    try:
+        if convert_only:
+            service.enqueue(match_id, convert_source=original)
+        else:
+            service.enqueue(match_id, url=URL_A)
+        assert service.wait_for(match_id)
+        assert service.status(match_id).state is FootageJobState.IDLE
+        with RallyLog.open(db) as log:
+            match = log.load_match(match_id)
+            assert match.source_video == replacement
+            assert match.source_video_frames == 1200
+    finally:
+        service.close()
+
+
 def test_replacing_url_only_updates_source_video_after_download_succeeds(tmp_path: Path) -> None:
     db = tmp_path / "log.duckdb"
     match_id = _add_match(db)

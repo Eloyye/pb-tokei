@@ -793,6 +793,11 @@ export interface components {
      */
     MatchDetailOut: {
       annotation_mode: components["schemas"]["AnnotationMode"];
+      /**
+       * Assisted Ratio Budget
+       * @default 0.25
+       */
+      assisted_ratio_budget: number;
       /** Broadcast Seconds */
       broadcast_seconds: number | null;
       /** Fix Command */
@@ -840,6 +845,11 @@ export interface components {
      */
     MatchOut: {
       annotation_mode: components["schemas"]["AnnotationMode"];
+      /**
+       * Assisted Ratio Budget
+       * @default 0.25
+       */
+      assisted_ratio_budget: number;
       /** Broadcast Seconds */
       broadcast_seconds: number | null;
       footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;

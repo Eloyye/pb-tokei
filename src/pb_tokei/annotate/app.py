@@ -61,6 +61,7 @@ from pb_tokei.footage import (
 from pb_tokei.player_tracking import default_player_cache_dir
 from pb_tokei.player_vision import DevicePreference, VisionBackend
 from pb_tokei.rally_log import (
+    ASSISTED_RATIO_BUDGET,
     AnnotationMode,
     Calibration,
     CameraView,
@@ -191,6 +192,7 @@ class MatchOut(BaseModel):
     broadcast_seconds: float | None
     operator_time: OperatorTimeOut
     operator_time_ratio: float | None
+    assisted_ratio_budget: float = ASSISTED_RATIO_BUDGET
     footage_job: FootageJobSummaryOut | None = None
 
     @classmethod

@@ -4,8 +4,6 @@ import { WORKSPACES, WORKSPACE_LABELS, type Workspace } from "./workspaces";
 
 export const IDLE_TIMEOUT_MS = 120_000;
 export const FLUSH_INTERVAL_MS = 15_000;
-/** ADR 0004, shared with `rally_log/model.py`. */
-export const ASSISTED_RATIO_BUDGET = 0.25;
 
 export interface OperatorClock {
   committedMs: number;
@@ -68,9 +66,9 @@ export function operatorRatio(activeSeconds: number, broadcastSeconds: number | 
   return broadcastSeconds === null ? null : activeSeconds / broadcastSeconds;
 }
 
-export function ratioClassName(ratio: number | null, budget: boolean): string {
-  if (!budget || ratio === null) return "ratio";
-  return ratio <= ASSISTED_RATIO_BUDGET ? "ratio within-budget" : "ratio over-budget";
+export function ratioClassName(ratio: number | null, budget: number | null): string {
+  if (budget === null || ratio === null) return "ratio";
+  return ratio <= budget ? "ratio within-budget" : "ratio over-budget";
 }
 
 export function operatorTimeTitle(time: OperatorTime): string {

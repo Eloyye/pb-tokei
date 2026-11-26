@@ -30,6 +30,7 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
     franchise_a: null,
     franchise_b: null,
     annotation_mode: "gold",
+    assisted_ratio_budget: 0.25,
     broadcast_seconds: null,
     operator_time: {
       active_seconds: 0,

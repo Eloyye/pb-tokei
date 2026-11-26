@@ -29,6 +29,7 @@ function makeMatch(overrides: Partial<MatchDetail> = {}): MatchDetail {
     franchise_b: null,
     video_status: "none",
     annotation_mode: "gold",
+    assisted_ratio_budget: 0.25,
     broadcast_seconds: null,
     operator_time: {
       active_seconds: 0,

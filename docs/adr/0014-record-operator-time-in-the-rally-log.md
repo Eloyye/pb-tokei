@@ -11,3 +11,5 @@ Each visit to Calibrate, Annotate, or Review starts a session with a UUID. A ses
 The clock starts idle while a Match has ready video. Deliberate input in a visible, focused window starts or resumes it. A second input within two minutes commits the interval. The live display includes the current interval until a two-minute idle period, blur, hide, or exit discards it. Playback and pointer drift leave the clock idle. The first input after a pause starts a fresh interval. If the wall clock moves backward, the browser flushes the old session and starts a new one. This keeps breaks out of the 0.25 Assisted Annotation budget while providing a live clock without manual controls.
 
 Background writes send committed time and carry the Rally Log named when the session started. A page close uses a keepalive request. Switching Rally Logs gives the current flush a short best-effort wait.
+
+Match API responses include the Assisted Annotation budget from ADR 0004. Home and the StatusBar use that value for both the label and the threshold color.

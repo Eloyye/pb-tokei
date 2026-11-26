@@ -10,6 +10,7 @@ const match: StatusMatch = {
   id: "match",
   video_status: "not_converted",
   annotation_mode: "gold",
+  assisted_ratio_budget: 0.25,
   broadcast_seconds: 3600,
   operator_time: {
     active_seconds: 900,
@@ -59,6 +60,14 @@ describe("operator time in the StatusBar", () => {
   it("shows amber above the Assisted budget in Calibrate", () => {
     renderBar({ annotation_mode: "assisted", broadcast_seconds: 3000 }, "calibrate");
     expect(screen.getByText("Ratio 0.30 / 0.25").classList.contains("over-budget")).toBe(true);
+  });
+
+  it("uses the budget supplied by the API for its label and color", () => {
+    renderBar(
+      { annotation_mode: "assisted", broadcast_seconds: 3000, assisted_ratio_budget: 0.33 },
+      "calibrate",
+    );
+    expect(screen.getByText("Ratio 0.30 / 0.33").classList.contains("within-budget")).toBe(true);
   });
 
   it("shows a neutral unknown ratio when broadcast length is absent", () => {

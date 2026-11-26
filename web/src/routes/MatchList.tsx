@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, isRetryable, listMatches } from "../api/client";
 import {
-  ASSISTED_RATIO_BUDGET,
   formatActiveTime,
   formatRatio,
   operatorTimeTitle,
@@ -50,6 +49,7 @@ export function MatchList() {
     );
   }
 
+  const [firstMatch] = matches.data;
   return (
     <main className="home">
       <div className="home-head">
@@ -77,6 +77,7 @@ export function MatchList() {
           {matches.data.map((match) => {
             const pill = videoPill(match);
             const assisted = match.annotation_mode === "assisted";
+            const budget = assisted ? match.assisted_ratio_budget : null;
             return (
               <Link
                 key={match.id}
@@ -105,7 +106,7 @@ export function MatchList() {
                   {formatActiveTime(match.operator_time.active_seconds)}
                 </span>
                 <span
-                  className={`number mono ${ratioClassName(match.operator_time_ratio, assisted)}`}
+                  className={`number mono ${ratioClassName(match.operator_time_ratio, budget)}`}
                 >
                   {formatRatio(match.operator_time_ratio)}
                 </span>
@@ -114,11 +115,11 @@ export function MatchList() {
           })}
         </div>
       )}
-      {matches.data.length > 0 && (
+      {firstMatch && (
         <p className="ratio-note">
           Ratio = operator minutes ÷ broadcast minutes. Assisted Annotation has a{" "}
-          {formatRatio(ASSISTED_RATIO_BUDGET)} budget (ADR 0004). Gold Annotation has no time
-          budget.
+          {formatRatio(firstMatch.assisted_ratio_budget)} budget (ADR 0004). Gold Annotation has no
+          time budget.
         </p>
       )}
     </main>

@@ -25,6 +25,7 @@ const MATCH: MatchDetail = {
   franchise_b: null,
   video_status: "ready",
   annotation_mode: "gold",
+  assisted_ratio_budget: 0.25,
   broadcast_seconds: 120,
   operator_time: {
     active_seconds: 0,
