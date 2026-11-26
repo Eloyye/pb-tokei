@@ -1,15 +1,18 @@
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import type { MatchDetail, PlayerTrackingFrameOut, Shot, TeamEnd } from "../api/client";
 import type { Point } from "../lib/calibrations";
 import { formatTimecode } from "../lib/frames";
+import type { CourtSlot } from "../lib/layout";
 import { nearTeamKeyFor, playerInitialsMap } from "../lib/players";
 import { teamKey, type Roster } from "../lib/rallyLog";
 import {
   type CourtGhost,
   CourtDiagram,
   type CourtLanding,
+  type CourtNavigation,
   type CourtPlayerDot,
 } from "./CourtDiagram";
+import { CourtViewControls } from "./CourtViewControls";
 import { Panel, PanelTitle } from "./Panel";
 
 /**
@@ -34,6 +37,9 @@ export function CourtPanel({
   onSetLanding,
   onMoveShotPlayer,
   onDeselectShot,
+  slot = "side",
+  navigation,
+  swapButton,
 }: {
   match: MatchDetail;
   focused: boolean;
@@ -52,6 +58,9 @@ export function CourtPanel({
   onMoveShotPlayer?: (playerId: string, courtPoint: Point) => void;
   /** Deselects the current Shot so the diagram returns to live Player Tracking. */
   onDeselectShot?: () => void;
+  slot?: CourtSlot;
+  navigation?: CourtNavigation;
+  swapButton?: ReactNode;
 }) {
   const initials = useMemo(() => playerInitialsMap(match.players), [match.players]);
   const trackedById = useMemo(
@@ -113,36 +122,44 @@ export function CourtPanel({
     <Panel
       id="court"
       focused={focused}
+      className={`area-${slot}`}
       tabs={<PanelTitle>Court</PanelTitle>}
       tools={
-        shot ? (
-          <>
-            <span className="court-mode" title="Near end = Main View camera">
-              Shot {shot.shot_number.value ?? "?"} ·{" "}
-              {shot.contact_frame.value === null ? (
-                "contact Unknown"
-              ) : (
-                <>
-                  contact <span className="mono">{formatTimecode(shot.contact_frame.value)}</span>
-                </>
-              )}
-            </span>
-            {onDeselectShot && (
-              <button
-                type="button"
-                className="icon-button court-live-button"
-                title="Deselect Shot to show live Player Tracking (Esc)"
-                onClick={onDeselectShot}
-              >
-                Live
-              </button>
+        <>
+          <span className={`court-mode ${shot ? "" : "live"}`} title="Near end = Main View camera">
+            {shot ? (
+              <>
+                Shot {shot.shot_number.value ?? "?"} ·{" "}
+                {shot.contact_frame.value === null ? (
+                  "contact Unknown"
+                ) : (
+                  <>
+                    contact <span className="mono">{formatTimecode(shot.contact_frame.value)}</span>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                Live · <span className="mono">{formatTimecode(frame)}</span>
+              </>
             )}
-          </>
-        ) : (
-          <span className="court-mode live" title="Near end = Main View camera">
-            Live · <span className="mono">{formatTimecode(frame)}</span>
           </span>
-        )
+          {shot && onDeselectShot && (
+            <button
+              type="button"
+              className="icon-button court-live-button"
+              data-court-control
+              title="Deselect Shot to show live Player Tracking (Esc)"
+              onClick={onDeselectShot}
+            >
+              Live
+            </button>
+          )}
+          <span className="court-panel-actions">
+            {navigation && <CourtViewControls navigation={navigation} />}
+            {swapButton}
+          </span>
+        </>
       }
     >
       <div className="court-wrap">
@@ -159,6 +176,8 @@ export function CourtPanel({
           ghosts={ghosts}
           landing={landing}
           onClickCourt={shot ? onSetLanding : undefined}
+          navigation={navigation}
+          placementTarget={shot}
         />
         <div className="court-note">
           {shot

@@ -71,12 +71,14 @@ import {
   toggleRally,
   toggleShot,
 } from "../lib/annotate";
+import { type CourtView, FIT_COURT } from "../lib/courtView";
 import {
   type AnnotateAction,
   annotateKeyAction,
   type CalibrationAction,
   calibrationKeyAction,
   historyKeyAction,
+  isPanelSwapKey,
   isTextEntry,
   keyAction,
   type PlayerAction,
@@ -85,7 +87,15 @@ import {
   segmentKeyAction,
   zoomKeyAction,
 } from "../lib/keymap";
-import { clampSize, loadSizes, type PanelSizes, saveSizes } from "../lib/layout";
+import {
+  clampSize,
+  type CourtSlot,
+  loadCourtLayout,
+  loadSizes,
+  type PanelSizes,
+  saveCourtLayout,
+  saveSizes,
+} from "../lib/layout";
 import {
   courtPointToImage,
   deletePlayerAnchor,
@@ -104,20 +114,15 @@ import {
   type RuleIssue,
 } from "../lib/ruleChecks";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import {
-  fitRange,
-  type FrameRange,
-  fullView,
-  reconcileView,
-  ZOOM_STEP,
-  zoomView,
-} from "../lib/timeline";
+import { fitRange, type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
+import { ZOOM_STEP } from "../lib/wheel";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
 import type { PanelId } from "./Panel";
 import { CalibrationOverlay } from "./CalibrationOverlay";
 import { type CalibrateTab, CalibrationPanel } from "./CalibrationPanel";
+import type { CourtNavigation } from "./CourtDiagram";
 import { PlayerOverlay } from "./PlayerOverlay";
 import { PlayersPanel } from "./PlayersPanel";
 import { type InspectorForm, InspectorPanel, type InspectorTab } from "./Inspector";
@@ -140,7 +145,7 @@ const MESSAGES: Record<WorkspaceName, string> = {
 };
 
 /**
- * A Match open in one workspace: Monitor and right column over Rallies and Timeline, with
+ * A Match open in one workspace: Monitor, Court and Inspector over Rallies and Timeline, with
  * resizable gutters. The player lives here so the Monitor and the Timeline share it.
  */
 export function Workspace({ match, workspace }: { match: MatchDetail; workspace: WorkspaceName }) {
@@ -164,6 +169,32 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const reviewing = workspace === "review";
   const showRuleChecks = annotating || reviewing;
   const [calibrateTab, setCalibrateTab] = useState<CalibrateTab>("landmarks");
+  const [courtLayout, setCourtLayout] = useState(loadCourtLayout);
+  const [courtView, setCourtView] = useState<CourtView>(FIT_COURT);
+  // Keydown records deferred playback ("play") or focused button activation ("control").
+  // A pan changes either to "used", suppressing the release. Keyup or blur returns it to "up".
+  const spaceKey = useRef<"up" | "play" | "control" | "used">("up");
+  const swapped = !calibrating && courtLayout.swapped;
+  const courtSlot: CourtSlot = swapped ? "main" : "side";
+  const courtNavigation: CourtNavigation = {
+    orientation: courtLayout.orientation[courtSlot],
+    view: courtView,
+    setView: setCourtView,
+    consumeSpaceForPan: () => {
+      if (spaceKey.current === "up") return false;
+      spaceKey.current = "used";
+      return true;
+    },
+    toggleOrientation: () =>
+      setCourtLayout((layout) => ({
+        ...layout,
+        orientation: {
+          ...layout.orientation,
+          [courtSlot]: layout.orientation[courtSlot] === "vertical" ? "horizontal" : "vertical",
+        },
+      })),
+  };
+  const swapPanels = () => setCourtLayout((layout) => ({ ...layout, swapped: !layout.swapped }));
   const [calibrateSelectedPlayerId, setCalibrateSelectedPlayerId] = useState<string | null>(
     () => match.players[0]?.id ?? null,
   );
@@ -744,6 +775,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     if (nextView !== view) setView(nextView);
   }
   useEffect(() => saveSizes(sizes), [sizes]);
+  useEffect(() => saveCourtLayout(courtLayout), [courtLayout]);
 
   // Annotate pauses at the selected Rally's end frame, unless the Rally is Done or playback
   // started after it (docs/annotation-ui.md, "Monitor").
@@ -779,11 +811,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
 
   // An Effect Event reads the latest frame, speed and controls, so the window listener is added
   // once instead of again on every frame during playback.
+  const playPause = () => (annotating ? togglePlayAnnotate() : togglePlay());
   const onKeyDown = useEffectEvent((event: KeyboardEvent) => {
     const run = (action: PlayerAction) => {
       switch (action.type) {
         case "togglePlay":
-          return annotating ? togglePlayAnnotate() : togglePlay();
+          return playPause();
         case "step":
           return step(action.frames, action.pause);
         case "setSpeed":
@@ -808,7 +841,22 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           return recording.cancelPending();
       }
     };
-    if (isTextEntry(event.target)) return;
+    if (event.defaultPrevented || isTextEntry(event.target)) return;
+    if (
+      (event.key === " " || event.key === "Enter") &&
+      event.target instanceof Element &&
+      event.target.closest("button[data-court-control]")
+    ) {
+      if (!event.repeat && keyAction(event, speed)?.type === "togglePlay") {
+        spaceKey.current = "control";
+      }
+      return;
+    }
+    if (!calibrating && isPanelSwapKey(event)) {
+      event.preventDefault();
+      if (!event.repeat) swapPanels();
+      return;
+    }
     if (showRuleChecks && recordingState.recording) {
       const issueDirection = ruleIssueKeyAction(event);
       if (issueDirection !== null) {
@@ -878,13 +926,39 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     event.preventDefault();
     // Only frame stepping repeats while a key is held.
     if (event.repeat && action.type !== "step") return;
+    if (action.type === "togglePlay" && (!calibrating || calibrateTab === "players")) {
+      // Wait to see whether the operator uses Space for a Court pan.
+      spaceKey.current = "play";
+      return;
+    }
     run(action);
   });
 
+  const onKeyUp = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key !== " " && event.code !== "Space") return;
+    const previous = spaceKey.current;
+    spaceKey.current = "up";
+    if (previous === "used") {
+      // A pan can start with a header button focused. Release must not activate that button.
+      event.preventDefault();
+    } else if (previous === "play" && !event.defaultPrevented && !isTextEntry(event.target)) {
+      playPause();
+    }
+  });
   useEffect(() => {
-    const listener = (event: KeyboardEvent) => onKeyDown(event);
-    window.addEventListener("keydown", listener);
-    return () => window.removeEventListener("keydown", listener);
+    const down = (event: KeyboardEvent) => onKeyDown(event);
+    const up = (event: KeyboardEvent) => onKeyUp(event);
+    const blur = () => {
+      spaceKey.current = "up";
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
   }, []);
 
   // The panel last pressed gets the focus outline.
@@ -909,6 +983,20 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     [match.id, match.video_status],
   );
 
+  const swapButton = !calibrating && (
+    <button
+      type="button"
+      className="icon-button panel-swap"
+      data-court-control
+      aria-label="Swap Court and Monitor"
+      aria-pressed={swapped}
+      title={"Swap Court and Monitor (`)"}
+      onClick={swapPanels}
+    >
+      ⇄
+    </button>
+  );
+
   return (
     <div className="match-frame">
       <div
@@ -922,123 +1010,126 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           } as React.CSSProperties
         }
       >
-        <Monitor
-          match={match}
-          src={src}
-          title={
-            calibrating
-              ? calibrateTab === "players"
-                ? "Program: Players"
-                : "Program: Calibrate"
-              : "Program"
-          }
-          videoRef={videoRef}
-          state={state}
-          controls={annotating ? { ...controls, togglePlay: togglePlayAnnotate } : controls}
-          annotate={
-            annotating
-              ? {
-                  onRallyStart: () => runAnnotate({ type: "rallyStart" }),
-                  onRallyEnd: () => runAnnotate({ type: "rallyEnd" }),
-                  onAddShot: () => runAnnotate({ type: "addShot" }),
-                  onRally: (direction) => runAnnotate({ type: "rally", direction }),
-                  onShot: (direction) => runAnnotate({ type: "shot", direction }),
-                  rallyRange:
-                    currentRally && currentRally.start_frame !== null
-                      ? `R${currentRally.number} ${currentRally.start_frame}–${currentRally.end_frame ?? "…"}`
-                      : null,
-                }
-              : undefined
-          }
-          gotoOpen={gotoOpen}
-          onCloseGoto={() => setGotoOpen(false)}
-          focused={focused === "monitor"}
-          cameraView={segments ? (monitorSegment?.camera_view ?? "none") : null}
-          headerTools={
-            annotating &&
-            src && (
-              <div className="monitor-player-tools">
-                <button
-                  type="button"
-                  className={`icon-button ${showPlayerOverlay ? "active" : ""}`}
-                  aria-pressed={showPlayerOverlay}
-                  title="Toggle Player overlay on the Monitor"
-                  onClick={() => setShowPlayerOverlay((v) => !v)}
-                >
-                  Players
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  title="Swap Team A partners from the playhead forward"
-                  onClick={() => swapTeam("a")}
-                >
-                  Swap A
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  title="Swap Team B partners from the playhead forward"
-                  onClick={() => swapTeam("b")}
-                >
-                  Swap B
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  title="Swap near and far Team ends from the playhead forward"
-                  onClick={swapEnds}
-                >
-                  Swap ends
-                </button>
-              </div>
-            )
-          }
-          overlay={
-            calibrating && calibrateTab === "landmarks" && segments ? (
-              <CalibrationOverlay
-                videoRef={videoRef}
-                frame={frame}
-                calibration={calibration}
-                fit={activeFit}
-                lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
-                frameMatrix={cameraMotion.frameMatrix}
-                frameLens={cameraMotion.frameLens}
-                unmapped={cameraMotion.frameUnmapped}
-                selected={selected}
-                editable={Boolean(segment)}
-                onPlace={place}
-                onSelect={select}
-                onBlocked={recording.notify}
-              />
-            ) : (calibrating && calibrateTab === "players") || (annotating && showPlayerOverlay) ? (
-              <PlayerOverlay
-                videoRef={videoRef}
-                players={match.players}
-                frameData={playerTracking.frameData}
-                selectedPlayerId={selectedPlayerId}
-                editable={Boolean(segment)}
-                clickEmptyPlaces={calibrating && calibrateTab === "players"}
-                onSelectPlayer={setSelectedPlayerId}
-                onAssignDetection={assignPlayerDetection}
-                onMovePlayer={movePlayerOnMonitor}
-                onBackgroundClick={annotating ? togglePlayAnnotate : undefined}
-              />
-            ) : undefined
-          }
-        />
-        <Splitter
-          className="splitter-side"
-          orientation="vertical"
-          label="Resize the right column"
-          value={sizes.side}
-          onDrag={(x) => {
-            const rect = gridRect();
-            if (rect) resize("side", rect.right - x);
-          }}
-          onNudge={(delta) => resize("side", sizes.side - delta)}
-        />
-        <div className={`side-column ${calibrating ? "single" : ""}`}>
+        <div className={`workspace-top ${calibrating ? "calibrating" : ""}`}>
+          <Monitor
+            match={match}
+            src={src}
+            title={
+              calibrating
+                ? calibrateTab === "players"
+                  ? "Program: Players"
+                  : "Program: Calibrate"
+                : "Program"
+            }
+            videoRef={videoRef}
+            state={state}
+            controls={annotating ? { ...controls, togglePlay: togglePlayAnnotate } : controls}
+            annotate={
+              annotating
+                ? {
+                    onRallyStart: () => runAnnotate({ type: "rallyStart" }),
+                    onRallyEnd: () => runAnnotate({ type: "rallyEnd" }),
+                    onAddShot: () => runAnnotate({ type: "addShot" }),
+                    onRally: (direction) => runAnnotate({ type: "rally", direction }),
+                    onShot: (direction) => runAnnotate({ type: "shot", direction }),
+                    rallyRange:
+                      currentRally && currentRally.start_frame !== null
+                        ? `R${currentRally.number} ${currentRally.start_frame}–${currentRally.end_frame ?? "…"}`
+                        : null,
+                  }
+                : undefined
+            }
+            gotoOpen={gotoOpen}
+            onCloseGoto={() => setGotoOpen(false)}
+            focused={focused === "monitor"}
+            compact={swapped}
+            swapButton={swapButton}
+            cameraView={segments ? (monitorSegment?.camera_view ?? "none") : null}
+            headerTools={
+              annotating &&
+              src && (
+                <div className="monitor-player-tools">
+                  <button
+                    type="button"
+                    className={`icon-button ${showPlayerOverlay ? "active" : ""}`}
+                    aria-pressed={showPlayerOverlay}
+                    title="Toggle Player overlay on the Monitor"
+                    onClick={() => setShowPlayerOverlay((v) => !v)}
+                  >
+                    Players
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title="Swap Team A partners from the playhead forward"
+                    onClick={() => swapTeam("a")}
+                  >
+                    Swap A
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title="Swap Team B partners from the playhead forward"
+                    onClick={() => swapTeam("b")}
+                  >
+                    Swap B
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title="Swap near and far Team ends from the playhead forward"
+                    onClick={swapEnds}
+                  >
+                    Swap ends
+                  </button>
+                </div>
+              )
+            }
+            overlay={
+              calibrating && calibrateTab === "landmarks" && segments ? (
+                <CalibrationOverlay
+                  videoRef={videoRef}
+                  frame={frame}
+                  calibration={calibration}
+                  fit={activeFit}
+                  lastFit={calibration && recordingState.fits.get(fitKey(calibration))}
+                  frameMatrix={cameraMotion.frameMatrix}
+                  frameLens={cameraMotion.frameLens}
+                  unmapped={cameraMotion.frameUnmapped}
+                  selected={selected}
+                  editable={Boolean(segment)}
+                  onPlace={place}
+                  onSelect={select}
+                  onBlocked={recording.notify}
+                />
+              ) : (calibrating && calibrateTab === "players") ||
+                (annotating && showPlayerOverlay) ? (
+                <PlayerOverlay
+                  videoRef={videoRef}
+                  players={match.players}
+                  frameData={playerTracking.frameData}
+                  selectedPlayerId={selectedPlayerId}
+                  editable={Boolean(segment)}
+                  clickEmptyPlaces={calibrating && calibrateTab === "players"}
+                  onSelectPlayer={setSelectedPlayerId}
+                  onAssignDetection={assignPlayerDetection}
+                  onMovePlayer={movePlayerOnMonitor}
+                  onBackgroundClick={annotating ? togglePlayAnnotate : undefined}
+                />
+              ) : undefined
+            }
+          />
+          <Splitter
+            className="splitter-side"
+            orientation="vertical"
+            label="Resize the right column"
+            value={sizes.side}
+            onDrag={(x) => {
+              const rect = gridRect();
+              if (rect) resize("side", rect.right - x);
+            }}
+            onNudge={(delta) => resize("side", sizes.side - delta)}
+          />
           {calibrating ? (
             <CalibrationPanel
               focused={focused === "calibration"}
@@ -1093,6 +1184,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   onSwapEnds={swapEnds}
                   onMovePlayerOnCourt={movePlayerOnCourt}
                   onPlacePlayerOnCourt={placeSelectedOnCourt}
+                  courtNavigation={courtNavigation}
                   onSeek={controls.seek}
                   onDeleteAnchor={(anchorFrame, playerId) => {
                     const name = match.players.find((p) => p.id === playerId)?.name;
@@ -1113,6 +1205,9 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
               <CourtPanel
                 match={match}
                 focused={focused === "court"}
+                slot={courtSlot}
+                navigation={courtNavigation}
+                swapButton={swapButton}
                 frame={frame}
                 frameData={playerTracking.frameData}
                 teamEnds={teamEnds}

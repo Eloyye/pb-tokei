@@ -14,6 +14,7 @@ import type {
   ShotPosition,
   Zone,
 } from "../api/client";
+import { clampCourtPoint } from "./courtView";
 import {
   contactZoneFor,
   type Fact,
@@ -980,19 +981,9 @@ export function moveContact(ctx: AnnotateContext, entryIndex: number, frame: num
   return { ...edit, message: `Contact moved to frame ${frame}` };
 }
 
-/** Court + surround bounds for clicks, in feet. */
-const COURT_BOUNDS = { x: 16, y: 32 };
-
-function clampPoint(point: CourtPoint): CourtPoint {
-  return {
-    x: Math.max(-COURT_BOUNDS.x, Math.min(COURT_BOUNDS.x, point.x)),
-    y: Math.max(-COURT_BOUNDS.y, Math.min(COURT_BOUNDS.y, point.y)),
-  };
-}
-
 /** Clicking the court: the Shot's landing. */
 export function setLanding(ctx: AnnotateContext, point: CourtPoint): AnnotateEdit {
-  const p = clampPoint(point);
+  const p = clampCourtPoint(point);
   return editShot(
     ctx,
     (s) => ({ ...s, landing: observed(p) }),
@@ -1009,7 +1000,7 @@ export function moveShotPosition(
   playerId: string,
   point: CourtPoint,
 ): AnnotateEdit {
-  const p = clampPoint(point);
+  const p = clampCourtPoint(point);
   return editShot(
     ctx,
     (s) => {

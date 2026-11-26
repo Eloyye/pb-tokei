@@ -31,6 +31,8 @@ export function Monitor({
   overlay,
   headerTools,
   annotate,
+  compact = false,
+  swapButton,
 }: {
   match: MatchDetail;
   src: string | null;
@@ -49,6 +51,9 @@ export function Monitor({
   headerTools?: ReactNode;
   /** Annotate's Rally and Shot transport (docs/annotation-ui.md, "Monitor"). */
   annotate?: AnnotateTransport;
+  /** The smaller slot above the Inspector. */
+  compact?: boolean;
+  swapButton?: ReactNode;
 }) {
   const lastFrame = Math.max(0, state.totalFrames - 1);
   const shownFrame = state.previewFrame ?? state.frame;
@@ -56,16 +61,19 @@ export function Monitor({
     <Panel
       id="monitor"
       focused={focused}
-      className="area-monitor"
+      className={compact ? "area-side" : "area-main"}
       tabs={<PanelTitle>{title}</PanelTitle>}
       tools={
         <>
           {headerTools}
           {src && (
-            <span className="mono">
-              {shownFrame.toLocaleString("en-US")} / {lastFrame.toLocaleString("en-US")}
+            <span className="monitor-readout mono">
+              {compact
+                ? formatTimecode(shownFrame)
+                : `${shownFrame.toLocaleString("en-US")} / ${lastFrame.toLocaleString("en-US")}`}
             </span>
           )}
+          {swapButton}
         </>
       }
     >
@@ -90,7 +98,7 @@ export function Monitor({
                 <small>FRAME</small>
                 {shownFrame.toLocaleString("en-US")}
               </span>
-              <span className="timecode">{formatTimecode(shownFrame)}</span>
+              {!compact && <span className="timecode">{formatTimecode(shownFrame)}</span>}
             </div>
             <div className="overlay overlay-right">
               <div className={`speed ${state.speed < 1 ? "slow" : ""}`}>{state.speed}×</div>

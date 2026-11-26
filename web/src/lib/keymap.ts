@@ -81,6 +81,11 @@ export function zoomKeyAction(event: KeyInput): "in" | "out" | null {
   return null;
 }
 
+/** Backtick swaps the Court and Monitor in workspaces that offer the swap. */
+export function isPanelSwapKey(event: KeyInput): boolean {
+  return event.key === "`" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+}
+
 export type SegmentAction =
   | { type: "markIn" }
   | { type: "markOut" }

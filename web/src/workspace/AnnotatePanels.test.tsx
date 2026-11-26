@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MatchDetail, ShotPosition } from "../api/client";
@@ -13,9 +13,11 @@ import {
   type Selection,
   setRallyDetails,
 } from "../lib/annotate";
+import { FIT_COURT } from "../lib/courtView";
 import { inferred, newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { checkMatch, type RuleIssue } from "../lib/ruleChecks";
 import { ROSTER } from "../lib/testRoster";
+import { wheelEvent } from "../test/wheelEvent";
 import { InspectorPanel, type InspectorTab } from "./Inspector";
 import { RalliesPanel } from "./RalliesPanel";
 import { CourtPanel } from "./SidePanels";
@@ -366,6 +368,240 @@ describe("CourtPanel with a Shot selected", () => {
     // Inside the far Team name's strip, beyond the playing area: clamped to its edge.
     fireEvent.pointerDown(svg, { pointerId: 2, clientX: 320, clientY: 5 });
     expect(onSetLanding).toHaveBeenLastCalledWith({ x: 0, y: 32 });
+  });
+
+  it("places a landing in court feet in the horizontal diagram", () => {
+    const { games } = annotated();
+    const shot = games[0]!.rallies[0]!.entries[1];
+    if (shot?.type !== "shot") throw new Error("expected a Shot");
+    const onSetLanding = vi.fn<(point: { x: number; y: number }) => void>();
+    const { container } = render(
+      <CourtPanel
+        match={MATCH}
+        focused={false}
+        shot={shot}
+        onSetLanding={onSetLanding}
+        navigation={{
+          orientation: "horizontal",
+          view: FIT_COURT,
+          setView: () => {},
+          consumeSpaceForPan: () => false,
+          toggleOrientation: () => {},
+        }}
+      />,
+    );
+    const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+    // At 1 px per SVG unit, the letterboxed diagram is centered at (448, 330).
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 20, y: 10, width: 856, height: 640 }),
+    );
+    fireEvent.pointerDown(svg.querySelector(".zone-mc")!, {
+      pointerId: 1,
+      clientX: 568,
+      clientY: 250,
+    });
+    expect(onSetLanding).toHaveBeenCalledExactlyOnceWith({ x: 8, y: -12 });
+  });
+
+  it("pans over an Unknown dot, then lets a plain drag place that dot in the zoomed view", () => {
+    const onSetLanding = vi.fn<(point: { x: number; y: number }) => void>();
+    const onMoveShotPlayer = vi.fn<(id: string, point: { x: number; y: number }) => void>();
+    const onSelectPlayer = vi.fn<(id: string) => void>();
+    function ZoomableCourt() {
+      const [view, setView] = useState(FIT_COURT);
+      return (
+        <CourtPanel
+          match={MATCH}
+          focused={false}
+          shot={newShot(100)}
+          onSetLanding={onSetLanding}
+          onMoveShotPlayer={onMoveShotPlayer}
+          onSelectPlayer={onSelectPlayer}
+          navigation={{
+            orientation: "horizontal",
+            view,
+            setView,
+            consumeSpaceForPan: () => false,
+            toggleOrientation: () => {},
+          }}
+        />
+      );
+    }
+    const { container } = render(<ZoomableCourt />);
+    const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ width: 856, height: 640 }),
+    );
+    svg.setPointerCapture = vi.fn<(pointerId: number) => void>();
+    // A large trackpad pinch is still capped at one zoom step.
+    const pinch = wheelEvent({ clientX: 428, clientY: 320, ctrlKey: true, deltaY: -10_000 });
+    fireEvent(svg, pinch);
+    expect(pinch.defaultPrevented).toBe(true);
+    const unknown = svg.querySelector('[data-player-id="a1"] circle')!;
+    fireEvent.pointerDown(unknown, { pointerId: 1, button: 1, clientX: 661, clientY: 137 });
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 691, clientY: 149 });
+    fireEvent.pointerUp(svg, { pointerId: 1, button: 1, clientX: 691, clientY: 149 });
+    expect(onSetLanding).not.toHaveBeenCalled();
+    expect(onSelectPlayer).not.toHaveBeenCalled();
+    expect(onMoveShotPlayer).not.toHaveBeenCalled();
+    expect(unknown.getAttribute("r")).toBe("11");
+
+    fireEvent.pointerDown(unknown, { pointerId: 2, button: 0, clientX: 691, clientY: 149 });
+    fireEvent.pointerMove(svg, { pointerId: 2, clientX: 548, clientY: 242 });
+    fireEvent.pointerUp(svg, { pointerId: 2, clientX: 548, clientY: 242 });
+    expect(onSelectPlayer).toHaveBeenCalledExactlyOnceWith("a1");
+    expect(onMoveShotPlayer).toHaveBeenCalledExactlyOnceWith("a1", { x: 6, y: -6 });
+    expect(onSetLanding).not.toHaveBeenCalled();
+  });
+
+  it("fits on a surround double-click and saves a landing on a single surround click", () => {
+    vi.useFakeTimers();
+    try {
+      const onSetLanding = vi.fn<(point: { x: number; y: number }) => void>();
+      const shot = newShot(100);
+      function ZoomableCourt() {
+        const [view, setView] = useState({ zoom: 2, center: { x: 0, y: 0 } });
+        return (
+          <CourtPanel
+            match={MATCH}
+            focused={false}
+            shot={shot}
+            onSetLanding={onSetLanding}
+            navigation={{
+              orientation: "vertical",
+              view,
+              setView,
+              consumeSpaceForPan: () => false,
+              toggleOrientation: () => {},
+            }}
+          />
+        );
+      }
+      const { container } = render(<ZoomableCourt />);
+      const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 640, height: 672 }),
+      );
+      const surround = svg.querySelector(".surround")!;
+      const drawing = surround.parentElement!;
+      const click = { button: 0, clientX: 560, clientY: 336 };
+      expect(drawing.getAttribute("transform")).toBe("matrix(2 0 0 2 0 0)");
+      fireEvent.pointerDown(surround, { pointerId: 1, ...click });
+      fireEvent.pointerDown(surround, { pointerId: 2, ...click });
+      fireEvent.doubleClick(surround, click);
+      act(() => vi.runOnlyPendingTimers());
+      expect(drawing.getAttribute("transform")).toBe("matrix(1 0 0 1 0 0)");
+      expect(onSetLanding).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(surround, { pointerId: 3, button: 0, clientX: 440, clientY: 336 });
+      act(() => vi.runOnlyPendingTimers());
+      expect(onSetLanding).toHaveBeenCalledExactlyOnceWith({ x: 12, y: -0 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("places an Unknown Player at the live frame clicked even if playback moves on", () => {
+    vi.useFakeTimers();
+    try {
+      const placePlayer = vi.fn<(frame: number, point: { x: number; y: number }) => void>();
+      const liveCourt = (frame: number) => (
+        <CourtPanel
+          match={MATCH}
+          focused={false}
+          frame={frame}
+          selectedPlayerId="a1"
+          onMovePlayer={() => {}}
+          onPlaceOnCourt={(point) => placePlayer(frame, point)}
+          navigation={{
+            orientation: "vertical",
+            view: FIT_COURT,
+            setView: () => {},
+            consumeSpaceForPan: () => false,
+            toggleOrientation: () => {},
+          }}
+        />
+      );
+      const { container, rerender } = render(liveCourt(120));
+      const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 320, height: 672 }),
+      );
+      fireEvent.pointerDown(svg.querySelector(".surround")!, {
+        pointerId: 1,
+        clientX: 280,
+        clientY: 216,
+      });
+      rerender(liveCourt(150));
+      act(() => vi.runOnlyPendingTimers());
+      expect(placePlayer).toHaveBeenCalledExactlyOnceWith(120, { x: 12, y: 12 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    "Player change",
+    "Shot change",
+    "orientation change",
+    "pointer cancel",
+    "unmount",
+  ] as const)("discards a pending surround click after %s", (cause) => {
+    vi.useFakeTimers();
+    try {
+      const onSetLanding = vi.fn<(point: { x: number; y: number }) => void>();
+      const props = {
+        match: MATCH,
+        focused: false,
+        shot: newShot(100),
+        selectedPlayerId: "a1",
+        onSetLanding,
+        navigation: {
+          orientation: "vertical" as const,
+          view: FIT_COURT,
+          setView: () => {},
+          consumeSpaceForPan: () => false,
+          toggleOrientation: () => {},
+        },
+      };
+      const { container, rerender, unmount } = render(<CourtPanel {...props} />);
+      const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 320, height: 672 }),
+      );
+      fireEvent.pointerDown(svg.querySelector(".surround")!, {
+        pointerId: 1,
+        clientX: 280,
+        clientY: 216,
+      });
+
+      switch (cause) {
+        case "Player change":
+          rerender(<CourtPanel {...props} selectedPlayerId="a2" />);
+          break;
+        case "Shot change":
+          rerender(<CourtPanel {...props} shot={newShot(101)} />);
+          break;
+        case "orientation change":
+          rerender(
+            <CourtPanel
+              {...props}
+              navigation={{ ...props.navigation, orientation: "horizontal" }}
+            />,
+          );
+          break;
+        case "pointer cancel":
+          fireEvent.pointerCancel(svg, { pointerId: 1 });
+          break;
+        case "unmount":
+          unmount();
+          break;
+      }
+      act(() => vi.runOnlyPendingTimers());
+      expect(onSetLanding).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("draws a Player standing well behind the baseline where they are", () => {

@@ -1,3 +1,5 @@
+import type { CourtOrientation } from "./courtView";
+
 /**
  * The workspace's resizable panel sizes, in CSS pixels, and how they are kept per browser.
  * Splitters change them; anything stored that is missing or out of range falls back to the
@@ -5,7 +7,7 @@
  */
 
 export interface PanelSizes {
-  /** Width of the right column (Court and Inspector). */
+  /** Width of the right column. */
   side: number;
   /** Height of the bottom row (Rallies and Timeline). */
   bottom: number;
@@ -60,5 +62,48 @@ export function saveSizes(sizes: PanelSizes): void {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sizes));
   } catch {
     // Storage can be unavailable (private window, blocked site data); sizes then last a session.
+  }
+}
+
+export type CourtSlot = "main" | "side";
+
+export interface CourtLayout {
+  swapped: boolean;
+  orientation: Record<CourtSlot, CourtOrientation>;
+}
+
+export const COURT_LAYOUT_KEY = "pb-tokei:court-layout";
+const DEFAULT_COURT_LAYOUT: CourtLayout = {
+  swapped: false,
+  orientation: { main: "horizontal", side: "vertical" },
+};
+
+function loadOrientation(value: unknown, slot: CourtSlot): CourtOrientation {
+  return value === "horizontal" || value === "vertical"
+    ? value
+    : DEFAULT_COURT_LAYOUT.orientation[slot];
+}
+
+export function loadCourtLayout(): CourtLayout {
+  try {
+    const stored = window.localStorage.getItem(COURT_LAYOUT_KEY);
+    const saved = stored ? (JSON.parse(stored) as Partial<CourtLayout> | null) : null;
+    return {
+      swapped: typeof saved?.swapped === "boolean" ? saved.swapped : DEFAULT_COURT_LAYOUT.swapped,
+      orientation: {
+        main: loadOrientation(saved?.orientation?.main, "main"),
+        side: loadOrientation(saved?.orientation?.side, "side"),
+      },
+    };
+  } catch {
+    return DEFAULT_COURT_LAYOUT;
+  }
+}
+
+export function saveCourtLayout(layout: CourtLayout): void {
+  try {
+    window.localStorage.setItem(COURT_LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // The preference still applies while this Match is open.
   }
 }

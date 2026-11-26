@@ -5,6 +5,7 @@ import {
   calibrationKeyAction,
   changeSpeed,
   historyKeyAction,
+  isPanelSwapKey,
   isTextEntry,
   keyAction,
   type KeyInput,
@@ -136,6 +137,16 @@ describe("zoomKeyAction", () => {
     expect(zoomKeyAction(press("-", { ctrlKey: true }))).toBeNull();
     expect(zoomKeyAction(press("+", { shiftKey: true }))).toBeNull();
     expect(zoomKeyAction(press("m"))).toBeNull();
+  });
+});
+
+describe("isPanelSwapKey", () => {
+  it("accepts only unmodified backtick", () => {
+    expect(isPanelSwapKey(press("`"))).toBe(true);
+    expect(isPanelSwapKey(press("~"))).toBe(false);
+    for (const modifier of ["shiftKey", "altKey", "ctrlKey", "metaKey"] as const) {
+      expect(isPanelSwapKey(press("`", { [modifier]: true }))).toBe(false);
+    }
   });
 });
 

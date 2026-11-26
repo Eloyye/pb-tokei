@@ -37,7 +37,8 @@ A clickable prototype with sample data and working keys lives in [design/annotat
 
 - **Top bar.** Holds the brand, a breadcrumb (`Home › Tournament › Teams`), the workspace tabs in the center, and on the right the open Rally Log's filename (full path on hover; click it to switch Rally Log, see below) and a `?` button. There is no menu bar. The active workspace is shown in accent blue and underlined.
 - **Panels** have a 28 px header with tab labels, and are separated by 4 px gutters. The panel last clicked gets a 1 px accent outline (Premiere's focused panel).
-- **Resizing.** Three splitters: right column width, bottom row height, and Rallies panel width. Sizes are remembered per browser in `localStorage`. There is no drag-docking.
+- **Resizing.** Three splitters set the right column width, bottom row height, and Rallies panel width. Sizes are remembered per browser in `localStorage`.
+- **Panel swap.** In Annotate and Review, click **⇄** in either the Court or Monitor header or press backtick (`` ` ``) to put the Court in the wide left slot and the Monitor above the Inspector. The browser remembers the swap. Calibrate always shows the Monitor in the wide slot.
 - **Status bar** (24 px), left to right:
   - save state
   - the last action or hint
@@ -53,13 +54,15 @@ A clickable prototype with sample data and working keys lives in [design/annotat
 
 The workspace tabs are how the operator switches jobs. All three tabs use the same frame.
 
-| Workspace | Right column | Timeline | Notes |
+| Workspace | Right column in the default layout | Timeline | Notes |
 |---|---|---|---|
 | **Calibrate** (#10, #11, #51) | Two tabs: **Landmarks** and **Players**. Under **Landmarks**: the Calibration in effect at the playhead (mini court, 12-Landmark checklist with leave-one-out errors in feet, Camera Motion status and clickable unmapped ranges with one-click re-anchoring), then every Calibration of each Camera View (click to seek, × to delete, **Use here**). Under **Players**: explicit **Track Players** / **Cancel** with progress %, active compute device badge (`MPS` / `CUDA` / `CPU`), and per-segment status (prioritising the Play Segment under the playhead first); 4-Player checklist showing Zone, Settled, certainty, and active selection; 1-click **Swap A**, **Swap B**, and **Swap ends** buttons acting from the playhead forward; interactive Court diagram preview; and clickable lists of anchors and end changes (click to seek, × to delete) | Segments track editable (with amber hatching on unmapped Camera Motion ranges); Issues track shows clickable amber bars for unmapped ranges; Rallies and Shots dimmed | Under **Landmarks**: Landmarks are clicked on the Monitor with a 4× magnifier and lens-corrected court template; `Tab` skips, `V` marks not visible, `C` confirms carried-over clicks, `X` clears, `N` starts a new Calibration. Under **Players**: detected person boxes, foot dots, and Player labels render over the Monitor for 1-click/1-drag anchoring (see [Player positions and anchoring](#player-positions-and-anchoring)). Play Segment keys (`Shift+I`/`Shift+O`, `1`/`2`, `Backspace`, `Esc`, and edge drags) work on both tabs. |
 | **Annotate** (#11, #12, Gold) | Court diagram (the selected Shot's recorded positions, or live tracked Players when no Shot is selected) + Inspector | All tracks | Monitor header includes a toggleable **Players** overlay (boxes, foot dots, labels) plus quick **Swap A**, **Swap B**, and **Swap ends** controls; parked on the selected Shot's contact, Swap A / Swap B also swap those teammates on that Shot. A whole Game is entered with the keyboard (see [Keymap](#keymap)), apart from landing clicks on the Court diagram. `Enter` marks the Rally Done. |
 | **Review** (#30, Assisted) | Court + Inspector | All tracks; Shot markers with low-confidence fields get an amber dot | Low-confidence fields get an amber outline and a percentage. `N`/`Shift+N` move between them. `Enter` accepts the Rally. Threshold slider in the status bar. |
 
 Each key's meaning is set by the workspace. The same key never does two things in one workspace.
+
+Annotate and Review share the saved panel swap. In the small slot, the Monitor shows timecode in its header and keeps its playback controls. In Annotate it also keeps **Players**, **Swap A**, **Swap B**, and **Swap ends**. Click it to bring the focus outline to the Monitor.
 
 ## Home
 
@@ -103,9 +106,10 @@ Playback pauses at the selected Rally's end frame when playback started at or be
 
 ## Court diagram
 
-A top-down court in the right column. The near end, at the bottom, is the Main View camera's end, so it lines up with the video.
+A top-down Court with an orientation toggle in its header. The browser remembers the orientation for each slot. The side slot starts vertical, with the Main View camera's near end at the bottom and Team names above and below. The wide slot starts horizontal, with the near end on the right, the camera's left sideline at the bottom, and Team names to the left and right. The Zone labels and 12 ft ticks move to the top and bottom edges.
 
-- The diagram draws the standard 34 × 64 ft playing area around the court (32 ft from the net, 16 ft from the centre line), so a Player standing well behind a baseline is drawn where they are. Team names sit outside it, above and below. A Player tracked beyond the playing area is drawn at its edge, and their dot's title still gives the real position.
+- Scroll or pinch on a trackpad to zoom around the pointer, up to 8×. Hold `Space` and drag or drag with the middle mouse button to pan. Click **Fit** or double-click the surround outside the court lines to show the whole playing area. The zoom and pan reset when you switch Matches. These controls also work in Calibrate → Players.
+- The diagram draws the 32 × 64 ft playing area around the court (32 ft from the net, 16 ft from the centre line). A Player tracked beyond that area is drawn at its edge, and their dot's title gives the real position. Dots, labels, and line widths keep their size while you zoom.
 
 - Zone bands are shaded: Frontcourt 0–9 ft, Midcourt 9–18 ft, Backcourt 18 ft and beyond. Dashed lines mark 9 and 18 ft, ticks outside the sidelines mark 12 ft (the Established rule), and the side labels read FC / MC / BC.
 - **Players at the selected Shot.** Four dots in Team colors with initials, from the Shot's recorded `shot_positions`:
@@ -274,7 +278,7 @@ Every change autosaves at once through the API. There is no Save button. The sta
 
 Playback keys are unchanged from the current app (`web/src/lib/keymap.ts`). Plain letters and digits never move the playhead.
 
-This is the Annotate and Review keymap. **Today** marks the inputs that work in the current app (✓). The remaining shortcuts are planned with the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet lists the current shortcuts, Timeline gestures and the Soft/Hard checklist. Shift combinations are matched by physical key, so `Shift+2` works on any layout.
+This is the Annotate and Review keymap. **Today** marks the inputs that work in the current app (✓). The remaining shortcuts are planned with the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet lists the current shortcuts, Court and Timeline gestures, and the Soft/Hard checklist. Shift combinations are matched by physical key, so `Shift+2` works on any layout.
 
 | Action | Input | Today |
 |---|---|---|
@@ -288,6 +292,10 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Next / previous rule issue (chronological across Games, wraps around) | `F8` / `Shift+F8` | ✓ (Annotate and Review) |
 | Zoom the Timeline | `-` / `=`, vertical scroll or pinch | ✓ |
 | Pan the Timeline | Horizontal swipe, `Shift`+scroll, or scroll on the Overview bar | ✓ |
+| Swap Court and Monitor | Backtick (`` ` ``) or **⇄** in either header | ✓ (Annotate and Review) |
+| Zoom the Court around the pointer | Scroll or trackpad pinch | ✓ |
+| Pan the Court | `Space`+drag or middle-button drag | ✓ |
+| Fit the whole playing area | **Fit** or double-click the Court surround | ✓ |
 | Move a Rally's start or end (start only when open-ended) | Drag a clip edge on the Rallies track | ✓ in Annotate and Review |
 | Move a Play Segment's start or end | Drag a clip edge on the Segments track | ✓ in all workspaces |
 | Move field cursor | `Tab` / `Shift+Tab` | ✓ (in Calibrate, `Tab` skips to the next Landmark) |

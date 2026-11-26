@@ -33,6 +33,15 @@ const GROUPS: [string, [string[], string][]][] = [
     ],
   ],
   [
+    "Court",
+    [
+      [["Scroll ↑ / ↓", "Trackpad pinch"], "Zoom around the pointer"],
+      [["Space + drag", "Middle drag"], "Pan the Court diagram"],
+      [["Fit", "Double-click surround"], "Fit the whole playing area"],
+      [["`"], "Swap Court and Monitor in Annotate and Review"],
+    ],
+  ],
+  [
     "Calibrate: Play Segments",
     [
       [["⇧I"], "Start a segment, or move its start here"],
@@ -124,7 +133,7 @@ const GROUPS: [string, [string[], string][]][] = [
   ],
 ];
 
-/** The shortcuts and Timeline gestures that work today. */
+/** The shortcuts and gestures that work today. */
 export function ShortcutSheet({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {

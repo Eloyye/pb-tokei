@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CalibrationOut,
@@ -19,6 +19,7 @@ import { frameToSeekTime } from "../lib/frames";
 import { newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { ROSTER } from "../lib/testRoster";
 import { ShortcutSheet } from "../shell/ShortcutSheet";
+import { wheelEvent } from "../test/wheelEvent";
 import { Workspace } from "./Workspace";
 
 const apiMocks = vi.hoisted(() => ({
@@ -115,11 +116,14 @@ function sampleGames(): Game[] {
 function renderWorkspace(workspace: "annotate" | "review" | "calibrate", games: Game[]) {
   apiMocks.getGames.mockResolvedValue(games);
   apiMocks.replaceGames.mockImplementation(async (_id: string, next: Game[]) => next);
-  return render(
-    <QueryClientProvider client={new QueryClient()}>
-      <Workspace match={MATCH} workspace={workspace} />
-    </QueryClientProvider>,
+  const client = new QueryClient();
+  const tree = (active: typeof workspace) => (
+    <QueryClientProvider client={client}>
+      <Workspace match={MATCH} workspace={active} />
+    </QueryClientProvider>
   );
+  const result = render(tree(workspace));
+  return { ...result, setWorkspace: (active: typeof workspace) => result.rerender(tree(active)) };
 }
 
 beforeEach(() => {
@@ -165,7 +169,168 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.clearAllMocks();
+});
+
+describe("Workspace Court layout", () => {
+  it("swaps slots in Annotate and Review, preserves the video and sizes, and restores on reload", () => {
+    const { container, setWorkspace, unmount } = renderWorkspace("annotate", []);
+    const monitor = container.querySelector<HTMLElement>('[data-panel="monitor"]')!;
+    const court = container.querySelector<HTMLElement>('[data-panel="court"]')!;
+    const sizes = container.querySelector<HTMLElement>(".workspace")!.style.cssText;
+    const video = loadVideoMetadata(container);
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(monitor.classList.contains("area-main")).toBe(true);
+    expect(court.classList.contains("area-side")).toBe(true);
+    expect(court.querySelector("svg")?.getAttribute("data-orientation")).toBe("vertical");
+
+    fireEvent.click(within(monitor).getByRole("button", { name: "Swap Court and Monitor" }));
+    expect(court.classList.contains("area-main")).toBe(true);
+    expect(monitor.classList.contains("area-side")).toBe(true);
+    expect(court.querySelector("svg")?.getAttribute("data-orientation")).toBe("horizontal");
+    expect(container.querySelector<HTMLElement>(".workspace")!.style.cssText).toBe(sizes);
+    expect(monitor.querySelector("video")).toBe(video);
+    expect(video.currentTime).toBe(frameToSeekTime(1));
+    expect(within(monitor).getByRole("button", { name: "Play" })).toBeTruthy();
+    expect(monitor.querySelector(".panel-head .monitor-readout")?.textContent).toBe("00:00:00:01");
+    const players = within(monitor).getByRole("button", { name: "Players" });
+    fireEvent.click(players);
+    expect(players.getAttribute("aria-pressed")).toBe("false");
+    for (const name of ["Swap A", "Swap B", "Swap ends"]) {
+      expect(within(monitor).getByRole("button", { name })).toBeTruthy();
+    }
+    fireEvent.pointerDown(court);
+    fireEvent.pointerDown(video);
+    expect(monitor.classList.contains("focused")).toBe(true);
+
+    setWorkspace("calibrate");
+    expect(monitor.classList.contains("area-main")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Swap Court and Monitor" })).toBeNull();
+    fireEvent.keyDown(window, { key: "`" });
+    expect(monitor.classList.contains("area-main")).toBe(true);
+
+    setWorkspace("review");
+    expect(monitor.classList.contains("area-side")).toBe(true);
+    fireEvent.keyDown(window, { key: "`" });
+    expect(monitor.classList.contains("area-main")).toBe(true);
+    fireEvent.click(
+      within(container.querySelector<HTMLElement>('[data-panel="court"]')!).getByRole("button", {
+        name: "Swap Court and Monitor",
+      }),
+    );
+    expect(monitor.classList.contains("area-side")).toBe(true);
+    unmount();
+
+    const reloaded = renderWorkspace("annotate", []);
+    expect(reloaded.container.querySelector('[data-panel="court"].area-main')).toBeTruthy();
+    expect(reloaded.container.querySelector('[data-panel="monitor"].area-side')).toBeTruthy();
+  });
+
+  it("remembers the orientation of each slot separately", () => {
+    const { container, unmount } = renderWorkspace("annotate", []);
+    const orientation = () =>
+      within(container)
+        .getByRole("img", { name: "Court diagram" })
+        .getAttribute("data-orientation");
+    fireEvent.click(screen.getByRole("button", { name: "Vertical" }));
+    expect(orientation()).toBe("horizontal");
+    fireEvent.keyDown(window, { key: "`" });
+    expect(orientation()).toBe("horizontal");
+    fireEvent.click(screen.getByRole("button", { name: "Horizontal" }));
+    expect(orientation()).toBe("vertical");
+    unmount();
+
+    const reloaded = renderWorkspace("annotate", []);
+    const svg = within(reloaded.container).getByRole("img", { name: "Court diagram" });
+    expect(svg.getAttribute("data-orientation")).toBe("vertical");
+    fireEvent.keyDown(window, { key: "`" });
+    expect(svg.getAttribute("data-orientation")).toBe("horizontal");
+  });
+
+  it.each(["annotate", "calibrate"] as const)(
+    "uses Space for a Court pan and for standalone playback in %s",
+    (workspace) => {
+      const { container } = renderWorkspace(workspace, []);
+      const video = loadVideoMetadata(container);
+      const play = vi.spyOn(video, "play").mockResolvedValue();
+      if (workspace === "calibrate") {
+        fireEvent.click(screen.getByRole("tab", { name: "Players" }));
+      }
+      const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 320, height: 672 }),
+      );
+      svg.setPointerCapture = vi.fn<(pointerId: number) => void>();
+      fireEvent(svg, wheelEvent({ clientX: 160, clientY: 336, deltaY: -100 }));
+      const drawing = svg.querySelector(".surround")!.parentElement!;
+      expect(drawing.getAttribute("transform")).toBe("matrix(1.5 0 0 1.5 0 0)");
+
+      const fit = screen.getByRole("button", { name: "Fit" });
+      if (workspace === "annotate") fit.focus();
+      const keyTarget = workspace === "annotate" ? fit : window;
+      fireEvent.keyDown(keyTarget, { key: " " });
+      fireEvent.pointerDown(svg, { pointerId: 1, clientX: 160, clientY: 336 });
+      fireEvent.pointerMove(svg, { pointerId: 1, clientX: 190, clientY: 360 });
+      fireEvent.pointerUp(svg, { pointerId: 1, clientX: 190, clientY: 360 });
+      expect(fireEvent.keyUp(keyTarget, { key: " " })).toBe(false);
+      expect(drawing.getAttribute("transform")).toBe("matrix(1.5 0 0 1.5 30 24)");
+      expect(play).not.toHaveBeenCalled();
+
+      fireEvent.click(fit);
+      expect(drawing.getAttribute("transform")).toBe("matrix(1 0 0 1 0 0)");
+      fireEvent.keyDown(window, { key: " " });
+      fireEvent.keyUp(window, { key: " " });
+      expect(play).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("drops a pending Space playback action on blur or when focus moves into a text input", () => {
+    const { container } = renderWorkspace("annotate", []);
+    const play = vi.spyOn(loadVideoMetadata(container), "play").mockResolvedValue();
+
+    fireEvent.keyDown(window, { key: " " });
+    fireEvent.blur(window);
+    fireEvent.keyUp(window, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: " " });
+    fireEvent.keyDown(window, { key: "/" });
+    const input = screen.getByRole("textbox", { name: /go to a frame number/i });
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyUp(input, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("lets a focused Court control handle Space without toggling playback", () => {
+    const { container } = renderWorkspace("annotate", []);
+    const play = vi.spyOn(loadVideoMetadata(container), "play").mockResolvedValue();
+    const fit = screen.getByRole("button", { name: "Fit" });
+    fit.focus();
+
+    expect(fireEvent.keyDown(fit, { key: " " })).toBe(true);
+    expect(fireEvent.keyUp(fit, { key: " " })).toBe(true);
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("replays the selected Rally from its start on Space release at its end", async () => {
+    const { container } = renderWorkspace("annotate", sampleGames());
+    const video = loadVideoMetadata(container);
+    const play = vi.spyOn(video, "play").mockResolvedValue();
+    await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    fireEvent.click(container.querySelector(".r-row")!);
+    fireEvent.keyDown(window, { key: "/" });
+    const input = screen.getByRole("textbox", { name: /go to a frame number/i });
+    fireEvent.change(input, { target: { value: "300" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(video.currentTime).toBe(frameToSeekTime(300));
+
+    fireEvent.keyDown(window, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+    fireEvent.keyUp(window, { key: " " });
+    expect(video.currentTime).toBe(frameToSeekTime(100));
+    expect(play).toHaveBeenCalledTimes(1);
+  });
 });
 
 function loadVideoMetadata(container: HTMLElement) {
