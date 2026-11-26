@@ -14,6 +14,10 @@ export interface PlayerControls {
   seek(frame: number): void;
   step(frames: number, pause: boolean): void;
   togglePlay(): void;
+  /** Pauses if playing. */
+  pause(): void;
+  /** Plays from the current frame if paused. */
+  play(): void;
   setSpeed(speed: Speed): void;
 }
 
@@ -64,6 +68,17 @@ export function usePlayer(
       // Rejected only when interrupted by a pause or a new source; the state follows events.
       video.play().catch(() => {});
     }
+  }, [videoRef]);
+
+  const pause = useCallback(() => {
+    const video = videoRef.current;
+    if (video && !video.paused) video.pause();
+  }, [videoRef]);
+
+  const play = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || totalRef.current === 0 || !video.paused) return;
+    if (frameRef.current < totalRef.current - 1) video.play().catch(() => {});
   }, [videoRef]);
 
   const setSpeed = useCallback(
@@ -134,6 +149,6 @@ export function usePlayer(
 
   return [
     { frame, totalFrames, playing, speed },
-    { seek, step, togglePlay, setSpeed },
+    { seek, step, togglePlay, pause, play, setSpeed },
   ];
 }

@@ -25,6 +25,8 @@ const MATCH: MatchDetail = {
   franchise_b: null,
   video_status: "ready",
   footage_job: null,
+  done_rallies: 0,
+  total_rallies: 0,
   fix_command: null,
   source_url: "https://example.com/v",
   original_present: true,

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import {
+  annotateKeyAction,
   calibrationKeyAction,
   changeSpeed,
   historyKeyAction,
@@ -184,5 +185,68 @@ describe("calibrationKeyAction", () => {
     expect(calibrationKeyAction(press("n", { metaKey: true }))).toBeNull();
     expect(calibrationKeyAction(press("v", { ctrlKey: true }))).toBeNull();
     expect(calibrationKeyAction(press("c", { metaKey: true }))).toBeNull();
+  });
+});
+
+function shift(code: string, key = ""): KeyInput {
+  return press(key, { shiftKey: true, code });
+}
+
+describe("annotateKeyAction", () => {
+  it("maps Shift Rally keys by physical key, whatever the layout prints", () => {
+    expect(annotateKeyAction(shift("KeyI", "I"))).toEqual({ type: "rallyStart" });
+    expect(annotateKeyAction(shift("KeyO", "O"))).toEqual({ type: "rallyEnd" });
+    expect(annotateKeyAction(shift("KeyP", "P"))).toEqual({ type: "refereeCall", call: "point" });
+    expect(annotateKeyAction(shift("Digit2", "@"))).toEqual({
+      type: "refereeCall",
+      call: "second_server",
+    });
+    expect(annotateKeyAction(shift("Digit2", '"'))).toEqual({
+      type: "refereeCall",
+      call: "second_server",
+    });
+    expect(annotateKeyAction(shift("KeyX", "X"))).toEqual({
+      type: "refereeCall",
+      call: "side_out",
+    });
+    expect(annotateKeyAction(shift("KeyS"))).toEqual({ type: "rallyForm" });
+    expect(annotateKeyAction(shift("KeyC"))).toEqual({ type: "challengeForm" });
+    expect(annotateKeyAction(shift("KeyU"))).toEqual({ type: "unseenRally" });
+    expect(annotateKeyAction(shift("KeyH"))).toEqual({ type: "switchTeam" });
+    expect(annotateKeyAction(shift("KeyG"))).toEqual({ type: "gap", parity: "even" });
+    expect(annotateKeyAction(shift("Backspace"))).toEqual({ type: "deleteRally" });
+    expect(annotateKeyAction(shift("Enter"))).toEqual({ type: "nextGame" });
+    expect(annotateKeyAction(shift("Tab", "Tab"))).toEqual({ type: "cursor", direction: -1 });
+  });
+
+  it("maps plain Shot keys", () => {
+    expect(annotateKeyAction(press("m"))).toEqual({ type: "addShot" });
+    expect(annotateKeyAction(press("S"))).toEqual({ type: "shotClass", value: "soft" });
+    expect(annotateKeyAction(press("h"))).toEqual({ type: "shotClass", value: "hard" });
+    expect(annotateKeyAction(press("l"))).toEqual({ type: "shotClass", value: "lob" });
+    expect(annotateKeyAction(press("o"))).toEqual({ type: "shotClass", value: "overhead" });
+    expect(annotateKeyAction(press("v"))).toEqual({ type: "contactKind", value: "volley" });
+    expect(annotateKeyAction(press("b"))).toEqual({ type: "contactKind", value: "bounce" });
+    expect(annotateKeyAction(press("x"))).toEqual({ type: "swapPartner" });
+    expect(annotateKeyAction(press("e"))).toEqual({ type: "flag", flag: "erne" });
+    expect(annotateKeyAction(press("t"))).toEqual({ type: "flag", flag: "atp" });
+    expect(annotateKeyAction(press("5"))).toEqual({ type: "error", kind: "body_hit" });
+    expect(annotateKeyAction(press("0"))).toEqual({ type: "error", kind: null });
+    expect(annotateKeyAction(press("g"))).toEqual({ type: "gap", parity: "odd" });
+    expect(annotateKeyAction(press("c"))).toEqual({ type: "cycleCertainty" });
+    expect(annotateKeyAction(press("Backspace"))).toEqual({ type: "deleteEntry" });
+    expect(annotateKeyAction(press("Enter"))).toEqual({ type: "done" });
+    expect(annotateKeyAction(press("ArrowDown"))).toEqual({ type: "shot", direction: 1 });
+    expect(annotateKeyAction(press("PageUp"))).toEqual({ type: "rally", direction: -1 });
+    expect(annotateKeyAction(press("Tab"))).toEqual({ type: "cursor", direction: 1 });
+  });
+
+  it("leaves playback keys and browser shortcuts alone", () => {
+    expect(annotateKeyAction(press(" "))).toBeNull();
+    expect(annotateKeyAction(press("ArrowLeft"))).toBeNull();
+    expect(annotateKeyAction(press("ArrowLeft", { shiftKey: true, code: "ArrowLeft" }))).toBeNull();
+    expect(annotateKeyAction(press("z", { metaKey: true }))).toBeNull();
+    expect(annotateKeyAction(press("m", { altKey: true }))).toBeNull();
+    expect(annotateKeyAction(press("["))).toBeNull();
   });
 });

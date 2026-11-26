@@ -17,6 +17,8 @@ export type PlayerAction =
 
 export interface KeyInput {
   key: string;
+  /** The physical key (`KeyI`, `Digit2`...), for Shift combinations whose `key` varies. */
+  code?: string;
   shiftKey: boolean;
   altKey: boolean;
   ctrlKey: boolean;
@@ -145,6 +147,132 @@ export function calibrationKeyAction(event: KeyInput): CalibrationAction | null 
     case "c":
     case "C":
       return "confirm";
+    default:
+      return null;
+  }
+}
+
+export type AnnotateAction =
+  | { type: "rallyStart" }
+  | { type: "rallyEnd" }
+  | { type: "refereeCall"; call: "point" | "second_server" | "side_out" }
+  | { type: "rallyForm" }
+  | { type: "challengeForm" }
+  | { type: "unseenRally" }
+  | { type: "deleteRally" }
+  | { type: "done" }
+  | { type: "nextGame" }
+  | { type: "addShot" }
+  | { type: "shotClass"; value: "soft" | "hard" | "lob" | "overhead" }
+  | { type: "contactKind"; value: "volley" | "bounce" }
+  | { type: "swapPartner" }
+  | { type: "switchTeam" }
+  | { type: "flag"; flag: "erne" | "atp" }
+  | {
+      type: "error";
+      kind: "net" | "out" | "kitchen_fault" | "double_hit" | "body_hit" | null;
+    }
+  | { type: "gap"; parity: "odd" | "even" }
+  | { type: "deleteEntry" }
+  | { type: "cycleCertainty" }
+  | { type: "shot"; direction: 1 | -1 }
+  | { type: "rally"; direction: 1 | -1 }
+  | { type: "cursor"; direction: 1 | -1 }
+  | { type: "escape" };
+
+const ERROR_KEYS = {
+  "1": "net",
+  "2": "out",
+  "3": "kitchen_fault",
+  "4": "double_hit",
+  "5": "body_hit",
+} as const;
+
+/**
+ * Annotate's Rally and Shot keys (#12; docs/annotation-ui.md, "Keymap"). Shift combinations are
+ * matched by `event.code` so `Shift+2` works whatever the layout prints. `null` for anything
+ * else, including playback keys.
+ */
+export function annotateKeyAction(event: KeyInput): AnnotateAction | null {
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  const code = event.code ?? "";
+  const key = event.key;
+  if (event.shiftKey) {
+    switch (code) {
+      case "KeyI":
+        return { type: "rallyStart" };
+      case "KeyO":
+        return { type: "rallyEnd" };
+      case "KeyP":
+        return { type: "refereeCall", call: "point" };
+      case "Digit2":
+        return { type: "refereeCall", call: "second_server" };
+      case "KeyX":
+        return { type: "refereeCall", call: "side_out" };
+      case "KeyS":
+        return { type: "rallyForm" };
+      case "KeyC":
+        return { type: "challengeForm" };
+      case "KeyU":
+        return { type: "unseenRally" };
+      case "KeyH":
+        return { type: "switchTeam" };
+      case "KeyG":
+        return { type: "gap", parity: "even" };
+      case "Backspace":
+        return { type: "deleteRally" };
+      case "Enter":
+        return { type: "nextGame" };
+      case "Tab":
+        return { type: "cursor", direction: -1 };
+    }
+    if (key === "Tab") return { type: "cursor", direction: -1 };
+    return null;
+  }
+  if (key in ERROR_KEYS) return { type: "error", kind: ERROR_KEYS[key as keyof typeof ERROR_KEYS] };
+  switch (key.toLowerCase()) {
+    case "0":
+      return { type: "error", kind: null };
+    case "m":
+      return { type: "addShot" };
+    case "s":
+      return { type: "shotClass", value: "soft" };
+    case "h":
+      return { type: "shotClass", value: "hard" };
+    case "l":
+      return { type: "shotClass", value: "lob" };
+    case "o":
+      return { type: "shotClass", value: "overhead" };
+    case "v":
+      return { type: "contactKind", value: "volley" };
+    case "b":
+      return { type: "contactKind", value: "bounce" };
+    case "x":
+      return { type: "swapPartner" };
+    case "e":
+      return { type: "flag", flag: "erne" };
+    case "t":
+      return { type: "flag", flag: "atp" };
+    case "g":
+      return { type: "gap", parity: "odd" };
+    case "c":
+      return { type: "cycleCertainty" };
+    case "backspace":
+      return { type: "deleteEntry" };
+    case "enter":
+      return { type: "done" };
+    case "arrowup":
+      return { type: "shot", direction: -1 };
+    case "arrowdown":
+      return { type: "shot", direction: 1 };
+    case "pageup":
+      return { type: "rally", direction: -1 };
+    case "pagedown":
+      return { type: "rally", direction: 1 };
+    case "tab":
+      return { type: "cursor", direction: 1 };
+    case "escape":
+      return { type: "escape" };
     default:
       return null;
   }

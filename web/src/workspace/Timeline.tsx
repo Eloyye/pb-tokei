@@ -1,5 +1,7 @@
 import { type PointerEvent, useEffect, useEffectEvent, useRef, useState } from "react";
-import type { PlaySegment, UnmappedRangeOut } from "../api/client";
+import type { Game, PlaySegment, UnmappedRangeOut } from "../api/client";
+import type { Selection } from "../lib/annotate";
+import { formatScore, type Roster, teamKey, teamOf } from "../lib/rallyLog";
 import { clampFrame, formatTimecode } from "../lib/frames";
 import { describe, moveEdge, type PendingSegment, VIEW_LABELS } from "../lib/segments";
 import {
@@ -28,10 +30,33 @@ interface EdgeDrag {
   frame: number;
 }
 
+interface PinDrag {
+  game: number;
+  rally: number;
+  entry: number;
+  from: number;
+  frame: number;
+}
+
 type TimelineDrag = { pointerId: number; clientX: number } & (
   | { kind: "scrub"; frame: number | null }
   | ({ kind: "edge" } & EdgeDrag)
+  | ({ kind: "pin" } & PinDrag)
 );
+
+const STATUS_MARK = { empty: "○", in_progress: "●", done: "✓" } as const;
+
+/** Rally Log content for the Rallies and Shots tracks (Annotate). */
+export interface TimelineRallies {
+  games: readonly Game[];
+  selection: Selection;
+  roster: Roster;
+  onSelectRally: (game: number, rally: number) => void;
+  onSelectEntry: (game: number, rally: number, entry: number) => void;
+  onMoveContact: (game: number, rally: number, entry: number, frame: number) => void;
+  /** Fits the view to the selected Rally (or the whole video without one). */
+  onFitRally: () => void;
+}
 
 /**
  * The Timeline: an overview of the whole video, a ruler with the playhead, and one lane per
@@ -51,6 +76,7 @@ export function Timeline({
   pending,
   editableSegments,
   onMoveEdge,
+  rallyLog,
 }: {
   view: FrameRange;
   onViewChange: (view: FrameRange) => void;
@@ -69,6 +95,8 @@ export function Timeline({
   /** Calibrate marks Play Segments, so the Segments track is the one being edited there. */
   editableSegments: boolean;
   onMoveEdge: (segmentStart: number, edge: "start" | "end", frame: number) => void;
+  /** The Rally Log's Rallies and Shots, in Annotate; the tracks stay empty without it. */
+  rallyLog?: TimelineRallies;
 }) {
   const whole = fullView(totalFrames);
   const ticks = rulerTicks(view);
@@ -80,6 +108,7 @@ export function Timeline({
   const queuedWheelView = useRef<{ from: FrameRange; to: FrameRange } | null>(null);
   const activeDrag = useRef<TimelineDrag | null>(null);
   const [edgePreview, setEdgePreview] = useState<EdgeDrag>();
+  const [pinPreview, setPinPreview] = useState<PinDrag>();
   const shown =
     segments && edgePreview
       ? moveEdge(segments, null, edgePreview.segmentStart, edgePreview.edge, edgePreview.frame)
@@ -100,6 +129,8 @@ export function Timeline({
     activeDrag.current = next;
     if (next.kind === "edge") {
       if (target !== drag.frame) setEdgePreview(next);
+    } else if (next.kind === "pin") {
+      if (target !== drag.frame) setPinPreview(next);
     } else if (target !== drag.frame || (playing && target !== frame)) {
       // Playback can advance while the scrub still points to the same frame.
       onSeek(target);
@@ -113,6 +144,18 @@ export function Timeline({
     if (rect) applyDrag(event.clientX, currentView(), rect);
   };
 
+  const startPinDrag = (event: PointerEvent<HTMLElement>, pin: PinDrag) => {
+    if (activeDrag.current) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    activeDrag.current = {
+      kind: "pin",
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      ...pin,
+    };
+  };
+
   const finishDrag = (event: PointerEvent<HTMLElement>, commitEdge = false) => {
     const drag = activeDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -120,6 +163,15 @@ export function Timeline({
     if (drag.kind === "edge") {
       setEdgePreview(undefined);
       if (commitEdge) onMoveEdge(drag.segmentStart, drag.edge, drag.frame);
+    }
+    if (drag.kind === "pin") {
+      setPinPreview(undefined);
+      if (!commitEdge) return;
+      if (drag.frame !== drag.from) {
+        rallyLog?.onMoveContact(drag.game, drag.rally, drag.entry, drag.frame);
+      } else {
+        rallyLog?.onSelectEntry(drag.game, drag.rally, drag.entry);
+      }
     }
   };
 
@@ -194,6 +246,16 @@ export function Timeline({
           >
             <Icon name="plus" />
           </button>
+          {rallyLog && (
+            <button
+              type="button"
+              className="icon-button"
+              title="Fit the selected Rally (8% padding)"
+              onClick={rallyLog.onFitRally}
+            >
+              Fit Rally
+            </button>
+          )}
           <button type="button" className="icon-button" onClick={() => onViewChange(whole)}>
             Fit video
           </button>
@@ -210,6 +272,23 @@ export function Timeline({
               width: `${((view.end - view.start) / whole.end) * 100}%`,
             }}
           />
+          {rallyLog?.games.flatMap((game) =>
+            game.rallies.map((rally) => {
+              if (rally.start_frame === null) return null;
+              const end = rallyEnd(rally);
+              const team = teamKey(rallyLog.roster, rally.serving_team_id.value);
+              return (
+                <div
+                  key={`ov-${game.number}-${rally.number}`}
+                  className={`ov-block ${team ? `team-${team}` : ""}`}
+                  style={{
+                    left: `${(rally.start_frame / whole.end) * 100}%`,
+                    width: `${((end + 1 - rally.start_frame) / whole.end) * 100}%`,
+                  }}
+                />
+              );
+            }),
+          )}
           {hasVideo && (
             <div className="overview-playhead" style={{ left: `${(frame / whole.end) * 100}%` }} />
           )}
@@ -250,51 +329,64 @@ export function Timeline({
               )}
             </div>
             <div className={`lane ${track.id}`} style={{ gridRow: i + 3 }}>
-              {track.id === "segments" && shown?.length
-                ? // Keyed by position, which an edge drag never changes (segments can't pass each
-                  // other), so the dragged handle keeps its pointer capture.
-                  shown.map((segment, index) => (
-                    <div
-                      key={index}
-                      className={`seg ${segment.camera_view} ${editableSegments ? "editable" : ""}`}
-                      style={{
-                        left: `${toPercent(view, segment.start_frame)}%`,
-                        width: `${toPercent(view, segment.end_frame + 1) - toPercent(view, segment.start_frame)}%`,
-                      }}
-                      title={describe(segment)}
-                    >
-                      {VIEW_LABELS[segment.camera_view].toUpperCase()}
-                      {editableSegments &&
-                        (["start", "end"] as const).map((edge) => (
-                          <span
-                            key={edge}
-                            className={`seg-handle ${edge}`}
-                            aria-hidden
-                            onPointerDown={(event) => {
-                              const original = segments?.[index];
-                              if (!original || activeDrag.current) return;
-                              event.stopPropagation();
-                              event.currentTarget.setPointerCapture(event.pointerId);
-                              const drag: TimelineDrag = {
-                                kind: "edge",
-                                pointerId: event.pointerId,
-                                clientX: event.clientX,
-                                segmentStart: original.start_frame,
-                                edge,
-                                frame: edge === "start" ? original.start_frame : original.end_frame,
-                              };
-                              activeDrag.current = drag;
-                              setEdgePreview(drag);
-                            }}
-                            onPointerMove={moveDrag}
-                            onPointerUp={(event) => finishDrag(event, true)}
-                            onPointerCancel={finishDrag}
-                            onLostPointerCapture={finishDrag}
-                          />
-                        ))}
-                    </div>
-                  ))
-                : track.empty && <span className="lane-empty">{track.empty}</span>}
+              {track.id === "segments" && shown?.length ? (
+                // Keyed by position, which an edge drag never changes (segments can't pass each
+                // other), so the dragged handle keeps its pointer capture.
+                shown.map((segment, index) => (
+                  <div
+                    key={index}
+                    className={`seg ${segment.camera_view} ${editableSegments ? "editable" : ""}`}
+                    style={{
+                      left: `${toPercent(view, segment.start_frame)}%`,
+                      width: `${toPercent(view, segment.end_frame + 1) - toPercent(view, segment.start_frame)}%`,
+                    }}
+                    title={describe(segment)}
+                  >
+                    {VIEW_LABELS[segment.camera_view].toUpperCase()}
+                    {editableSegments &&
+                      (["start", "end"] as const).map((edge) => (
+                        <span
+                          key={edge}
+                          className={`seg-handle ${edge}`}
+                          aria-hidden
+                          onPointerDown={(event) => {
+                            const original = segments?.[index];
+                            if (!original || activeDrag.current) return;
+                            event.stopPropagation();
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            const drag: TimelineDrag = {
+                              kind: "edge",
+                              pointerId: event.pointerId,
+                              clientX: event.clientX,
+                              segmentStart: original.start_frame,
+                              edge,
+                              frame: edge === "start" ? original.start_frame : original.end_frame,
+                            };
+                            activeDrag.current = drag;
+                            setEdgePreview(drag);
+                          }}
+                          onPointerMove={moveDrag}
+                          onPointerUp={(event) => finishDrag(event, true)}
+                          onPointerCancel={finishDrag}
+                          onLostPointerCapture={finishDrag}
+                        />
+                      ))}
+                  </div>
+                ))
+              ) : track.id === "rallies" && rallyLog && hasFramedRallies(rallyLog.games) ? (
+                rallyClips(rallyLog, view)
+              ) : track.id === "shots" && rallyLog && hasShots(rallyLog.games) ? (
+                <ShotMarks
+                  rallyLog={rallyLog}
+                  view={view}
+                  preview={pinPreview}
+                  onPinDown={startPinDrag}
+                  onMove={moveDrag}
+                  onUp={finishDrag}
+                />
+              ) : (
+                track.empty && <span className="lane-empty">{track.empty}</span>
+              )}
               {track.id === "segments" && pending && (
                 <div
                   className={`seg pending ${pending.camera_view}`}
@@ -370,5 +462,131 @@ export function Timeline({
         </div>
       </div>
     </Panel>
+  );
+}
+
+/** Where a Rally's clip ends: its end frame, or while open its last Shot (or start). */
+function rallyEnd(rally: Game["rallies"][number]): number {
+  if (rally.end_frame !== null) return rally.end_frame;
+  const frames = rally.entries.flatMap((e) =>
+    e.type === "shot" && e.contact_frame.value !== null ? [e.contact_frame.value] : [],
+  );
+  return Math.max(rally.start_frame ?? 0, ...frames) + 30;
+}
+
+function hasFramedRallies(games: readonly Game[]): boolean {
+  return games.some((g) => g.rallies.some((r) => r.start_frame !== null));
+}
+
+function hasShots(games: readonly Game[]): boolean {
+  return games.some((g) => g.rallies.some((r) => r.entries.length > 0));
+}
+
+function rallyClips(rallyLog: TimelineRallies, view: FrameRange) {
+  const { games, selection, roster } = rallyLog;
+  return games.flatMap((game, gi) =>
+    game.rallies.map((rally, ri) => {
+      if (rally.start_frame === null) return null;
+      const end = rallyEnd(rally);
+      const team = teamKey(roster, rally.serving_team_id.value);
+      const on = gi === selection.game && ri === selection.rally;
+      return (
+        <button
+          key={`clip-${gi}-${ri}`}
+          type="button"
+          className={`clip ${team ? `team-${team}` : ""} ${on ? "on" : ""} ${rally.end_frame === null ? "open" : ""}`}
+          style={{
+            left: `${toPercent(view, rally.start_frame)}%`,
+            width: `${toPercent(view, end + 1) - toPercent(view, rally.start_frame)}%`,
+          }}
+          title={`Game ${game.number} Rally ${rally.number}: frames ${rally.start_frame}–${rally.end_frame ?? "open"}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => rallyLog.onSelectRally(gi, ri)}
+        >
+          {STATUS_MARK[rally.status]} R{rally.number}
+          <span className="mono">{formatScore(rally.score)}</span>
+        </button>
+      );
+    }),
+  );
+}
+
+function ShotMarks({
+  rallyLog,
+  view,
+  preview,
+  onPinDown,
+  onMove,
+  onUp,
+}: {
+  rallyLog: TimelineRallies;
+  view: FrameRange;
+  preview: PinDrag | undefined;
+  onPinDown: (event: PointerEvent<HTMLElement>, pin: PinDrag) => void;
+  onMove: (event: PointerEvent<HTMLElement>) => void;
+  onUp: (event: PointerEvent<HTMLElement>, commit?: boolean) => void;
+}) {
+  const { games, selection, roster } = rallyLog;
+  return (
+    <>
+      {games.flatMap((game, gi) =>
+        game.rallies.flatMap((rally, ri) => {
+          const frames = rally.entries.map((e, ei) => {
+            if (e.type !== "shot") return null;
+            const dragged =
+              preview && preview.game === gi && preview.rally === ri && preview.entry === ei;
+            return dragged ? preview.frame : e.contact_frame.value;
+          });
+          return rally.entries.map((entry, ei) => {
+            const on = gi === selection.game && ri === selection.rally && ei === selection.entry;
+            if (entry.type === "gap") {
+              // Halfway between the Shots around it (or the Rally's start / end).
+              const before = frames.slice(0, ei).findLast((f) => f !== null) ?? rally.start_frame;
+              const after = frames.slice(ei + 1).find((f) => f !== null) ?? rally.end_frame;
+              const a = before ?? after;
+              const b = after ?? before;
+              if (a === null || a === undefined || b === null || b === undefined) return null;
+              return (
+                <button
+                  key={`gap-${gi}-${ri}-${ei}`}
+                  type="button"
+                  className={`gap-pill ${on ? "on" : ""}`}
+                  style={{ left: `${toPercent(view, (a + b) / 2)}%` }}
+                  title={`An ${entry.missing} number of Shots unseen (click, then ⌫ deletes or G / ⇧G flips)`}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => rallyLog.onSelectEntry(gi, ri, ei)}
+                >
+                  {entry.missing} gap
+                </button>
+              );
+            }
+            const frame = frames[ei];
+            if (frame === null || frame === undefined) return null;
+            const hitter = entry.hitter_id.value;
+            const team = hitter === null ? null : teamKey(roster, teamOf(roster, hitter));
+            const number = entry.shot_number.value;
+            return (
+              <button
+                key={`pin-${gi}-${ri}-${ei}`}
+                type="button"
+                className={`pin ${team ? `team-${team}` : ""} ${entry.hitter_id.certainty === "inferred" ? "inferred" : ""} ${on ? "on" : ""}`}
+                style={{ left: `${toPercent(view, frame)}%` }}
+                title={`Shot ${number ?? "?"} at frame ${frame} (drag to move its contact)`}
+                aria-label={`Shot ${number ?? "?"} at frame ${frame}`}
+                onPointerDown={(event) =>
+                  onPinDown(event, { game: gi, rally: ri, entry: ei, from: frame, frame })
+                }
+                onPointerMove={onMove}
+                onPointerUp={(event) => onUp(event, true)}
+                onPointerCancel={onUp}
+                onLostPointerCapture={onUp}
+              >
+                {number ?? "?"}
+              </button>
+            );
+          });
+        }),
+      )}
+    </>
   );
 }

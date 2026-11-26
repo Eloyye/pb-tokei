@@ -193,6 +193,29 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/games": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Games */
+    get: operations["getGames"];
+    /**
+     * Replace Games
+     * @description Replaces all of a Match's Games, Rallies, Shots and Observation Gaps, leaving its Play
+     *     Segments, Calibrations, Player anchors and Team ends. 422 if a frame is outside the video
+     *     or a Team or Player isn't in the Match.
+     */
+    put: operations["replaceGames"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/play-segments": {
     parameters: {
       query?: never;
@@ -537,6 +560,27 @@ export interface components {
      * @enum {string}
      */
     Certainty: "observed" | "inferred" | "unknown";
+    /** ChallengeIO */
+    ChallengeIO: {
+      challenger_id: components["schemas"]["FactIO_UUID_"];
+      original_call: components["schemas"]["FactIO_str_"];
+      ruling: components["schemas"]["FactIO_Ruling_"];
+    };
+    /**
+     * ContactKind
+     * @enum {string}
+     */
+    ContactKind: "volley" | "bounce";
+    /**
+     * CourtPointIO
+     * @description A court point in feet (origin at the centre of the net).
+     */
+    CourtPointIO: {
+      /** X */
+      x: number;
+      /** Y */
+      y: number;
+    };
     /** CreateMatchIn */
     CreateMatchIn: {
       /** Footage Url */
@@ -563,6 +607,80 @@ export interface components {
      * @enum {string}
      */
     DeviceKind: "cuda" | "mps" | "cpu";
+    /** ErrorIO */
+    ErrorIO: {
+      kind: components["schemas"]["FactIO_ErrorKind_"];
+      player_id: components["schemas"]["FactIO_UUID_"];
+    };
+    /**
+     * ErrorKind
+     * @enum {string}
+     */
+    ErrorKind: "net" | "out" | "kitchen_fault" | "double_hit" | "body_hit";
+    /** FactIO[ContactKind] */
+    FactIO_ContactKind_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["ContactKind"] | null;
+    };
+    /** FactIO[CourtPointIO] */
+    FactIO_CourtPointIO_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["CourtPointIO"] | null;
+    };
+    /** FactIO[ErrorKind] */
+    FactIO_ErrorKind_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["ErrorKind"] | null;
+    };
+    /** FactIO[RefereeCall] */
+    FactIO_RefereeCall_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["RefereeCall"] | null;
+    };
+    /** FactIO[Ruling] */
+    FactIO_Ruling_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["Ruling"] | null;
+    };
+    /** FactIO[ScoreIO] */
+    FactIO_ScoreIO_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["ScoreIO"] | null;
+    };
+    /** FactIO[ShotClass] */
+    FactIO_ShotClass_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["ShotClass"] | null;
+    };
+    /** FactIO[UUID] */
+    FactIO_UUID_: {
+      certainty: components["schemas"]["Certainty"];
+      /** Value */
+      value: string | null;
+    };
+    /** FactIO[Zone] */
+    FactIO_Zone_: {
+      certainty: components["schemas"]["Certainty"];
+      value: components["schemas"]["Zone"] | null;
+    };
+    /** FactIO[bool] */
+    FactIO_bool_: {
+      certainty: components["schemas"]["Certainty"];
+      /** Value */
+      value: boolean | null;
+    };
+    /** FactIO[int] */
+    FactIO_int_: {
+      certainty: components["schemas"]["Certainty"];
+      /** Value */
+      value: number | null;
+    };
+    /** FactIO[str] */
+    FactIO_str_: {
+      certainty: components["schemas"]["Certainty"];
+      /** Value */
+      value: string | null;
+    };
     /**
      * FetchFootageIn
      * @description Parameters to start fetching or converting footage for a Match.
@@ -691,6 +809,25 @@ export interface components {
        */
       tournament_id: string;
     };
+    /** GameIO */
+    GameIO: {
+      /** Number */
+      number: number;
+      /** Rallies */
+      rallies: components["schemas"]["RallyIO"][];
+    };
+    /**
+     * GapIO
+     * @description An Observation Gap: Shots that happened but were not seen, an odd or even number.
+     */
+    GapIO: {
+      missing: components["schemas"]["Parity"];
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: "gap";
+    };
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -770,6 +907,11 @@ export interface components {
      * @description A Match, plus its recorded video metadata, roster IDs, and fix command.
      */
     MatchDetailOut: {
+      /**
+       * Done Rallies
+       * @default 0
+       */
+      done_rallies: number;
       /** Fix Command */
       fix_command: string | null;
       footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
@@ -802,6 +944,11 @@ export interface components {
        * Format: uuid
        */
       team_b_id: string;
+      /**
+       * Total Rallies
+       * @default 0
+       */
+      total_rallies: number;
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
@@ -811,6 +958,11 @@ export interface components {
      * @description A Match's roster by name and whether its 60 fps video can be played.
      */
     MatchOut: {
+      /**
+       * Done Rallies
+       * @default 0
+       */
+      done_rallies: number;
       footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
       /** Franchise A */
       franchise_a: string | null;
@@ -825,6 +977,11 @@ export interface components {
       team_a: [string, string];
       /** Team B */
       team_b: [string, string];
+      /**
+       * Total Rallies
+       * @default 0
+       */
+      total_rallies: number;
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
@@ -877,6 +1034,11 @@ export interface components {
       path: string;
     };
     /**
+     * Parity
+     * @enum {string}
+     */
+    Parity: "odd" | "even";
+    /**
      * PlacedLandmarkIO
      * @description A Landmark clicked on a video frame, in normalised coordinates (0 to 1).
      */
@@ -916,6 +1078,11 @@ export interface components {
        * Format: uuid
        */
       player_id: string;
+    };
+    /** PlayerPositionIO */
+    PlayerPositionIO: {
+      position: components["schemas"]["FactIO_CourtPointIO_"];
+      settled: components["schemas"]["FactIO_bool_"];
     };
     /**
      * PlayerTrackingFrameOut
@@ -989,6 +1156,27 @@ export interface components {
      * @enum {string}
      */
     PlayerTrackingStatus: "no_video" | "idle" | "tracking" | "ready" | "error";
+    /** RallyIO */
+    RallyIO: {
+      challenge: components["schemas"]["ChallengeIO"] | null;
+      /** End Frame */
+      end_frame: number | null;
+      /** Entries */
+      entries: (components["schemas"]["ShotIO"] | components["schemas"]["GapIO"])[];
+      /** Number */
+      number: number;
+      referee_call: components["schemas"]["FactIO_RefereeCall_"];
+      returner_id: components["schemas"]["FactIO_UUID_"];
+      score: components["schemas"]["FactIO_ScoreIO_"];
+      scoreboard_winner_id: components["schemas"]["FactIO_UUID_"];
+      server_id: components["schemas"]["FactIO_UUID_"];
+      serving_team_id: components["schemas"]["FactIO_UUID_"];
+      /** Start Frame */
+      start_frame: number | null;
+      status: components["schemas"]["RallyStatus"];
+      winner_id: components["schemas"]["FactIO_UUID_"];
+      winner_source: components["schemas"]["WinnerSource"] | null;
+    };
     /**
      * RallyLogOut
      * @description The Rally Log the app is serving (null until one is chosen), and those opened recently.
@@ -1000,6 +1188,13 @@ export interface components {
       recent: components["schemas"]["RecentRallyLogOut"][];
     };
     /**
+     * RallyStatus
+     * @description How far an operator has got annotating a Rally (workflow state, ignored by Event
+     *     Processing; ADR 0013).
+     * @enum {string}
+     */
+    RallyStatus: "empty" | "in_progress" | "done";
+    /**
      * RecentRallyLogOut
      * @description A Rally Log opened before; `exists` is false once its file has gone (moved, deleted, or
      *     on a drive that isn't mounted).
@@ -1010,6 +1205,11 @@ export interface components {
       /** Path */
       path: string;
     };
+    /**
+     * RefereeCall
+     * @enum {string}
+     */
+    RefereeCall: "point" | "second_server" | "side_out";
     /** RosterOut */
     RosterOut: {
       /** Franchise Matches */
@@ -1026,6 +1226,53 @@ export interface components {
       handedness: components["schemas"]["Handedness"];
       /** Name */
       name: string;
+    };
+    /**
+     * Ruling
+     * @enum {string}
+     */
+    Ruling: "upheld" | "overturned";
+    /**
+     * ScoreIO
+     * @description The score called before a Rally: serving, receiving, server number.
+     */
+    ScoreIO: {
+      /** Receiving */
+      receiving: number;
+      /**
+       * Server Number
+       * @enum {integer}
+       */
+      server_number: 1 | 2;
+      /** Serving */
+      serving: number;
+    };
+    /**
+     * ShotClass
+     * @enum {string}
+     */
+    ShotClass: "soft" | "hard" | "lob" | "overhead";
+    /** ShotIO */
+    ShotIO: {
+      atp: components["schemas"]["FactIO_bool_"];
+      contact_frame: components["schemas"]["FactIO_int_"];
+      contact_kind: components["schemas"]["FactIO_ContactKind_"];
+      contact_zone: components["schemas"]["FactIO_Zone_"];
+      erne: components["schemas"]["FactIO_bool_"];
+      error: components["schemas"]["ErrorIO"] | null;
+      hitter_id: components["schemas"]["FactIO_UUID_"];
+      landing: components["schemas"]["FactIO_CourtPointIO_"];
+      /** Positions */
+      positions: {
+        [key: string]: components["schemas"]["PlayerPositionIO"];
+      };
+      shot_class: components["schemas"]["FactIO_ShotClass_"];
+      shot_number: components["schemas"]["FactIO_int_"];
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: "shot";
     };
     /**
      * TeamEndIO
@@ -1131,6 +1378,12 @@ export interface components {
      * @enum {string}
      */
     VideoStatus: "none" | "not_converted" | "ready";
+    /**
+     * WinnerSource
+     * @description Where a Rally's winner came from, highest priority first.
+     * @enum {string}
+     */
+    WinnerSource: "challenge" | "referee_call" | "scoreboard" | "next_serve" | "play";
     /**
      * Zone
      * @enum {string}
@@ -1478,6 +1731,72 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["FootageJobOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getGames: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GameIO"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  replaceGames: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GameIO"][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GameIO"][];
         };
       };
       /** @description Validation Error */

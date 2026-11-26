@@ -22,6 +22,17 @@ export interface PlayerTrackingState {
   frameData: PlayerTrackingFrameOut | undefined;
   startTracking: (priorityFrame?: number) => void;
   cancelTracking: () => void;
+  /**
+   * Player Tracking at any frame: from a loaded window, or fetched on its own. Resolves to
+   * undefined when it can't be had (no video, or the request failed).
+   */
+  trackingAt: (frame: number) => Promise<PlayerTrackingFrameOut | undefined>;
+  /**
+   * Player Tracking at a frame without waiting: the loaded frame, `null` when Tracking can't know
+   * anything there (no video, or never run and nothing anchored), or `undefined` when it must be
+   * fetched (including before the status has loaded).
+   */
+  cachedAt: (frame: number) => PlayerTrackingFrameOut | null | undefined;
 }
 
 /**
@@ -202,11 +213,46 @@ export function usePlayerTracking(
       .catch(() => {});
   }, [matchId]);
 
+  const loadedAt = useCallback((at: number): PlayerTrackingFrameOut | undefined => {
+    const prefix = scopeRef.current === null ? null : `${scopeRef.current}:`;
+    for (const [key, data] of windowsRef.current) {
+      if (prefix !== null && !key.startsWith(prefix)) continue;
+      if (at >= data.start_frame && at <= data.end_frame) {
+        return data.frames[at - data.start_frame];
+      }
+    }
+    return undefined;
+  }, []);
+
+  // Until the status loads, whether anything is tracked isn't known: fetch rather than guess.
+  const nothingTracked =
+    !enabled ||
+    (status !== null && trackedSegments === 0 && anchors.length === 0 && teamEnds.length === 0);
+  const cachedAt = useCallback(
+    (at: number) => loadedAt(at) ?? (nothingTracked ? null : undefined),
+    [loadedAt, nothingTracked],
+  );
+
+  const trackingAt = useCallback(
+    async (at: number): Promise<PlayerTrackingFrameOut | undefined> => {
+      const loaded = loadedAt(at);
+      if (loaded) return loaded;
+      if (!enabled) return undefined;
+      try {
+        const data = await getPlayerTrackingFrames(matchId, at, at);
+        return data.frames[0];
+      } catch {
+        return undefined;
+      }
+    },
+    [enabled, matchId, loadedAt],
+  );
+
   const loadedWindow = windowKey ? windows.get(windowKey) : undefined;
   const frameData =
     loadedWindow && frame >= loadedWindow.start_frame && frame <= loadedWindow.end_frame
       ? loadedWindow.frames[frame - loadedWindow.start_frame]
       : undefined;
 
-  return { status, frameData, startTracking, cancelTracking };
+  return { status, frameData, startTracking, cancelTracking, trackingAt, cachedAt };
 }

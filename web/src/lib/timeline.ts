@@ -216,3 +216,15 @@ export function reconcileView(
   }
   return previous.frame === frame ? nextView : followFrame(nextView, frame, totalFrames);
 }
+
+/** Padding on each side when fitting the view to a Rally, as a fraction of its length. */
+export const FIT_PADDING = 0.08;
+
+/** The view showing frames `start` to `end` inclusive with 8% padding each side. */
+export function fitRange(start: number, end: number, totalFrames: number): FrameRange {
+  const length = Math.max(MIN_SPAN, end - start + 1);
+  const pad = length * FIT_PADDING;
+  const centre = (start + end + 1) / 2;
+  const span = Math.min(length + 2 * pad, fullView(totalFrames).end);
+  return clampView({ start: centre - span / 2, end: centre + span / 2 }, totalFrames);
+}

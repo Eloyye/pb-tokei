@@ -3,7 +3,9 @@ import {
   type Calibration,
   type CalibrationOut,
   type CameraView,
+  type Game,
   getCalibrations,
+  getGames,
   getPlayerAnchors,
   getPlaySegments,
   getTeamEnds,
@@ -11,6 +13,7 @@ import {
   type PlayerAnchor,
   type PlaySegment,
   replaceCalibrations,
+  replaceGames,
   replacePlayerAnchors,
   replacePlaySegments,
   replaceTeamEnds,
@@ -25,12 +28,16 @@ import { reportSaveStatus } from "../lib/unsavedChanges";
 import { type CalibrationEdit, fitKey } from "../lib/calibrations";
 import { followStart, type PendingSegment, type SegmentEdit } from "../lib/segments";
 
-/** A Match's Play Segments, Calibrations, Player anchors, and Team ends: editable with undo. */
+/**
+ * A Match's Play Segments, Calibrations, Player anchors, Team ends, and Games (Rallies, Shots,
+ * Observation Gaps): editable with one undo history.
+ */
 export interface Recording {
   segments: PlaySegment[];
   calibrations: Calibration[];
   anchors: PlayerAnchor[];
   teamEnds: TeamEnd[];
+  games: Game[];
 }
 
 export interface RecordingState {
@@ -58,6 +65,13 @@ export interface RecordingControls {
   editPlayers(
     edit: (anchors: PlayerAnchor[], teamEnds: TeamEnd[]) => PlayerEdit,
   ): PlayerEdit | null;
+  /**
+   * Applies a Rally Log edit (`lib/annotate`) to the Games, returning its result. Edits that
+   * leave the Games as they were record nothing.
+   */
+  editGames<R extends { games: Game[]; message: string }>(edit: (games: Game[]) => R): R | null;
+  /** Applies one edit across the whole Recording as a single undo step. */
+  editRecording(edit: (recording: Recording) => { recording: Recording; message: string }): void;
   cancelPending(): void;
   /** Shows a hint in the status bar. */
   notify(message: string): void;
@@ -72,6 +86,7 @@ interface Queues {
   calibrations: Record<CameraView, SaveQueue<Calibration[]>>;
   anchors: SaveQueue<PlayerAnchor[]>;
   teamEnds: SaveQueue<TeamEnd[]>;
+  games: SaveQueue<Game[]>;
 }
 
 /**
@@ -127,6 +142,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         replacePlayerAnchors(matchId, anchors),
       ),
       teamEnds: queue("teamEnds", (teamEnds: TeamEnd[]) => replaceTeamEnds(matchId, teamEnds)),
+      games: queue("games", (games: Game[]) => replaceGames(matchId, games)),
     };
     queuesRef.current = queues;
 
@@ -138,23 +154,25 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
           getCalibrations(matchId),
           getPlayerAnchors(matchId),
           getTeamEnds(matchId),
+          getGames(matchId),
         ]),
       { retryable: isRetryable },
     ).then(
-      ([segments, calibrations, anchors, teamEnds]) => {
+      ([segments, calibrations, anchors, teamEnds, games]) => {
         if (cancelled) return;
         const start = startHistory<Recording>({
           segments,
           calibrations: calibrations.map(toCalibration),
           anchors,
           teamEnds,
+          games,
         });
         historyRef.current = start;
         setHistory(start);
         setFits(new Map(calibrations.map((fit) => [fitKey(fit), fit])));
       },
       (error: unknown) => {
-        if (!cancelled) setMessage(`Couldn't load Play Segments: ${errorMessage(error)}`);
+        if (!cancelled) setMessage(`Couldn't load the Rally Log: ${errorMessage(error)}`);
       },
     );
     return () => {
@@ -164,6 +182,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         ...VIEWS.map((view) => queues.calibrations[view]),
         queues.anchors,
         queues.teamEnds,
+        queues.games,
       ];
       for (const q of all) q.close();
       // A closing queue still sends its latest value; a switch waits for that too.
@@ -199,6 +218,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     }
     if (before.anchors !== after.anchors) queues.anchors.push(after.anchors);
     if (before.teamEnds !== after.teamEnds) queues.teamEnds.push(after.teamEnds);
+    if (before.games !== after.games) queues.games.push(after.games);
   }, []);
 
   const setPendingSegment = useCallback((next: PendingSegment | null) => {
@@ -264,6 +284,31 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     [update],
   );
 
+  const editGames = useCallback(
+    <R extends { games: Game[]; message: string }>(edit: (games: Game[]) => R): R | null => {
+      const current = historyRef.current;
+      if (!current) return null;
+      const result = edit(current.present.games);
+      setMessage(result.message);
+      if (result.games !== current.present.games) {
+        update(commit(current, { ...current.present, games: result.games }));
+      }
+      return result;
+    },
+    [update],
+  );
+
+  const editRecording = useCallback<RecordingControls["editRecording"]>(
+    (edit) => {
+      const current = historyRef.current;
+      if (!current) return;
+      const result = edit(current.present);
+      setMessage(result.message);
+      update(commit(current, result.recording));
+    },
+    [update],
+  );
+
   const cancelPending = useCallback(() => {
     if (!pendingRef.current) return;
     setPendingSegment(null);
@@ -290,6 +335,8 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     editSegments,
     editCalibrations,
     editPlayers,
+    editGames,
+    editRecording,
     cancelPending,
     notify: setMessage,
     undo: undoEdit,
