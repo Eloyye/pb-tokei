@@ -75,6 +75,7 @@ import {
   isTextEntry,
   keyAction,
   type PlayerAction,
+  ruleIssueKeyAction,
   type SegmentAction,
   segmentKeyAction,
   zoomKeyAction,
@@ -90,6 +91,13 @@ import {
   swapTeamPartners,
 } from "../lib/players";
 import { isShot, positionsFromTracking, rosterOf, shotsOf } from "../lib/rallyLog";
+import {
+  checkMatch,
+  countIssues,
+  formatIssueHint,
+  nextRuleIssue,
+  type RuleIssue,
+} from "../lib/ruleChecks";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
 import {
   fitRange,
@@ -144,6 +152,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [recordingState, recording] = useRecording(match.id);
   const calibrating = workspace === "calibrate";
   const annotating = workspace === "annotate";
+  const reviewing = workspace === "review";
+  const showRuleChecks = annotating || reviewing;
   const [calibrateTab, setCalibrateTab] = useState<CalibrateTab>("landmarks");
   const [calibrateSelectedPlayerId, setCalibrateSelectedPlayerId] = useState<string | null>(
     () => match.players[0]?.id ?? null,
@@ -159,7 +169,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
 
   // Rally and Shot entry (#12): what is selected, the Inspector's tab, field cursor and form.
   const roster = useMemo(() => rosterOf(match), [match]);
-  const games = recordingState.recording?.games ?? [];
+  const games = useMemo(() => recordingState.recording?.games ?? [], [recordingState.recording]);
   const [rallySelection, setRallySelection] = useState<Selection>(NO_SELECTION);
   const current = clampSelection(games, rallySelection);
   const currentRally = selectedRally(games, current);
@@ -168,6 +178,16 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [cursor, setCursor] = useState<Record<InspectorTab, number>>({ shot: 0, rally: 0 });
   const [form, setForm] = useState<InspectorForm>(null);
   const stashRef = useRef<Stash>(new Map());
+  const lastJumpedIssueIdRef = useRef<string | null>(null);
+  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+  if (!reviewing && reviewMessage !== null) setReviewMessage(null);
+
+  // Live non-blocking rule checks (#13) across all Games in Annotate and Review.
+  const ruleIssues = useMemo(
+    () => (showRuleChecks ? checkMatch(games, roster) : []),
+    [showRuleChecks, games, roster],
+  );
+  const issueCounts = useMemo(() => countIssues(ruleIssues), [ruleIssues]);
 
   const segments = recordingState.recording?.segments ?? null;
   const segment = (segments && segmentAt(segments, frame)) || undefined;
@@ -386,6 +406,62 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     const entry = selectedRally(games, next)?.entries[next.entry ?? -1];
     if (isShot(entry) && entry.contact_frame.value !== null)
       controls.seek(entry.contact_frame.value);
+  };
+
+  const notifyIssue = (text: string) => {
+    if (reviewing) setReviewMessage(text);
+    else recording.notify(text);
+  };
+
+  /** Navigates straight to a rule issue's Game, Rally, Shot, Inspector tab, and field cursor. */
+  const jumpToIssue = (issue: RuleIssue) => {
+    const index = ruleIssues.findIndex((i) => i.id === issue.id);
+    lastJumpedIssueIdRef.current = issue.id;
+    setForm(null);
+    if (issue.entryIndex !== null) {
+      setRallySelection({
+        game: issue.gameIndex,
+        rally: issue.rallyIndex,
+        entry: issue.entryIndex,
+      });
+      if (issue.shotFrame !== null) controls.seek(issue.shotFrame);
+      focusField("shot", issue.field as ShotField);
+    } else {
+      const sameRally = current.game === issue.gameIndex && current.rally === issue.rallyIndex;
+      setRallySelection(
+        sameRally ? current : selectRally(games, issue.gameIndex, issue.rallyIndex),
+      );
+      const rally = games[issue.gameIndex]?.rallies[issue.rallyIndex];
+      if (rally && rally.start_frame !== null) {
+        fitRally(rally);
+        controls.seek(rally.start_frame);
+      }
+      focusField("rally", issue.field as RallyField);
+    }
+    if (ruleIssues.length > 0) {
+      notifyIssue(formatIssueHint(issue, index >= 0 ? index : 0, ruleIssues.length));
+    }
+  };
+
+  /** Cycles chronologically to the next (`1`) or previous (`-1`) rule issue in the Match. */
+  const cycleRuleIssue = (direction: 1 | -1) => {
+    if (ruleIssues.length === 0) {
+      notifyIssue("No rule issues in this Match");
+      return;
+    }
+    const focusedField =
+      inspectorTab === "shot" ? SHOT_FIELDS[cursor.shot] : RALLY_FIELDS[cursor.rally];
+    const next = nextRuleIssue(
+      ruleIssues,
+      {
+        selection: current,
+        inspectorTab,
+        focusedField,
+        lastIssueId: lastJumpedIssueIdRef.current,
+      },
+      direction,
+    );
+    if (next) jumpToIssue(next.issue);
   };
 
   const snapshotAt = async (at: number) => {
@@ -693,6 +769,14 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       }
     };
     if (isTextEntry(event.target)) return;
+    if (showRuleChecks && recordingState.recording) {
+      const issueDirection = ruleIssueKeyAction(event);
+      if (issueDirection !== null) {
+        event.preventDefault();
+        if (!event.repeat) cycleRuleIssue(issueDirection);
+        return;
+      }
+    }
     if ((calibrating || annotating) && totalFrames > 0) {
       const historyAction = historyKeyAction(event);
       if (historyAction) {
@@ -1018,6 +1102,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 }}
                 onSyncFromTracking={() => void syncFromTracking()}
                 onDeleteRally={() => runAnnotate({ type: "deleteRally" })}
+                issues={showRuleChecks ? ruleIssues : undefined}
+                onSelectIssue={jumpToIssue}
               />
             </>
           )}
@@ -1038,6 +1124,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           games={games}
           selection={current}
           roster={roster}
+          issues={showRuleChecks ? ruleIssues : undefined}
           onSelectRally={(gi, ri) => goToRally(selectRally(games, gi, ri))}
           onSelectGame={(gi) => setRallySelection({ game: gi, rally: null, entry: null })}
           onAddUnseen={() => runAnnotate({ type: "unseenRally" })}
@@ -1074,11 +1161,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
             )
           }
           rallyLog={
-            annotating || workspace === "review"
+            showRuleChecks
               ? {
                   games,
                   selection: current,
                   roster,
+                  issues: ruleIssues,
                   onSelectRally: (gi, ri) => goToRally(selectRally(games, gi, ri)),
                   onSelectEntry: (gi, ri, ei) => {
                     setInspectorTab("shot");
@@ -1088,6 +1176,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                     annotateEdit((c) => moveContact(c, ei, to), {
                       selection: { game: gi, rally: ri, entry: ei },
                     }),
+                  onSelectIssue: jumpToIssue,
                   onFitRally: () => {
                     if (!fitRally()) setView(fullView(totalFrames));
                   },
@@ -1097,10 +1186,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         />
       </div>
       <StatusBar
-        message={((calibrating || annotating) && recordingState.message) || MESSAGES[workspace]}
+        message={
+          (reviewing ? reviewMessage : (calibrating || annotating) && recordingState.message) ||
+          MESSAGES[workspace]
+        }
         saveStatus={recordingState.saveStatus}
         match={match}
         workspace={workspace}
+        issueCounts={showRuleChecks ? issueCounts : undefined}
+        onNextIssue={() => cycleRuleIssue(1)}
       />
     </div>
   );

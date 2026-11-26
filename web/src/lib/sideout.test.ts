@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Game, Rally } from "../api/client";
 import { inferred, newRally, newShot, observed, UNKNOWN } from "./rallyLog";
-import { normalizeGame, resolveWinner } from "./sideout";
+import {
+  applyBoxStep,
+  boxParityPlayer,
+  isOpeningScore,
+  nextSideoutOutcomes,
+  nextSideoutState,
+  normalizeGame,
+  refereeCallWinner,
+  resolveWinner,
+  sameScore,
+} from "./sideout";
 import { ROSTER } from "./testRoster";
 
 function rally(number: number, fields: Partial<Rally> = {}): Rally {
@@ -179,5 +189,126 @@ describe("winner resolution", () => {
       winner_id: UNKNOWN,
       winner_source: null,
     });
+  });
+
+  it("refereeCallWinner requires known facts and a Roster Team, accepting Observed and Inferred", () => {
+    expect(
+      refereeCallWinner(
+        ROSTER,
+        rally(1, { serving_team_id: observed("A"), referee_call: observed("point") }),
+      ),
+    ).toBe("A");
+    expect(
+      refereeCallWinner(
+        ROSTER,
+        rally(1, { serving_team_id: inferred("A"), referee_call: inferred("side_out") }),
+      ),
+    ).toBe("B");
+    expect(
+      refereeCallWinner(
+        ROSTER,
+        rally(1, { serving_team_id: observed("A"), referee_call: observed("second_server") }),
+      ),
+    ).toBe("B");
+    // Unknown certainty (even if a stale value were present) returns null.
+    expect(
+      refereeCallWinner(
+        ROSTER,
+        rally(1, {
+          serving_team_id: observed("A"),
+          referee_call: { value: "point", certainty: "unknown" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      refereeCallWinner(
+        ROSTER,
+        rally(1, {
+          serving_team_id: { value: "A", certainty: "unknown" },
+          referee_call: observed("point"),
+        }),
+      ),
+    ).toBeNull();
+    // Non-Roster team ID returns null instead of silently mapping to teamA.
+    expect(
+      refereeCallWinner(
+        ROSTER,
+        rally(1, { serving_team_id: observed("unknown-team"), referee_call: observed("side_out") }),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("shared side-out helpers", () => {
+  it.each([
+    {
+      name: "Point increments serving score and flips the serving box",
+      from: score(3, 2, 1),
+      serving: "A",
+      winner: "A",
+      expected: { outcome: "point", score: score(4, 2, 1), serving_team_id: "A", box: "flip" },
+    },
+    {
+      name: "Second server advances 1 -> 2 and flips the serving box",
+      from: score(3, 2, 1),
+      serving: "A",
+      winner: "B",
+      expected: {
+        outcome: "second_server",
+        score: score(3, 2, 2),
+        serving_team_id: "A",
+        box: "flip",
+      },
+    },
+    {
+      name: "Side out swaps score, switches Serving Team, and resets to the right box",
+      from: score(3, 2, 2),
+      serving: "A",
+      winner: "B",
+      expected: {
+        outcome: "side_out",
+        score: score(2, 3, 1),
+        serving_team_id: "B",
+        box: "right",
+      },
+    },
+  ])("nextSideoutState: $name", ({ from, serving, winner, expected }) => {
+    expect(nextSideoutState(ROSTER, from, serving, winner)).toEqual(expected);
+  });
+
+  it("nextSideoutOutcomes returns both Point and loss successors", () => {
+    const [win, loss] = nextSideoutOutcomes(ROSTER, score(0, 0, 2), "A");
+    expect(win).toEqual({
+      outcome: "point",
+      score: score(1, 0, 2),
+      serving_team_id: "A",
+      box: "flip",
+    });
+    expect(loss).toEqual({
+      outcome: "side_out",
+      score: score(0, 0, 1),
+      serving_team_id: "B",
+      box: "right",
+    });
+  });
+
+  it("applyBoxStep, boxParityPlayer, isOpeningScore, and sameScore behave as documented", () => {
+    expect(applyBoxStep("right", null)).toBe("right");
+    expect(applyBoxStep("right", "left")).toBe("right");
+    expect(applyBoxStep("flip", "right")).toBe("left");
+    expect(applyBoxStep("flip", "left")).toBe("right");
+    expect(applyBoxStep("flip", null)).toBeNull();
+
+    // Even score + right box -> same Player; odd score + right box -> partner; symmetric inverse.
+    expect(boxParityPlayer(ROSTER, "a1", 0, "right")).toBe("a1");
+    expect(boxParityPlayer(ROSTER, "a1", 1, "right")).toBe("a2");
+    expect(boxParityPlayer(ROSTER, "a1", 0, "left")).toBe("a2");
+    expect(boxParityPlayer(ROSTER, "a1", 1, "left")).toBe("a1");
+    expect(boxParityPlayer(ROSTER, "a2", 0, "left")).toBe("a1");
+
+    expect(isOpeningScore(score(0, 0, 2))).toBe(true);
+    expect(isOpeningScore(score(0, 0, 1))).toBe(false);
+    expect(sameScore(score(4, 2, 1), score(4, 2, 1))).toBe(true);
+    expect(sameScore(score(4, 2, 1), score(4, 2, 2))).toBe(false);
   });
 });

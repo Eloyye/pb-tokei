@@ -44,7 +44,7 @@ A clickable prototype with sample data and working keys lives in [design/annotat
   - in Review only, the confidence threshold slider
   - `Active m:ss` or `Active h:mm:ss`, dimmed while idle. Hover to see the Calibrate, Annotate, and Review totals.
   - `Ratio 0.19`, with the full broadcast length in its tooltip. In Assisted mode or Review, it shows `Ratio 0.19 / 0.25` in green within budget or amber over it. A known broadcast length and zero active time show `0.00`. An unknown broadcast length shows `—`.
-  - issue counts, red and amber
+  - Match-wide issue counts across all Games (red and amber, or `No issues`) in Annotate and Review; clicking cycles to the next rule issue (`F8` / `Shift+F8`)
   - the `?` hint
 
 - **Rally Log picker.** A modal opened from the Rally Log's name. It shows the open Rally Log and up to 10 recent ones (the open one and missing files can't be chosen; missing files carry an amber `missing` pill). It has a path field, prefilled with the open Rally Log's folder, with **Open** and **New Rally Log** buttons. Choosing one waits for queued saves ("Saving changes…"), and refuses with the save's error if any save is retrying or was refused. After saves land, the picker gives the operator time flush up to two seconds before opening the Rally Log. On success the app goes Home on the new Rally Log. The picker opens by itself when no Rally Log is open, and the header then reads `No Rally Log` in amber. When another tab has switched the Rally Log, the name becomes an amber **Rally Log switched elsewhere: reload**.
@@ -160,7 +160,7 @@ Each row has three parts: label, value, then key hints on the right. A key hint 
 - Winner, with its source: Challenge, Referee Call, scoreboard, next Serve, or seen in play. Seen in play is either a winner entered by hand in the Rally details form (Observed) or one Inferred from the last Shot's Error, which is recomputed and goes away with the Error
 - Scoreboard reading (stored apart from the winner, ADR 0013)
 - Status
-- Shot issues in this Rally (#13)
+- Shot issues in this Rally (#13): clickable rows (`Shot <N|?>: <message>`) that select the Shot, seek to its contact frame, switch to the Shot tab, and focus the offending field
 
 In a form, `Enter` saves and `Esc` cancels; other shortcuts are off while a field has focus.
 
@@ -226,28 +226,42 @@ Side-out pre-fill (Inferred, never overwriting Observed):
   - **Segments.** Play Segments colored by Camera View (Main blue-gray, Sideline brown). Editable only in Calibrate.
   - **Rallies.** One clip per framed Rally in the Serving Team's color, labeled with status, number and score; an open-ended Rally has a dashed end. The current clip is outlined. Click to select.
   - **Shots.** A pin per Shot in the hitter's Team color (dimmed when the hitter is Inferred), labeled with its Shot Number (`?` after an Observation Gap). The current Shot has a white ring. Click a pin to select the Shot, or drag it to move its contact frame (Shots re-sort if it passes another). Observation Gaps appear as hatched dashed pills ("odd gap" / "even gap") halfway between the Shots around them; click one to select it.
-  - **Issues.** A triangle at the offending Shot, or a bar across the Rally for Rally-level issues. Red or amber; hover shows the message (#13). Today it shows Calibrate's unmapped Camera Motion ranges.
+  - **Issues.** In Calibrate, clickable amber bars for unmapped Camera Motion ranges (#10). In Annotate and Review, clickable merged markers for rule checks (#13): one triangle per offending Shot at its contact frame and one bar per offending framed or open-ended Rally (Unseen Rallies are omitted from the Timeline). Red takes precedence over amber when mixed; hovering lists every message on that Shot or Rally, and clicking selects the offending Rally/Shot, switches to its Inspector tab, and focuses its first offending field (red before amber).
   - Space is reserved for an audio waveform track later (#26).
 - Entering a Rally zooms to it with 8% padding. During playback the view pages along with the playhead.
 
 ## Rule checks (#13)
 
-Each check shows in three linked places:
+Live, non-blocking rule checks run purely on the Match's in-memory Games and Roster in Annotate and Review (never persisted or dismissible, ADR 0003). They evaluate Observed and Inferred facts across every Rally regardless of status (`empty`, `in_progress`, or `done`) and skip Unknown facts (except that an Unknown-hitter Shot mid-Rally counts as one Team flip in alternation).
 
-1. a marker on the Issues track
-2. a badge with the message under the Inspector field it concerns
-3. counts in the Rallies row and the status bar
+Each check appears in four linked places:
+
+1. a merged clickable marker on the Timeline **Issues** track (triangle on a Shot with a known contact frame; bar across a framed or open-ended Rally; Unseen Rallies are omitted from the Timeline)
+2. an inline `.badge.red` / `.badge.amber` message under the offending Inspector field (plus clickable **Shot issues in this Rally** rows at the bottom of the Rally tab)
+3. compact red and amber count pills on each Rally row in the **Rallies** panel
+4. clickable Match-wide counts in the **Status bar** (`● <red> ● <amber> issues` or `No issues`), synced with `F8` / `Shift+F8` chronological cycling across all Games (including Unseen Rallies)
 
 - **Red** means a rule is definitely broken:
-  - Teams don't alternate (accounting for odd and even Observation Gaps)
-  - Shot 2 or 3 is a Volley
-  - a Volley from inside the kitchen
+  - **Team alternation & Observation Gaps** (`Hitter`): Teams must alternate across Shots, starting from the Serving Team on Shot 1, accounting for leading and mid-Rally odd/even Observation Gaps and counting each Unknown-hitter Shot as one Team flip; re-anchors after a wrong-Team Shot so one mistake does not cascade.
+  - **Two-bounce rule** (`Contact Kind`): Shot 2 or Shot 3 is a Volley (skipped on Shot 1, Unknown Contact Kind, or Shots after an Observation Gap).
+  - **Volley inside the kitchen** (`Contact Kind`): Volley with the hitter's foot position inside the sidelines (`|x| ≤ 10.0 ft`) and strictly closer than `6.5 ft` to the net (0.5 ft inside the 7.0 ft kitchen line). Exempt when `Erne` is true or when the hitter committed a `Kitchen Fault` (or `Kitchen Fault` with Unknown Player).
+  - **Error on a non-final Shot** (`Error`): an Error recorded on a Shot followed by another Shot or Observation Gap.
+  - **Intra-rally roster & score impossibilities** (`Score called`, `Server`, `Returner`): negative score, Server not on the Serving Team, or Returner on the Serving Team.
 - **Amber** means likely wrong:
-  - the Referee Call disagrees with the scoreboard
-  - the Serve isn't hit by the Server
-  - the score sequence breaks side-out rules (not in the prototype)
+  - **Serve / Return hitter mismatch** (`Hitter`): Shot 1's hitter differs from the Rally's Server, or Shot 2's hitter differs from the Returner (suppressed when Team alternation already flagged the Shot in red).
+  - **Volley at the kitchen line** (`Contact Kind`): Volley inside the sidelines (`|x| ≤ 10.0 ft`) in the `6.5–7.0 ft` kitchen-line margin (same `Erne` and hitter `Kitchen Fault` exemptions).
+  - **Last-Shot Error vs Rally winner** (`Error`): final Shot's Error implies a different winner than `Rally.winner_id` (exempt when a Challenge was overturned).
+  - **Referee Call vs server number** (`Referee Call`): `Side out` called with Server 1, or `Second server` called with Server 2.
+  - **Winner agreement** (`Winner`): post-Challenge official ruling (flipped Referee Call or last-Shot Error when overturned, else Referee Call) disagrees with the scoreboard reading, or `Rally.winner_id` disagrees with the official ruling or scoreboard (without duplicating the same conflict).
+  - **Side-out sequence** (`Score called`, `Serving Team`, `Server`, `Returner`, always flagged on Rally `k + 1` only):
+    - Game opening score other than `0-0-2`.
+    - Adjacent `k → k + 1` score & Serving Team transition (exact match when Rally `k`'s winner is known; 2-outcome Point vs loss check when Unknown).
+    - Adjacent `k → k + 1` Serving Team continuity when either score is Unknown.
+    - Server and Returner continuity within a service turn (Point keeps Server and flips Returner; Second server flips both).
+    - Stacking-safe `even_right[Team]` parity across the Game, reusing the side-out legal serving box tracking.
+    - Cross-gap score monotonicity across intermediate Unknown-score Rallies (flags backwards scores or jumps exceeding the Rally span).
 
-Checks never block saving or `Enter`.
+Checks never block autosaving, `Enter` (Mark Done), or navigation.
 
 ## Saving and undo
 
@@ -270,6 +284,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Go to frame or time | `/` | ✓ |
 | Previous / next Shot (seek to contact) | `↑` / `↓` | ✓ |
 | Previous / next Rally (fit and seek to it) | `PgUp` / `PgDn` | ✓ |
+| Next / previous rule issue (chronological across Games, wraps around) | `F8` / `Shift+F8` | ✓ (Annotate and Review) |
 | Zoom the Timeline | `-` / `=`, vertical scroll or pinch | ✓ |
 | Pan the Timeline | Horizontal swipe, `Shift`+scroll, or scroll on the Overview bar | ✓ |
 | Move field cursor | `Tab` / `Shift+Tab` | ✓ (in Calibrate, `Tab` skips to the next Landmark) |

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import { StatusBar } from "./StatusBar";
 
@@ -23,6 +23,7 @@ const match: StatusMatch = {
 function renderBar(
   overrides: Partial<StatusMatch> = {},
   workspace: ComponentProps<typeof StatusBar>["workspace"] = "annotate",
+  extra: Partial<Pick<ComponentProps<typeof StatusBar>, "issueCounts" | "onNextIssue">> = {},
 ) {
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -31,6 +32,7 @@ function renderBar(
         workspace={workspace}
         message="Calibrate"
         saveStatus={{ state: "saved" }}
+        {...extra}
       />
     </QueryClientProvider>,
   );
@@ -88,5 +90,30 @@ describe("operator time in the StatusBar", () => {
     });
     expect(screen.getByText("Active 0:00")).toBeTruthy();
     expect(screen.getByText("Ratio 0.00")).toBeTruthy();
+  });
+});
+
+describe("rule check counts in the StatusBar", () => {
+  it("shows clickable red and amber counts in Annotate and Review", () => {
+    const onNextIssue = vi.fn<() => void>();
+    renderBar({}, "annotate", { issueCounts: { red: 2, amber: 3 }, onNextIssue });
+    const button = screen.getByRole("button", { name: /● 2.*● 3.*issues/ });
+    expect(button.querySelector(".sb-red")?.textContent).toBe("● 2");
+    expect(button.querySelector(".sb-amber")?.textContent).toBe("● 3");
+    fireEvent.click(button);
+    expect(onNextIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows 'No issues' when both counts are zero and singular 'issue' for 1", () => {
+    renderBar({}, "review", { issueCounts: { red: 0, amber: 0 } });
+    expect(screen.getByRole("button", { name: "No issues" })).toBeTruthy();
+    cleanup();
+    renderBar({}, "annotate", { issueCounts: { red: 1, amber: 0 } });
+    expect(screen.getByRole("button", { name: /● 1\s*issue$/ })).toBeTruthy();
+  });
+
+  it("omits rule check counts in Calibrate", () => {
+    renderBar({}, "calibrate", { issueCounts: { red: 2, amber: 1 } });
+    expect(screen.queryByText(/issues/)).toBeNull();
   });
 });

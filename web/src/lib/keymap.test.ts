@@ -8,6 +8,7 @@ import {
   isTextEntry,
   keyAction,
   type KeyInput,
+  ruleIssueKeyAction,
   SPEEDS,
   segmentKeyAction,
   zoomKeyAction,
@@ -248,5 +249,22 @@ describe("annotateKeyAction", () => {
     expect(annotateKeyAction(press("z", { metaKey: true }))).toBeNull();
     expect(annotateKeyAction(press("m", { altKey: true }))).toBeNull();
     expect(annotateKeyAction(press("["))).toBeNull();
+    expect(annotateKeyAction(press("F8"))).toBeNull();
+    expect(annotateKeyAction(press("F8", { shiftKey: true, code: "F8" }))).toBeNull();
+  });
+});
+
+describe("ruleIssueKeyAction", () => {
+  it("maps F8 to next and Shift+F8 to previous", () => {
+    expect(ruleIssueKeyAction(press("F8"))).toBe(1);
+    expect(ruleIssueKeyAction(press("F8", { shiftKey: true }))).toBe(-1);
+  });
+
+  it("ignores other keys and Ctrl/Meta/Alt modifiers", () => {
+    expect(ruleIssueKeyAction(press("F8", { ctrlKey: true }))).toBeNull();
+    expect(ruleIssueKeyAction(press("F8", { metaKey: true }))).toBeNull();
+    expect(ruleIssueKeyAction(press("F8", { altKey: true }))).toBeNull();
+    expect(ruleIssueKeyAction(press("F7"))).toBeNull();
+    expect(ruleIssueKeyAction(press("n"))).toBeNull();
   });
 });

@@ -13,7 +13,8 @@ import {
   type Selection,
   setRallyDetails,
 } from "../lib/annotate";
-import { inferred, observed } from "../lib/rallyLog";
+import { inferred, newRally, newShot, numberShots, observed } from "../lib/rallyLog";
+import { checkMatch, type RuleIssue } from "../lib/ruleChecks";
 import { ROSTER } from "../lib/testRoster";
 import { InspectorPanel, type InspectorTab } from "./Inspector";
 import { RalliesPanel } from "./RalliesPanel";
@@ -396,5 +397,210 @@ describe("CourtPanel with a Shot selected", () => {
     // 36 ft back is drawn at the bottom edge (30.8 ft, a dot's radius in), not off the diagram.
     expect(dot.getAttribute("transform")).toBe("translate(80, 308)");
     expect(dot.querySelector("title")!.textContent).toContain("(8.0, -36.0 ft");
+  });
+});
+
+function gamesWithIssues() {
+  const r1 = numberShots({
+    ...newRally(1, 100),
+    end_frame: 400,
+    status: "in_progress",
+    score: observed({ serving: 0, receiving: 0, server_number: 1 }), // Amber 11a
+    serving_team_id: observed("A"),
+    server_id: observed("b1"), // Red Check 8
+    entries: [
+      { ...newShot(120) }, // Unknown hitter -> no incidental Check 2
+      {
+        ...newShot(170),
+        hitter_id: observed("b1"),
+        contact_kind: observed("volley"), // Red Check 4
+        positions: { b1: at(0, 6.8) }, // Amber Check 5
+      },
+    ],
+  });
+  const r2Open = numberShots({
+    ...newRally(2, 500),
+    end_frame: null,
+    status: "in_progress",
+    score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+    serving_team_id: observed("A"),
+    server_id: observed("b2"), // Red Check 8
+    entries: [{ ...newShot(560) }],
+  });
+  const r3Unseen = numberShots({
+    ...newRally(3, null),
+    end_frame: null,
+    score: observed({ serving: -1, receiving: 0, server_number: 2 }), // Red Check 8
+    serving_team_id: observed("A"),
+  });
+  const games = [{ number: 1, rallies: [r1, r2Open, r3Unseen] }];
+  return { games, issues: checkMatch(games, ROSTER) };
+}
+
+describe("rule check UI surfaces", () => {
+  it("shows compact per-Rally red and amber count pills in RalliesPanel, omitting zeroes", () => {
+    const { games, issues } = gamesWithIssues();
+    const { container } = render(
+      <RalliesPanel
+        focused={false}
+        games={games}
+        selection={{ game: 0, rally: 0, entry: 0 }}
+        roster={ROSTER}
+        issues={issues}
+        onSelectRally={vi.fn<() => void>()}
+        onSelectGame={vi.fn<() => void>()}
+        onAddUnseen={vi.fn<() => void>()}
+        onAddGame={vi.fn<() => void>()}
+        onDeleteGame={vi.fn<() => void>()}
+      />,
+    );
+    const rows = container.querySelectorAll(".r-row");
+    // Rally 1: 2 red (server wrong team, two-bounce), 2 amber (opening score, kitchen line)
+    expect(rows[0]!.querySelector(".iss .red")?.textContent).toBe("2");
+    expect(rows[0]!.querySelector(".iss .amber")?.textContent).toBe("2");
+    // Rally 3 (Unseen): 1 red, 0 amber (amber omitted)
+    expect(rows[2]!.querySelector(".iss .red")?.textContent).toBe("1");
+    expect(rows[2]!.querySelector(".iss .amber")).toBeNull();
+  });
+
+  it("renders inline Shot and Rally badges and clickable 'Shot issues in this Rally' rows in InspectorPanel", () => {
+    const { games, issues } = gamesWithIssues();
+    const onSelectIssue = vi.fn<(issue: RuleIssue) => void>();
+    const { unmount } = render(
+      <InspectorPanel
+        focused={false}
+        tab="shot"
+        onTabChange={vi.fn<() => void>()}
+        games={games}
+        selection={{ game: 0, rally: 0, entry: 1 }}
+        roster={ROSTER}
+        frame={170}
+        cursor={{ shot: 0, rally: 0 }}
+        onCursor={vi.fn<() => void>()}
+        form={null}
+        onOpenForm={vi.fn<() => void>()}
+        onCloseForm={vi.fn<() => void>()}
+        onEdit={vi.fn<() => void>()}
+        onMoveContactHere={vi.fn<() => void>()}
+        onSyncFromTracking={vi.fn<() => void>()}
+        onDeleteRally={vi.fn<() => void>()}
+        issues={issues}
+        onSelectIssue={onSelectIssue}
+      />,
+    );
+    const kindRow = screen.getByRole("button", { name: "Contact Kind" }).closest(".insp-row")!;
+    expect(kindRow.querySelector(".badge.red")?.textContent).toContain("two-bounce rule");
+    expect(kindRow.querySelector(".badge.amber")?.textContent).toContain("kitchen line");
+    unmount();
+
+    render(
+      <InspectorPanel
+        focused={false}
+        tab="rally"
+        onTabChange={vi.fn<() => void>()}
+        games={games}
+        selection={{ game: 0, rally: 0, entry: 1 }}
+        roster={ROSTER}
+        frame={170}
+        cursor={{ shot: 0, rally: 0 }}
+        onCursor={vi.fn<() => void>()}
+        form={null}
+        onOpenForm={vi.fn<() => void>()}
+        onCloseForm={vi.fn<() => void>()}
+        onEdit={vi.fn<() => void>()}
+        onMoveContactHere={vi.fn<() => void>()}
+        onSyncFromTracking={vi.fn<() => void>()}
+        onDeleteRally={vi.fn<() => void>()}
+        issues={issues}
+        onSelectIssue={onSelectIssue}
+      />,
+    );
+    const serverRow = screen.getByRole("button", { name: "Server" }).closest(".insp-row")!;
+    expect(serverRow.querySelector(".badge.red")?.textContent).toContain("not on the Serving Team");
+    expect(screen.getByText("Shot issues in this Rally")).toBeTruthy();
+    const shotIssueBtn = screen.getByRole("button", { name: /Shot 2:.*two-bounce rule/ });
+    fireEvent.click(shotIssueBtn);
+    expect(onSelectIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "two_bounce_rule", entryIndex: 1 }),
+    );
+  });
+
+  it("draws merged clickable Issue markers on Timeline without scrubbing, and preserves Calibrate unmappedRanges", () => {
+    const { games, issues } = gamesWithIssues();
+    const onSelectIssue = vi.fn<(issue: RuleIssue) => void>();
+    const onSeek = vi.fn<(frame: number) => void>();
+    const { container, unmount } = render(
+      <Timeline
+        view={{ start: 0, end: 1000 }}
+        onViewChange={vi.fn<() => void>()}
+        frame={0}
+        totalFrames={3000}
+        playing={false}
+        onSeek={onSeek}
+        onZoom={vi.fn<() => void>()}
+        focused={false}
+        segments={[]}
+        unmappedRanges={[{ camera_view: "main", start_frame: 10, end_frame: 50 }]}
+        pending={null}
+        editableSegments={false}
+        onMoveEdge={vi.fn<() => void>()}
+        rallyLog={{
+          games,
+          selection: { game: 0, rally: 0, entry: 0 },
+          roster: ROSTER,
+          issues,
+          onSelectRally: vi.fn<() => void>(),
+          onSelectEntry: vi.fn<() => void>(),
+          onMoveContact: vi.fn<() => void>(),
+          onSelectIssue,
+          onFitRally: vi.fn<() => void>(),
+        }}
+      />,
+    );
+    // In Annotate/Review, unmappedRanges are NOT shown on the Issues track.
+    expect(container.querySelectorAll(".issue-unmapped")).toHaveLength(0);
+    // 1 merged Shot triangle (Shot 2, Red > Amber, 2 lines in tooltip)
+    const tris = container.querySelectorAll<HTMLButtonElement>(".issue-tri");
+    expect(tris).toHaveLength(1);
+    expect(tris[0]!.className).toContain("red");
+    expect(tris[0]!.title.split("\n")).toHaveLength(2);
+    // 2 Rally bars (framed Rally 1 + open-ended Rally 2; Unseen Rally 3 omitted)
+    const bars = container.querySelectorAll<HTMLButtonElement>(".issue-bar");
+    expect(bars).toHaveLength(2);
+    expect(bars[0]!.className).toContain("red");
+    // Clicking stops pointerDown propagation (no scrub) and jumps to primaryIssue (Red before Amber).
+    fireEvent.pointerDown(tris[0]!, { pointerId: 1, clientX: 170 });
+    fireEvent.click(tris[0]!);
+    expect(onSeek).not.toHaveBeenCalled();
+    expect(onSelectIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "two_bounce_rule", severity: "red" }),
+    );
+    fireEvent.click(bars[0]!);
+    expect(onSelectIssue).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: "server_wrong_team", severity: "red", entryIndex: null }),
+    );
+    unmount();
+
+    // In Calibrate (no rallyLog), unmappedRanges still render unchanged.
+    const cal = render(
+      <Timeline
+        view={{ start: 0, end: 1000 }}
+        onViewChange={vi.fn<() => void>()}
+        frame={0}
+        totalFrames={3000}
+        playing={false}
+        onSeek={onSeek}
+        onZoom={vi.fn<() => void>()}
+        focused={false}
+        segments={[]}
+        unmappedRanges={[{ camera_view: "main", start_frame: 10, end_frame: 50 }]}
+        pending={null}
+        editableSegments
+        onMoveEdge={vi.fn<() => void>()}
+      />,
+    );
+    expect(cal.container.querySelectorAll(".issue-unmapped")).toHaveLength(1);
+    expect(cal.container.querySelectorAll(".issue-bar")).toHaveLength(0);
+    expect(cal.container.querySelectorAll(".issue-tri")).toHaveLength(0);
   });
 });
