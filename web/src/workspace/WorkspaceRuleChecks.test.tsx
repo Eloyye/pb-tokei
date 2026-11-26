@@ -251,7 +251,7 @@ describe("Workspace live rule checks and F8 navigation", () => {
   });
 
   it("navigates via F8 / Shift+F8 and 'Shot issues in this Rally' in Review", async () => {
-    const { container } = renderWorkspace("review", sampleGames());
+    renderWorkspace("review", sampleGames());
     await screen.findByRole("button", { name: /● 2\s*issues/ });
 
     // F8 in Review cycles through issues and shows hints in the status bar.
@@ -268,7 +268,6 @@ describe("Workspace live rule checks and F8 navigation", () => {
     expect(screen.getByText(/Issue 1\/2 · G1 R1 · Shot 2 must be a Bounce/)).toBeTruthy();
 
     // Clicking 'Shot issues in this Rally' from the Rally tab jumps back to Shot 2.
-    fireEvent.click(container.querySelectorAll(".r-row")[0]!);
     fireEvent.click(screen.getByRole("tab", { name: "Rally" }));
     const shotIssueBtn = screen.getByRole("button", { name: /Shot 2:.*two-bounce rule/ });
     fireEvent.click(shotIssueBtn);

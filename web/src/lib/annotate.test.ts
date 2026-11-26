@@ -8,6 +8,7 @@ import {
   deleteEntry,
   deleteGame,
   deleteRally,
+  deselectSelection,
   insertUnseenRally,
   markRallyDone,
   markRallyEnd,
@@ -31,6 +32,8 @@ import {
   swapShotTeammates,
   switchHitterTeam,
   toggleGap,
+  toggleRally,
+  toggleShot,
 } from "./annotate";
 import { inferred, newRally, newShot, numberShots, observed, UNKNOWN } from "./rallyLog";
 import { ROSTER } from "./testRoster";
@@ -177,6 +180,50 @@ describe("framing Rallies", () => {
     expect(nextShotSelection(edit.games, { ...start, entry: 1 }, 1)).toBeUndefined();
     expect(nextRallySelection(edit.games, start, 1)).toEqual({ game: 1, rally: 0, entry: null });
     expect(nextRallySelection(edit.games, { game: 1, rally: 0, entry: null }, -1)).toEqual(start);
+  });
+
+  it("toggles Shot and Rally selection and steps back with Esc", () => {
+    const edit = run([
+      [100, markRallyStart],
+      [150, (c) => addShot(c, null)],
+      [180, (c) => addShot(c, null)],
+      [400, markRallyEnd],
+      [0, startNextGame],
+      [2000, markRallyStart],
+      [2050, (c) => addShot(c, null)],
+    ]);
+    const shot1: Selection = { game: 0, rally: 0, entry: 0 };
+
+    // Clicking the selected Shot deselects it and keeps the Rally.
+    expect(toggleShot(shot1, 0, 0, 0)).toEqual({ game: 0, rally: 0, entry: null });
+    // Clicking another Shot selects it.
+    expect(toggleShot(shot1, 0, 0, 1)).toEqual({ game: 0, rally: 0, entry: 1 });
+    // Clicking a Shot when only the Rally is selected selects it.
+    expect(toggleShot({ game: 0, rally: 0, entry: null }, 0, 0, 1)).toEqual({
+      game: 0,
+      rally: 0,
+      entry: 1,
+    });
+
+    // Clicking the selected Rally clears both Rally and Shot while keeping the active Game.
+    expect(toggleRally(edit.games, { game: 1, rally: 0, entry: 0 }, 1, 0)).toEqual({
+      game: 1,
+      rally: null,
+      entry: null,
+    });
+    // Clicking another Rally selects it and its first Shot.
+    expect(toggleRally(edit.games, { game: 1, rally: 0, entry: 0 }, 0, 0)).toEqual({
+      game: 0,
+      rally: 0,
+      entry: 0,
+    });
+
+    // Esc steps from Shot → Rally → nothing (keeping active Game), then stays unchanged.
+    const afterFirstEsc = deselectSelection({ game: 1, rally: 0, entry: 0 });
+    expect(afterFirstEsc).toEqual({ game: 1, rally: 0, entry: null });
+    const afterSecondEsc = deselectSelection(afterFirstEsc);
+    expect(afterSecondEsc).toEqual({ game: 1, rally: null, entry: null });
+    expect(deselectSelection(afterSecondEsc)).toBe(afterSecondEsc);
   });
 
   it("Referee Calls set the winner, and the same call again clears it", () => {

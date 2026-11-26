@@ -2,9 +2,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PlaySegment } from "../api/client";
-import { NO_SELECTION } from "../lib/annotate";
-import { newRally, newShot, numberShots } from "../lib/rallyLog";
+import type { Game, PlaySegment } from "../api/client";
+import { NO_SELECTION, type Selection, toggleRally, toggleShot } from "../lib/annotate";
+import { newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { ROSTER } from "../lib/testRoster";
 import { Timeline, type TimelineRallies } from "./Timeline";
 
@@ -289,5 +289,131 @@ describe("Timeline Rally edge drags", () => {
     expect(open.querySelector(".seg-handle.start")).toBeTruthy();
     expect(open.querySelector(".seg-handle.end")).toBeNull();
     expect(container.querySelectorAll(".clip")).toHaveLength(2);
+  });
+});
+
+function sampleGames(): Game[] {
+  return [
+    {
+      number: 1,
+      rallies: [
+        numberShots({
+          ...newRally(1, 100),
+          end_frame: 400,
+          serving_team_id: observed("A"),
+          entries: [
+            { ...newShot(150), hitter_id: observed("a1") },
+            { ...newShot(220), hitter_id: observed("b1") },
+          ],
+        }),
+      ],
+    },
+  ];
+}
+
+function renderInteractiveTimeline(initialSelection: Selection = { game: 0, rally: 0, entry: 0 }) {
+  const games = sampleGames();
+  const onSelectEntry = vi.fn<TimelineRallies["onSelectEntry"]>();
+  const onSelectRally = vi.fn<TimelineRallies["onSelectRally"]>();
+  const onMoveContact = vi.fn<TimelineRallies["onMoveContact"]>();
+
+  function Harness() {
+    const [selection, setSelection] = useState<Selection>(initialSelection);
+    return (
+      <Timeline
+        view={{ start: 0, end: 1000 }}
+        onViewChange={vi.fn<() => void>()}
+        frame={150}
+        totalFrames={3000}
+        playing={false}
+        onSeek={vi.fn<() => void>()}
+        onZoom={vi.fn<() => void>()}
+        focused={false}
+        segments={[]}
+        pending={null}
+        onMoveEdge={vi.fn<() => void>()}
+        onPreviewEdge={vi.fn<() => void>()}
+        rallyLog={{
+          games,
+          selection,
+          roster: ROSTER,
+          onSelectRally: (gi, ri, mode) => {
+            onSelectRally(gi, ri, mode);
+            setSelection((cur) => toggleRally(games, cur, gi, ri));
+          },
+          onMoveRallyEdge: vi.fn<TimelineRallies["onMoveRallyEdge"]>(),
+          onSelectEntry: (gi, ri, ei) => {
+            onSelectEntry(gi, ri, ei);
+            setSelection((cur) => toggleShot(cur, gi, ri, ei));
+          },
+          onMoveContact,
+          onFitRally: vi.fn<() => void>(),
+        }}
+      />
+    );
+  }
+
+  const result = render(<Harness />);
+  const ruler = result.container.querySelector<HTMLElement>(".ruler")!;
+  vi.spyOn(ruler, "getBoundingClientRect").mockReturnValue(
+    DOMRect.fromRect({ x: 0, width: 1000, height: 22 }),
+  );
+  return { ...result, onSelectEntry, onSelectRally, onMoveContact };
+}
+
+describe("Timeline Shot pin selection and drag", () => {
+  it("deselects the selected Shot pin on click (and ignores tiny pointer jitter)", () => {
+    const { container, onSelectEntry, onMoveContact } = renderInteractiveTimeline();
+    const pin = screen.getByRole("button", { name: "Shot 1 at frame 150" });
+    expect(pin.getAttribute("aria-pressed")).toBe("true");
+    expect(pin.className).toContain("on");
+
+    fireEvent.pointerDown(pin, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerMove(pin, { pointerId: 1, clientX: 152 });
+    fireEvent.pointerUp(pin, { pointerId: 1, clientX: 152 });
+
+    expect(onSelectEntry).toHaveBeenCalledExactlyOnceWith(0, 0, 0);
+    expect(onMoveContact).not.toHaveBeenCalled();
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    expect(pin.className).not.toContain("on");
+    // Rally clip stays selected.
+    expect(container.querySelector(".clip.on")).toBeTruthy();
+  });
+
+  it("fires only onMoveContact when dragging the selected Shot pin, without deselecting it", () => {
+    const { onSelectEntry, onMoveContact } = renderInteractiveTimeline();
+    const pin = screen.getByRole("button", { name: "Shot 1 at frame 150" });
+
+    fireEvent.pointerDown(pin, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerMove(pin, { pointerId: 1, clientX: 190 });
+    fireEvent.pointerUp(pin, { pointerId: 1, clientX: 190 });
+
+    expect(onMoveContact).toHaveBeenCalledExactlyOnceWith(0, 0, 0, 190);
+    expect(onSelectEntry).not.toHaveBeenCalled();
+    expect(pin.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("does not deselect when dragging the selected pin away and back to its original frame", () => {
+    const { onSelectEntry, onMoveContact } = renderInteractiveTimeline();
+    const pin = screen.getByRole("button", { name: "Shot 1 at frame 150" });
+
+    fireEvent.pointerDown(pin, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerMove(pin, { pointerId: 1, clientX: 190 });
+    fireEvent.pointerMove(pin, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerUp(pin, { pointerId: 1, clientX: 150 });
+
+    expect(onMoveContact).not.toHaveBeenCalled();
+    expect(onSelectEntry).not.toHaveBeenCalled();
+    expect(pin.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("deselects the selected Rally clip and its Shot when clicked again", () => {
+    const { container, onSelectRally } = renderInteractiveTimeline();
+    const clip = container.querySelector<HTMLButtonElement>(".clip.on")!;
+    fireEvent.click(clip);
+
+    expect(onSelectRally).toHaveBeenCalledExactlyOnceWith(0, 0, undefined);
+    expect(container.querySelector(".clip.on")).toBeNull();
+    expect(container.querySelector(".pin.on")).toBeNull();
   });
 });

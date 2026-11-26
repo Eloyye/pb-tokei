@@ -115,7 +115,8 @@ A top-down court in the right column. The near end, at the bottom, is the Main V
   - Dragging any dot (parked Unknown ones included) sets that Shot's position only, as Observed, with no Calibration needed. A Player dragged out of the Frontcourt becomes not Settled, and the hitter's Contact Zone follows their dot. Clicking a dot without dragging just selects it.
 - **Previous Shot.** Its positions are drawn as faint ghosts for context.
 - **Landing.** Clicking the court sets the landing (Observed, clamped to the court and surround), shown as a ✕ in the hitter's Team color with a dashed arc from the hitter.
-- **No Shot selected.** The diagram shows live Player Tracking at the playhead with #11's anchor fixes (below).
+- **Header.** Shows what the diagram is drawing: `Shot <N|?> · contact HH:MM:SS:FF` (or `contact Unknown`) with a **Live** button that deselects the Shot when a Shot is selected, or `Live · HH:MM:SS:FF` at the playhead otherwise.
+- **No Shot selected.** The diagram shows live Player Tracking at the playhead with #11's anchor fixes (below). Deselecting a Shot (clicking its selected pin, clicking **Live**, or pressing `Esc`) returns the diagram to live tracking and switches the Inspector to the Rally tab.
 
 ## Player positions and anchoring (#11)
 
@@ -190,7 +191,7 @@ Rallies are grouped by Game. Each row shows:
 - the score called (dashed swatch and "—" when Unknown)
 - red and amber issue counts
 
-The panel header shows Done out of total, with **+ Unseen** (`Shift+U`) and **+ Game** (`Shift+Enter`). Clicking a row, or `PgUp`/`PgDn`, moves to that Rally, selects its first Shot and fits the timeline to it. Clicking a Game's header makes it the active Game; an empty Game can be deleted from its header.
+The panel header shows Done out of total, with **+ Unseen** (`Shift+U`) and **+ Game** (`Shift+Enter`). Clicking a row, or `PgUp`/`PgDn`, moves to that Rally, selects its first Shot and fits the timeline to it. Clicking the selected Rally's row again deselects the Rally and any Shot. Clicking a Game's header makes it the active Game; an empty Game can be deleted from its header.
 
 Status rules (stored on `rallies.status`, ADR 0013):
 
@@ -224,8 +225,8 @@ Side-out pre-fill (Inferred, never overwriting Observed):
 - Scrubs and edge drags follow the frame under the pointer as you zoom or pan. An edge drag pauses playback and previews that frame in the Monitor. Releasing returns the Monitor to the playhead and saves the changed edge as one undo step.
 - **Tracks:**
   - **Segments.** Play Segments are colored by Camera View (Main blue-gray, Sideline brown). Drag either edge in Calibrate, Annotate or Review. The edge stops at the closest adjacent Play Segment or the segment's other edge. Create, delete and relabel Play Segments in Calibrate.
-  - **Rallies.** Each framed Rally gets a clip in the Serving Team's color with its status, number and score. Click a clip to select it and show its outline. In Annotate and Review, hover near an edge to see its handle, then drag to preview the new bounds in the track and the Overview bar. Dragging an unselected clip's edge selects that Rally. The start can go as early as one frame after the previous Rally's end (its start when open-ended) and as late as the first Shot's contact. The end can go as early as the last Shot's contact and as late as one frame before the next Rally's start. Either edge can meet the other at a single frame. The status bar explains which limit stopped the drag. Open-ended Rallies have a dashed end and a start handle. In Annotate, use `Shift+O` to set their end. `Shift+O` can also move a Rally's end before its last Shot, with a warning.
-  - **Shots.** A pin per Shot in the hitter's Team color (dimmed when the hitter is Inferred), labeled with its Shot Number (`?` after an Observation Gap). The current Shot has a white ring. Click a pin to select the Shot, or drag it to move its contact frame (Shots re-sort if it passes another). Observation Gaps appear as hatched dashed pills ("odd gap" / "even gap") halfway between the Shots around them; click one to select it.
+  - **Rallies.** Each framed Rally gets a clip in the Serving Team's color with its status, number and score. Click a clip to select it and show its outline; click the selected clip again to deselect the Rally and any Shot. In Annotate and Review, hover near an edge to see its handle, then drag to preview the new bounds in the track and the Overview bar. Dragging an unselected clip's edge selects that Rally. The start can go as early as one frame after the previous Rally's end (its start when open-ended) and as late as the first Shot's contact. The end can go as early as the last Shot's contact and as late as one frame before the next Rally's start. Either edge can meet the other at a single frame. The status bar explains which limit stopped the drag. Open-ended Rallies have a dashed end and a start handle. In Annotate, use `Shift+O` to set their end. `Shift+O` can also move a Rally's end before its last Shot, with a warning.
+  - **Shots.** A pin per Shot in the hitter's Team color (dimmed when the hitter is Inferred), labeled with its Shot Number (`?` after an Observation Gap). The current Shot has a white ring. Click a pin to select the Shot, click the selected pin again to deselect it (keeping the Rally selected), or drag it to move its contact frame (Shots re-sort if it passes another; dragging never deselects). Observation Gaps appear as hatched dashed pills ("odd gap" / "even gap") halfway between the Shots around them; click one to select or deselect it.
   - **Issues.** In Calibrate, clickable amber bars for unmapped Camera Motion ranges (#10). In Annotate and Review, clickable merged markers for rule checks (#13): one triangle per offending Shot at its contact frame and one bar per offending framed or open-ended Rally (Unseen Rallies are omitted from the Timeline). Red takes precedence over amber when mixed; hovering lists every message on that Shot or Rally, and clicking selects the offending Rally/Shot, switches to its Inspector tab, and focuses its first offending field (red before amber).
   - Space is reserved for an audio waveform track later (#26).
 - Entering a Rally zooms to it with 8% padding. During playback the view pages along with the playhead.
@@ -307,7 +308,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Referee Call: point / second server / side out (again clears) | `Shift+P` / `Shift+2` / `Shift+X` | ✓ |
 | Record a Challenge | `Shift+C` | ✓ |
 | Mark Rally Done (Review: accept), go to next | `Enter` | ✓ in Annotate |
-| Close an inline form | `Esc` | ✓ |
+| Close an inline form; otherwise deselect the Shot, then the Rally | `Esc` | ✓ |
 | Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
 | Undo / redo (Rally Log, anchors and Team ends alike) | `⌘Z` / `⇧⌘Z` | ✓ in all workspaces |
 | Shortcut sheet | `?` | ✓ |

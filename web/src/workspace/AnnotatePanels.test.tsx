@@ -399,6 +399,51 @@ describe("CourtPanel with a Shot selected", () => {
     expect(dot.getAttribute("transform")).toBe("translate(80, 308)");
     expect(dot.querySelector("title")!.textContent).toContain("(8.0, -36.0 ft");
   });
+
+  it("shows the Shot header with a Live button when selected, and Live with timecode otherwise", () => {
+    const { games } = annotated();
+    const ret = games[0]!.rallies[0]!.entries[1];
+    if (ret?.type !== "shot") throw new Error("expected a Shot");
+    const onDeselectShot = vi.fn<() => void>();
+    const { container, rerender } = render(
+      <CourtPanel
+        match={MATCH}
+        focused={false}
+        frame={240}
+        roster={ROSTER}
+        shot={ret}
+        onDeselectShot={onDeselectShot}
+      />,
+    );
+    expect(container.querySelector(".court-mode")?.textContent).toBe(
+      "Shot 2 · contact 00:00:02:50",
+    );
+    const liveButton = screen.getByRole("button", { name: "Live" });
+    fireEvent.click(liveButton);
+    expect(onDeselectShot).toHaveBeenCalledTimes(1);
+
+    // Unknown Shot number and contact frame render gracefully.
+    rerender(
+      <CourtPanel
+        match={MATCH}
+        focused={false}
+        frame={240}
+        roster={ROSTER}
+        shot={{
+          ...ret,
+          shot_number: { value: null, certainty: "unknown" },
+          contact_frame: { value: null, certainty: "unknown" },
+        }}
+        onDeselectShot={onDeselectShot}
+      />,
+    );
+    expect(container.querySelector(".court-mode")?.textContent).toBe("Shot ? · contact Unknown");
+
+    // Without a Shot selected, shows Live + playhead timecode and hides the Live button.
+    rerender(<CourtPanel match={MATCH} focused={false} frame={240} roster={ROSTER} />);
+    expect(container.querySelector(".court-mode")?.textContent).toBe("Live · 00:00:04:00");
+    expect(screen.queryByRole("button", { name: "Live" })).toBeNull();
+  });
 });
 
 function gamesWithIssues() {
