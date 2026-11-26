@@ -111,4 +111,16 @@ describe("MatchList Video pills", () => {
     }
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
+
+  it("shows Rally progress, or that there are no Rallies yet", async () => {
+    vi.mocked(listMatches).mockResolvedValue([
+      makeMatch("m1", { done_rallies: 3, total_rallies: 12 }),
+      makeMatch("m2", { tournament: "APP Chicago 2026" }),
+    ]);
+    renderList();
+
+    expect(await screen.findByText("Progress")).toBeTruthy();
+    expect(screen.getByTitle("3 of 12 Rallies Done").textContent).toContain("3 / 12");
+    expect(screen.getByText("no Rallies yet")).toBeTruthy();
+  });
 });

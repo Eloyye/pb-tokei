@@ -269,7 +269,7 @@ h1 {
 
 .match-table .tr {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(140px, 1.2fr) 136px;
+  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(140px, 1.2fr) 136px 140px;
   gap: 16px;
   align-items: center;
   padding: 7px 12px;
@@ -2484,4 +2484,634 @@ fieldset.transport-group {
   margin: 0;
   color: var(--fail);
   overflow-wrap: anywhere;
+}
+
+/* --- Rally and Shot entry (#12) ------------------------------------------------------------ */
+
+.team-a-bg {
+  background: var(--team-a);
+}
+
+.team-b-bg {
+  background: var(--team-b);
+}
+
+/* Facts: one visual rule everywhere (docs/annotation-ui.md, "Facts"). */
+.val {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.val.cert-observed {
+  color: var(--text);
+}
+
+.val.cert-inferred {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.val.cert-inferred::after {
+  content: "inf";
+  padding: 0 3px;
+  border: 1px solid var(--line-2);
+  border-radius: 2px;
+  color: var(--dim);
+  font: 600 8px var(--ui);
+  font-style: normal;
+  letter-spacing: 0.06em;
+}
+
+.val.cert-unknown {
+  border: 1px dashed var(--line-2);
+  color: var(--faint);
+}
+
+.val.derived {
+  color: var(--dim);
+}
+
+.insp-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.insp-title {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.insp-title .t {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.insp-title .s {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dim);
+  font: 11px var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.insp-offset {
+  color: var(--warn);
+}
+
+.insp-title .button {
+  padding: 1px 6px;
+  font: 11px var(--ui);
+}
+
+.sect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 2px;
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sect button {
+  padding: 0 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--dim);
+  font: 10px var(--ui);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.insp-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.insp-row:hover {
+  background: var(--hover);
+}
+
+.insp-row.cursor {
+  border-color: rgb(45 140 235 / 55%);
+  background: var(--accent-soft);
+}
+
+.insp-row.ro {
+  cursor: default;
+}
+
+.insp-row.ro:hover {
+  background: none;
+}
+
+.insp-row {
+  position: relative;
+}
+
+.insp-row .lbl {
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The label's button covers the row; controls inside the row sit above it. */
+.insp-row button.lbl::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.insp-row select,
+.insp-row .keys {
+  position: relative;
+  z-index: 1;
+}
+
+.insp-position .name {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.insp-row .keys {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  max-width: 150px;
+}
+
+.insp-row .keys kbd.lit {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.insp-row .keys .hint {
+  color: var(--faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.insp-positions {
+  display: grid;
+  gap: 1px;
+  padding: 0 10px 4px;
+}
+
+.insp-position {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.insp-position .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settled-badge {
+  padding: 0 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--text);
+  font: 10px/14px var(--ui);
+  cursor: pointer;
+}
+
+.settled-badge.cert-inferred {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.settled-badge.cert-unknown {
+  border-style: dashed;
+  background: none;
+  color: var(--faint);
+}
+
+.checklist {
+  margin: 2px 10px 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--app);
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.checklist summary {
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.checklist b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.derived-label {
+  padding: 4px 10px 8px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.insp-form {
+  display: grid;
+  gap: 6px;
+  margin: 4px 10px 8px;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--app);
+}
+
+.insp-form label {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+}
+
+.insp-form select,
+.insp-form input {
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--text);
+  font: inherit;
+}
+
+.insp-form input[aria-invalid="true"] {
+  border-color: var(--fail);
+}
+
+.insp-form .btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.insp-form .btns .button {
+  padding: 2px 10px;
+}
+
+.rally-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 0 6px;
+}
+
+.game-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px 3px;
+  color: var(--faint);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.game-h button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.game-h.active {
+  color: var(--accent);
+}
+
+.r-row {
+  display: grid;
+  grid-template-columns: 14px 30px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.r-row:hover {
+  background: var(--hover);
+}
+
+.r-row.on {
+  background: var(--accent-soft);
+}
+
+.r-row .st {
+  color: var(--dim);
+  font-size: 11px;
+  text-align: center;
+}
+
+.r-row .st.done {
+  color: var(--ok);
+}
+
+.r-row .st.in_progress {
+  color: var(--accent);
+}
+
+.r-row .num {
+  color: var(--dim);
+  font-family: var(--mono);
+}
+
+.r-row .sc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.r-row .sc.unk {
+  color: var(--faint);
+}
+
+.r-row .frames {
+  color: var(--faint);
+  font: 10px var(--mono);
+}
+
+.swatch.unknown {
+  border: 1px dashed var(--line-2);
+  background: none;
+}
+
+.rallies-tools .icon-button {
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  z-index: 3;
+  min-width: 3px;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.clip.team-a {
+  border-color: var(--team-a);
+  background: rgb(43 179 163 / 22%);
+}
+
+.clip.team-b {
+  border-color: var(--team-b);
+  background: rgb(155 124 246 / 22%);
+}
+
+.clip.open {
+  border-right-style: dashed;
+}
+
+.clip.on {
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
+.clip .mono {
+  margin-left: 4px;
+  color: var(--dim);
+}
+
+.pin {
+  position: absolute;
+  top: 5px;
+  z-index: 3;
+  min-width: 18px;
+  height: 22px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--faint);
+  color: #0e1114;
+  font: 600 10px/22px var(--mono);
+  text-align: center;
+  transform: translateX(-50%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.pin::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  border: 4px solid transparent;
+  border-top-color: var(--faint);
+  transform: translateX(-50%);
+}
+
+.pin.team-a {
+  background: var(--team-a);
+}
+
+.pin.team-a::after {
+  border-top-color: var(--team-a);
+}
+
+.pin.team-b {
+  background: var(--team-b);
+}
+
+.pin.team-b::after {
+  border-top-color: var(--team-b);
+}
+
+.pin.inferred {
+  opacity: 0.7;
+}
+
+.pin.on {
+  box-shadow: 0 0 0 2px var(--text);
+}
+
+.gap-pill {
+  position: absolute;
+  top: 6px;
+  z-index: 3;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  background: repeating-linear-gradient(135deg, transparent 0 4px, rgb(255 255 255 / 6%) 4px 8px);
+  color: var(--dim);
+  font: 10px/18px var(--mono);
+  white-space: nowrap;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+
+.gap-pill.on {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.ov-block {
+  position: absolute;
+  top: 4px;
+  height: 8px;
+  min-width: 2px;
+  border-radius: 1px;
+  background: var(--faint);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.ov-block.team-a {
+  background: var(--team-a);
+}
+
+.ov-block.team-b {
+  background: var(--team-b);
+}
+
+.overlay-right .rally-range {
+  color: var(--dim);
+  font-family: var(--mono);
+}
+
+.court .ghost {
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.court-player.hitter circle {
+  stroke: #fff;
+  stroke-width: 2.4;
+}
+
+.court .landing {
+  stroke-width: 2.4;
+  pointer-events: none;
+}
+
+.court .landing.team-a {
+  stroke: var(--team-a);
+}
+
+.court .landing.team-b {
+  stroke: var(--team-b);
+}
+
+.court .landing.team-none {
+  stroke: var(--text);
+}
+
+.court .traj {
+  fill: none;
+  stroke: var(--text);
+  stroke-dasharray: 2 3;
+  stroke-width: 0.8;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.court.landing-click {
+  cursor: crosshair;
+}
+
+.match-table .progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 11px var(--mono);
+}
+
+.match-table .progress-bar {
+  position: relative;
+  width: 60px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--raised);
+}
+
+.match-table .progress-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--ok);
+}
+
+.insp-body .dimmed {
+  color: var(--dim);
 }

@@ -123,6 +123,24 @@ export type TrackedPlayerOut = Schemas["TrackedPlayerOut"];
 export type FrameDetectionOut = Schemas["FrameDetectionOut"];
 export type PlayerTrackingFrameOut = Schemas["PlayerTrackingFrameOut"];
 export type PlayerTrackingFramesOut = Schemas["PlayerTrackingFramesOut"];
+export type Game = Schemas["GameIO"];
+export type Rally = Schemas["RallyIO"];
+export type Shot = Schemas["ShotIO"];
+export type ObservationGap = Schemas["GapIO"];
+export type RallyEntry = Shot | ObservationGap;
+export type Score = Schemas["ScoreIO"];
+export type CourtPoint = Schemas["CourtPointIO"];
+export type ShotPosition = Schemas["PlayerPositionIO"];
+export type ShotError = Schemas["ErrorIO"];
+export type Challenge = Schemas["ChallengeIO"];
+export type RallyStatus = Schemas["RallyStatus"];
+export type RefereeCall = Schemas["RefereeCall"];
+export type Ruling = Schemas["Ruling"];
+export type WinnerSource = Schemas["WinnerSource"];
+export type ShotClass = Schemas["ShotClass"];
+export type ContactKind = Schemas["ContactKind"];
+export type ErrorKind = Schemas["ErrorKind"];
+export type Parity = Schemas["Parity"];
 /** A Calibration's own fields, without its fit: what is edited and saved. */
 export type Calibration = Pick<
   CalibrationOut,
@@ -283,6 +301,24 @@ export async function replaceTeamEnds(matchId: string, teamEnds: TeamEnd[]): Pro
   const { data, error, response } = await api.PUT("/api/matches/{match_id}/team-ends", {
     params: { path: { match_id: matchId } },
     body: teamEnds,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getGames(matchId: string): Promise<Game[]> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/games", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+/** Replaces all of a Match's Games, Rallies, Shots and Observation Gaps. */
+export async function replaceGames(matchId: string, games: Game[]): Promise<Game[]> {
+  const { data, error, response } = await api.PUT("/api/matches/{match_id}/games", {
+    params: { path: { match_id: matchId } },
+    body: games,
   });
   if (data === undefined) throw apiError(response, error);
   return data;

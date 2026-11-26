@@ -26,6 +26,49 @@ import {
   unmappedRangeAt,
 } from "../lib/calibrations";
 import {
+  type AnnotateContext,
+  type AnnotateEdit,
+  addShot,
+  clampSelection,
+  cycleCertainty,
+  deleteEntry,
+  deleteGame,
+  deleteRally,
+  insertUnseenRally,
+  markRallyDone,
+  markRallyEnd,
+  markRallyStart,
+  moveContact,
+  moveShotPosition,
+  NO_SELECTION,
+  nextRallySelection,
+  nextShotSelection,
+  parkedOnShot,
+  RALLY_FIELDS,
+  type RallyField,
+  type Selection,
+  SHOT_FIELDS,
+  type ShotField,
+  type Stash,
+  selectedRally,
+  selectedShot,
+  selectRally,
+  setContactKind,
+  setError,
+  setLanding,
+  setRefereeCall,
+  setShotClass,
+  startNextGame,
+  swapHitterToPartner,
+  swapShotTeammates,
+  switchHitterTeam,
+  syncShotPositions,
+  toggleFlag,
+  toggleGap,
+} from "../lib/annotate";
+import {
+  type AnnotateAction,
+  annotateKeyAction,
   type CalibrationAction,
   calibrationKeyAction,
   historyKeyAction,
@@ -46,8 +89,16 @@ import {
   swapTeamEnds,
   swapTeamPartners,
 } from "../lib/players";
+import { isShot, positionsFromTracking, rosterOf, shotsOf } from "../lib/rallyLog";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import { type FrameRange, fullView, reconcileView, ZOOM_STEP, zoomView } from "../lib/timeline";
+import {
+  fitRange,
+  type FrameRange,
+  fullView,
+  reconcileView,
+  ZOOM_STEP,
+  zoomView,
+} from "../lib/timeline";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
@@ -56,7 +107,9 @@ import { CalibrationOverlay } from "./CalibrationOverlay";
 import { type CalibrateTab, CalibrationPanel } from "./CalibrationPanel";
 import { PlayerOverlay } from "./PlayerOverlay";
 import { PlayersPanel } from "./PlayersPanel";
-import { CourtPanel, InspectorPanel, RalliesPanel } from "./SidePanels";
+import { type InspectorForm, InspectorPanel, type InspectorTab } from "./Inspector";
+import { RalliesPanel } from "./RalliesPanel";
+import { CourtPanel } from "./SidePanels";
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
@@ -68,7 +121,7 @@ const MESSAGES: Record<WorkspaceName, string> = {
   calibrate:
     "Mark Play Segments with Shift+I and Shift+O, 1 / 2 for Main or Sideline; calibrate Landmarks, then track and anchor Players.",
   annotate:
-    "Live tracked Players show on the Monitor and Court diagram; click a box or drag a dot to fix.",
+    "⇧I at a Serve starts a Rally, M adds a Shot at each contact, Enter marks it Done; ? lists every key.",
   review: "Review needs pre-filled Rally Logs, which don't exist yet.",
 };
 
@@ -102,6 +155,18 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     ? setCalibrateSelectedPlayerId
     : setAnnotateSelectedPlayerId;
   const [showPlayerOverlay, setShowPlayerOverlay] = useState(true);
+
+  // Rally and Shot entry (#12): what is selected, the Inspector's tab, field cursor and form.
+  const roster = useMemo(() => rosterOf(match), [match]);
+  const games = recordingState.recording?.games ?? [];
+  const [rallySelection, setRallySelection] = useState<Selection>(NO_SELECTION);
+  const current = clampSelection(games, rallySelection);
+  const currentRally = selectedRally(games, current);
+  const currentShot = selectedShot(games, current);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("shot");
+  const [cursor, setCursor] = useState<Record<InspectorTab, number>>({ shot: 0, rally: 0 });
+  const [form, setForm] = useState<InspectorForm>(null);
+  const stashRef = useRef<Stash>(new Map());
 
   const segments = recordingState.recording?.segments ?? null;
   const segment = (segments && segmentAt(segments, frame)) || undefined;
@@ -229,6 +294,33 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   };
 
   const swapTeam = (team: "a" | "b") => {
+    if (annotating && parkedOnShot(games, current, frame)) {
+      // Parked on the selected Shot's contact: swap those teammates on the Shot too, as one step.
+      const teamId = team === "a" ? match.team_a_id : match.team_b_id;
+      return recording.editRecording((rec) => {
+        const players = swapTeamPartners(
+          rec.anchors,
+          rec.teamEnds,
+          match,
+          team,
+          frame,
+          playerTracking.frameData,
+        );
+        const shot = swapShotTeammates(
+          { games: rec.games, selection: current, roster, frame },
+          teamId,
+        );
+        return {
+          recording: {
+            ...rec,
+            anchors: players.anchors,
+            teamEnds: players.teamEnds,
+            games: shot.games,
+          },
+          message: `${players.message}; ${shot.message.toLowerCase()}`,
+        };
+      });
+    }
     recording.editPlayers((curAnchors, curEnds) =>
       swapTeamPartners(curAnchors, curEnds, match, team, frame, playerTracking.frameData),
     );
@@ -239,6 +331,223 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       swapTeamEnds(curAnchors, curEnds, match, frame, playerTracking.frameData?.near_team_id),
     );
   };
+  /** Runs a Rally Log edit (`lib/annotate`) and follows its selection. */
+  const annotateEdit = (
+    edit: (ctx: AnnotateContext) => AnnotateEdit,
+    at: { frame?: number; selection?: Selection } = {},
+  ): AnnotateEdit | null => {
+    const result = recording.editGames((list) =>
+      edit({
+        games: list,
+        selection: clampSelection(list, at.selection ?? rallySelection),
+        roster,
+        frame: at.frame ?? frame,
+      }),
+    );
+    if (result) setRallySelection(result.selection);
+    return result;
+  };
+
+  /** Moves the field cursor to a field, on the Inspector tab that owns it. */
+  const focusField = (tab: InspectorTab, field: ShotField | RallyField) => {
+    setInspectorTab(tab);
+    const index =
+      tab === "shot"
+        ? SHOT_FIELDS.indexOf(field as ShotField)
+        : RALLY_FIELDS.indexOf(field as RallyField);
+    if (index >= 0) setCursor((c) => ({ ...c, [tab]: index }));
+  };
+
+  /** Fits the Timeline to a Rally (8% padding); false for an Unseen Rally. */
+  const fitRally = (rally = currentRally): boolean => {
+    if (!rally || rally.start_frame === null) return false;
+    const last = shotsOf(rally).at(-1)?.contact_frame.value ?? rally.start_frame;
+    const end = rally.end_frame ?? Math.max(rally.start_frame, last);
+    setView(fitRange(rally.start_frame, end, totalFrames));
+    return true;
+  };
+
+  /** Selects a Rally (its first Shot), fits the Timeline to it and seeks to its start. */
+  const goToRally = (next: Selection) => {
+    setRallySelection(next);
+    setForm(null);
+    const rally = selectedRally(games, next);
+    if (!rally) return;
+    fitRally(rally);
+    const shot = next.entry === null ? undefined : rally.entries[next.entry];
+    const target = isShot(shot) ? shot.contact_frame.value : rally.start_frame;
+    if (target !== null) controls.seek(target);
+  };
+
+  /** Selects a Shot or Observation Gap and seeks to a Shot's contact. */
+  const goToEntry = (next: Selection) => {
+    setRallySelection(next);
+    const entry = selectedRally(games, next)?.entries[next.entry ?? -1];
+    if (isShot(entry) && entry.contact_frame.value !== null)
+      controls.seek(entry.contact_frame.value);
+  };
+
+  const snapshotAt = async (at: number) => {
+    const cached = playerTracking.cachedAt(at);
+    return positionsFromTracking(
+      roster,
+      cached === undefined ? await playerTracking.trackingAt(at) : (cached ?? undefined),
+    );
+  };
+
+  // While `M` waits for Player Tracking, later Annotate keys queue (with the frame they were
+  // pressed at) so they act on the new Shot, in order.
+  const busyRef = useRef(false);
+  const queuedRef = useRef<{ action: AnnotateAction; frame: number }[]>([]);
+  const [queueTick, setQueueTick] = useState(0);
+
+  const addShotAt = (at: number) => {
+    const cached = playerTracking.cachedAt(at);
+    const add = (tracking: Parameters<typeof positionsFromTracking>[1]) => {
+      const result = annotateEdit((c) => addShot(c, positionsFromTracking(roster, tracking)), {
+        frame: at,
+      });
+      if (result && result.games !== games) focusField("shot", "hitter_id");
+    };
+    if (cached !== undefined) return add(cached ?? undefined);
+    busyRef.current = true;
+    void playerTracking.trackingAt(at).then((tracking) => {
+      busyRef.current = false;
+      add(tracking);
+      setQueueTick((t) => t + 1);
+    });
+  };
+
+  const syncFromTracking = async () => {
+    const at = currentShot?.contact_frame.value;
+    if (at === undefined || at === null) return recording.notify("Select a Shot first");
+    const snapshot = await snapshotAt(at);
+    annotateEdit((c) => syncShotPositions(c, snapshot));
+  };
+
+  // Annotate's Space: at the selected Rally's end, replay it (or play on once it is Done).
+  const togglePlayAnnotate = () => {
+    const rally = currentRally;
+    if (
+      !playing &&
+      rally &&
+      rally.end_frame !== null &&
+      rally.start_frame !== null &&
+      frame === rally.end_frame &&
+      rally.status !== "done"
+    ) {
+      controls.seek(rally.start_frame);
+      controls.play();
+      return;
+    }
+    togglePlay();
+  };
+
+  const runAnnotate = (action: AnnotateAction, at = frame) => {
+    if (busyRef.current || queuedRef.current.length > 0) {
+      queuedRef.current.push({ action, frame: at });
+      return;
+    }
+    switch (action.type) {
+      case "rallyStart":
+        focusField("rally", "frames");
+        return annotateEdit(markRallyStart, { frame: at });
+      case "rallyEnd":
+        focusField("rally", "frames");
+        return annotateEdit(markRallyEnd, { frame: at });
+      case "refereeCall":
+        focusField("rally", "referee_call");
+        return annotateEdit((c) => setRefereeCall(c, action.call));
+      case "rallyForm":
+        if (!currentRally) return recording.notify("Select a Rally first");
+        focusField("rally", "score");
+        return setForm("details");
+      case "challengeForm":
+        if (!currentRally) return recording.notify("Select a Rally first");
+        focusField("rally", "challenge");
+        return setForm("challenge");
+      case "unseenRally":
+        focusField("rally", "score");
+        return annotateEdit(insertUnseenRally);
+      case "deleteRally":
+        return annotateEdit(deleteRally);
+      case "done": {
+        const result = annotateEdit(markRallyDone);
+        if (result && result.selection.rally !== current.rally) goToRally(result.selection);
+        return;
+      }
+      case "nextGame":
+        return annotateEdit(startNextGame);
+      case "addShot":
+        return addShotAt(at);
+      case "shotClass":
+        focusField("shot", "shot_class");
+        return annotateEdit((c) => setShotClass(c, action.value));
+      case "contactKind":
+        focusField("shot", "contact_kind");
+        return annotateEdit((c) => setContactKind(c, action.value));
+      case "swapPartner":
+        focusField("shot", "hitter_id");
+        return annotateEdit(swapHitterToPartner);
+      case "switchTeam":
+        focusField("shot", "hitter_id");
+        return annotateEdit(switchHitterTeam);
+      case "flag":
+        focusField("shot", action.flag);
+        return annotateEdit((c) => toggleFlag(c, action.flag));
+      case "error":
+        focusField("shot", "error");
+        return annotateEdit((c) => setError(c, action.kind));
+      case "gap":
+        setInspectorTab("shot");
+        return annotateEdit((c) => toggleGap(c, action.parity));
+      case "deleteEntry":
+        return annotateEdit(deleteEntry);
+      case "cycleCertainty": {
+        const field =
+          inspectorTab === "shot" ? SHOT_FIELDS[cursor.shot] : RALLY_FIELDS[cursor.rally];
+        if (!field) return;
+        let nextStash = stashRef.current;
+        annotateEdit((c) => {
+          const result = cycleCertainty(c, inspectorTab, field, stashRef.current);
+          nextStash = result.stash;
+          return result.edit;
+        });
+        stashRef.current = nextStash;
+        return;
+      }
+      case "shot": {
+        const next = nextShotSelection(games, current, action.direction);
+        if (!next) return recording.notify(action.direction === 1 ? "Last Shot" : "First Shot");
+        setInspectorTab("shot");
+        return goToEntry(next);
+      }
+      case "rally": {
+        const next = nextRallySelection(games, current, action.direction);
+        if (!next) return recording.notify(action.direction === 1 ? "Last Rally" : "First Rally");
+        return goToRally(next);
+      }
+      case "cursor": {
+        const length = inspectorTab === "shot" ? SHOT_FIELDS.length : RALLY_FIELDS.length;
+        return setCursor((c) => ({
+          ...c,
+          [inspectorTab]: (c[inspectorTab] + action.direction + length) % length,
+        }));
+      }
+      case "escape":
+        return setForm(null);
+    }
+  };
+
+  const drainQueue = useEffectEvent((tick: number) => {
+    if (busyRef.current || tick < 0) return;
+    const next = queuedRef.current.shift();
+    if (!next) return;
+    runAnnotate(next.action, next.frame);
+    setQueueTick((t) => t + 1);
+  });
+  useEffect(() => drainQueue(queueTick), [queueTick]);
+
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,
     landmark: null,
@@ -333,6 +642,30 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   }
   useEffect(() => saveSizes(sizes), [sizes]);
 
+  // Annotate pauses at the selected Rally's end frame, unless the Rally is Done or playback
+  // started after it (docs/annotation-ui.md, "Monitor").
+  const [playStart, setPlayStart] = useState<{ playing: boolean; frame: number | null }>({
+    playing,
+    frame: null,
+  });
+  if (playStart.playing !== playing) {
+    setPlayStart({ playing, frame: playing ? frame : null });
+  }
+  const pauseAtEnd = useEffectEvent((shown: number) => {
+    const rally = currentRally;
+    const start = playStart.frame;
+    if (!annotating || !playing || !rally || rally.end_frame === null) return;
+    if (rally.status === "done" || start === null || start > rally.end_frame) return;
+    if (shown >= rally.end_frame) {
+      controls.pause();
+      controls.seek(rally.end_frame);
+      recording.notify("End of Rally: Space replays it, Enter marks it Done");
+    }
+  });
+  useEffect(() => {
+    if (playing) pauseAtEnd(frame);
+  }, [frame, playing]);
+
   const zoom = useCallback(
     (direction: "in" | "out") =>
       setView((v) =>
@@ -347,7 +680,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     const run = (action: PlayerAction) => {
       switch (action.type) {
         case "togglePlay":
-          return togglePlay();
+          return annotating ? togglePlayAnnotate() : togglePlay();
         case "step":
           return step(action.frames, action.pause);
         case "setSpeed":
@@ -359,15 +692,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     const edit = (action: SegmentAction) => {
       switch (action.type) {
         case "markIn":
-          return recording.editSegments((current, pending) => markIn(current, pending, frame));
+          return recording.editSegments((list, pending) => markIn(list, pending, frame));
         case "markOut":
-          return recording.editSegments((current, pending) => markOut(current, pending, frame));
+          return recording.editSegments((list, pending) => markOut(list, pending, frame));
         case "setView":
-          return recording.editSegments((current, pending) =>
-            setCameraView(current, pending, frame, action.view),
+          return recording.editSegments((list, pending) =>
+            setCameraView(list, pending, frame, action.view),
           );
         case "remove":
-          return recording.editSegments((current, pending) => removeAt(current, pending, frame));
+          return recording.editSegments((list, pending) => removeAt(list, pending, frame));
         case "cancel":
           return recording.cancelPending();
       }
@@ -378,6 +711,17 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       if (historyAction) {
         event.preventDefault();
         if (!event.repeat) recording[historyAction]();
+        return;
+      }
+    }
+    if (annotating && recordingState.recording) {
+      const annotateAction = annotateKeyAction(event);
+      if (annotateAction) {
+        event.preventDefault();
+        if (event.repeat && annotateAction.type !== "shot" && annotateAction.type !== "cursor") {
+          return;
+        }
+        runAnnotate(annotateAction);
         return;
       }
     }
@@ -464,7 +808,22 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           }
           videoRef={videoRef}
           state={state}
-          controls={controls}
+          controls={annotating ? { ...controls, togglePlay: togglePlayAnnotate } : controls}
+          annotate={
+            annotating
+              ? {
+                  onRallyStart: () => runAnnotate({ type: "rallyStart" }),
+                  onRallyEnd: () => runAnnotate({ type: "rallyEnd" }),
+                  onAddShot: () => runAnnotate({ type: "addShot" }),
+                  onRally: (direction) => runAnnotate({ type: "rally", direction }),
+                  onShot: (direction) => runAnnotate({ type: "shot", direction }),
+                  rallyRange:
+                    currentRally && currentRally.start_frame !== null
+                      ? `R${currentRally.number} ${currentRally.start_frame}–${currentRally.end_frame ?? "…"}`
+                      : null,
+                }
+              : undefined
+          }
           gotoOpen={gotoOpen}
           onCloseGoto={() => setGotoOpen(false)}
           focused={focused === "monitor"}
@@ -537,7 +896,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 onSelectPlayer={setSelectedPlayerId}
                 onAssignDetection={assignPlayerDetection}
                 onMovePlayer={movePlayerOnMonitor}
-                onBackgroundClick={annotating ? controls.togglePlay : undefined}
+                onBackgroundClick={annotating ? togglePlayAnnotate : undefined}
               />
             ) : undefined
           }
@@ -635,8 +994,44 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 onSelectPlayer={setSelectedPlayerId}
                 onMovePlayer={movePlayerOnCourt}
                 onPlaceOnCourt={placeSelectedOnCourt}
+                roster={roster}
+                shot={currentShot}
+                previousShot={
+                  currentRally && current.entry !== null
+                    ? shotsOf(currentRally).findLast(
+                        (s) => currentRally.entries.indexOf(s) < current.entry!,
+                      )
+                    : undefined
+                }
+                onSetLanding={(point) => {
+                  focusField("shot", "landing");
+                  annotateEdit((c) => setLanding(c, point));
+                }}
+                onMoveShotPlayer={(playerId, point) =>
+                  annotateEdit((c) => moveShotPosition(c, playerId, point))
+                }
               />
-              <InspectorPanel focused={focused === "inspector"} />
+              <InspectorPanel
+                focused={focused === "inspector"}
+                tab={inspectorTab}
+                onTabChange={setInspectorTab}
+                games={games}
+                selection={current}
+                roster={roster}
+                frame={frame}
+                cursor={cursor}
+                onCursor={(tab, index) => setCursor((c) => ({ ...c, [tab]: index }))}
+                form={form}
+                onOpenForm={setForm}
+                onCloseForm={() => setForm(null)}
+                onEdit={(edit) => annotateEdit(edit)}
+                onMoveContactHere={() => {
+                  if (current.entry === null) return;
+                  annotateEdit((c) => moveContact(c, current.entry!, frame));
+                }}
+                onSyncFromTracking={() => void syncFromTracking()}
+                onDeleteRally={() => runAnnotate({ type: "deleteRally" })}
+              />
             </>
           )}
         </div>
@@ -651,7 +1046,17 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           }}
           onNudge={(delta) => resize("bottom", sizes.bottom - delta)}
         />
-        <RalliesPanel focused={focused === "rallies"} />
+        <RalliesPanel
+          focused={focused === "rallies"}
+          games={games}
+          selection={current}
+          roster={roster}
+          onSelectRally={(gi, ri) => goToRally(selectRally(games, gi, ri))}
+          onSelectGame={(gi) => setRallySelection({ game: gi, rally: null, entry: null })}
+          onAddUnseen={() => runAnnotate({ type: "unseenRally" })}
+          onAddGame={() => runAnnotate({ type: "nextGame" })}
+          onDeleteGame={(gi) => annotateEdit((c) => deleteGame(c, gi))}
+        />
         <Splitter
           className="splitter-rallies"
           orientation="vertical"
@@ -677,9 +1082,30 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           pending={calibrating ? recordingState.pending : null}
           editableSegments={calibrating}
           onMoveEdge={(segmentStart, edge, to) =>
-            recording.editSegments((current, pending) =>
-              moveEdge(current, pending, segmentStart, edge, to),
+            recording.editSegments((list, pending) =>
+              moveEdge(list, pending, segmentStart, edge, to),
             )
+          }
+          rallyLog={
+            annotating || workspace === "review"
+              ? {
+                  games,
+                  selection: current,
+                  roster,
+                  onSelectRally: (gi, ri) => goToRally(selectRally(games, gi, ri)),
+                  onSelectEntry: (gi, ri, ei) => {
+                    setInspectorTab("shot");
+                    goToEntry({ game: gi, rally: ri, entry: ei });
+                  },
+                  onMoveContact: (gi, ri, ei, to) =>
+                    annotateEdit((c) => moveContact(c, ei, to), {
+                      selection: { game: gi, rally: ri, entry: ei },
+                    }),
+                  onFitRally: () => {
+                    if (!fitRally()) setView(fullView(totalFrames));
+                  },
+                }
+              : undefined
           }
         />
       </div>

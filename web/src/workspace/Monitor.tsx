@@ -30,6 +30,7 @@ export function Monitor({
   cameraView,
   overlay,
   headerTools,
+  annotate,
 }: {
   match: MatchDetail;
   src: string | null;
@@ -46,6 +47,8 @@ export function Monitor({
   overlay?: ReactNode;
   /** Extra controls in the Monitor header (e.g. Annotate's Player overlay toggle & swaps). */
   headerTools?: ReactNode;
+  /** Annotate's Rally and Shot transport (docs/annotation-ui.md, "Monitor"). */
+  annotate?: AnnotateTransport;
 }) {
   const lastFrame = Math.max(0, state.totalFrames - 1);
   return (
@@ -90,6 +93,7 @@ export function Monitor({
             </div>
             <div className="overlay overlay-right">
               <div className={`speed ${state.speed < 1 ? "slow" : ""}`}>{state.speed}×</div>
+              {annotate?.rallyRange && <div className="rally-range">{annotate.rallyRange}</div>}
               <div className={state.playing ? "playing" : ""}>
                 {state.playing ? "Playing" : "Paused"}
               </div>
@@ -108,20 +112,114 @@ export function Monitor({
           <FetchPanel match={match} />
         )}
       </div>
-      <Transport state={state} controls={controls} disabled={!src} />
+      <Transport state={state} controls={controls} disabled={!src} annotate={annotate} />
     </Panel>
   );
+}
+
+export interface AnnotateTransport {
+  onRallyStart: () => void;
+  onRallyEnd: () => void;
+  onAddShot: () => void;
+  onRally: (direction: 1 | -1) => void;
+  onShot: (direction: 1 | -1) => void;
+  /** The selected Rally's frames, shown bottom-right; null without one. */
+  rallyRange: string | null;
 }
 
 function Transport({
   state,
   controls,
   disabled,
+  annotate,
 }: {
   state: PlayerState;
   controls: PlayerControls;
   disabled: boolean;
+  annotate?: AnnotateTransport;
 }) {
+  if (annotate) {
+    return (
+      <div className="transport">
+        <div className="transport-group">
+          <TransportButton
+            icon="markIn"
+            label="Rally start at playhead (⇧I)"
+            disabled={disabled}
+            onClick={annotate.onRallyStart}
+          />
+          <TransportButton
+            icon="markOut"
+            label="Rally end at playhead (⇧O)"
+            disabled={disabled}
+            onClick={annotate.onRallyEnd}
+          />
+          <button
+            type="button"
+            className="icon-button mono"
+            disabled={disabled}
+            title="Add a Shot at the playhead (M)"
+            onClick={annotate.onAddShot}
+          >
+            + Shot
+          </button>
+        </div>
+        <div className="transport-group">
+          <TransportButton
+            icon="prevRally"
+            label="Previous Rally (PgUp)"
+            disabled={disabled}
+            onClick={() => annotate.onRally(-1)}
+          />
+          <TransportButton
+            icon="prevShot"
+            label="Previous Shot (↑)"
+            disabled={disabled}
+            onClick={() => annotate.onShot(-1)}
+          />
+          <TransportButton
+            icon="stepBack"
+            label="Back one frame (←)"
+            disabled={disabled}
+            onClick={() => controls.step(-1, true)}
+          />
+          <button
+            type="button"
+            className="icon-button play"
+            disabled={disabled}
+            onClick={controls.togglePlay}
+            title="Play / pause (Space): pauses at the Rally's end"
+            aria-label={state.playing ? "Pause" : "Play"}
+          >
+            <Icon name={state.playing ? "pause" : "play"} />
+          </button>
+          <TransportButton
+            icon="stepForward"
+            label="Forward one frame (→)"
+            disabled={disabled}
+            onClick={() => controls.step(1, true)}
+          />
+          <TransportButton
+            icon="nextShot"
+            label="Next Shot (↓)"
+            disabled={disabled}
+            onClick={() => annotate.onShot(1)}
+          />
+          <TransportButton
+            icon="nextRally"
+            label="Next Rally (PgDn)"
+            disabled={disabled}
+            onClick={() => annotate.onRally(1)}
+          />
+        </div>
+        <div className="transport-group end">
+          <span className="hint">
+            <kbd>Enter</kbd> Rally Done, next
+          </span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="transport">
       <fieldset className="transport-group" aria-label="Playback speed">

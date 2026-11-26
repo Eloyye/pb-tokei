@@ -1,0 +1,288 @@
+import type { Game, Rally, Score, WinnerSource } from "../api/client";
+import {
+  type Fact,
+  inferred,
+  known,
+  numberShots,
+  observed,
+  otherTeam,
+  partnerOf,
+  type Roster,
+  shotsOf,
+  teamOf,
+  UNKNOWN,
+} from "./rallyLog";
+
+/**
+ * Side-out doubles (ADR 0002): what each Rally's score, Serving Team, Server and Returner should
+ * be given the Rally before it, and who won each Rally. Pre-filled values are Inferred and never
+ * overwrite Observed ones.
+ *
+ * Which Player stands in the right-hand court on an even score (`evenRight`) is learned from the
+ * legal serving box, which is tracked across each service turn: right at 0-0-2 and at every side
+ * out, flipping on every Point and when the second server takes over. Stacking only moves Players
+ * after the serve and return, so this works whether or not a Team stacks.
+ */
+
+type Box = "right" | "left";
+
+/** The four facts a Rally is pre-filled with. */
+export interface Expected {
+  score: Fact<Score>;
+  serving_team_id: Fact<string>;
+  server_id: Fact<string>;
+  returner_id: Fact<string>;
+}
+
+const NOTHING: Expected = {
+  score: UNKNOWN,
+  serving_team_id: UNKNOWN,
+  server_id: UNKNOWN,
+  returner_id: UNKNOWN,
+};
+
+/** Rally 1 of any Game: the first Serving Team starts at 0-0-2. */
+export const OPENING: Expected = {
+  ...NOTHING,
+  score: inferred({ serving: 0, receiving: 0, server_number: 2 }),
+};
+
+interface WalkState {
+  /** Per Team, the Player in the right-hand court when the Team's score is even. */
+  evenRight: Map<string, string>;
+}
+
+function flip(box: Box): Box {
+  return box === "right" ? "left" : "right";
+}
+
+function inferredOrUnknown(value: string | null): Fact<string> {
+  return value === null ? UNKNOWN : inferred(value);
+}
+
+/** The Player on `team` legally in the right-hand court at `score`. */
+function rightCourtPlayer(
+  roster: Roster,
+  state: WalkState,
+  team: string,
+  score: number,
+): string | null {
+  const even = state.evenRight.get(team);
+  if (even === undefined) return null;
+  return score % 2 === 0 ? even : partnerOf(roster, even);
+}
+
+/** What Rally k + 1 should be, from Rally k, and the legal serving box for it. */
+function transition(
+  roster: Roster,
+  state: WalkState,
+  previous: Rally,
+): { expected: Expected; box: Box | "flip" | null } {
+  const score = previous.score.value;
+  const serving = previous.serving_team_id.value;
+  const winner = previous.winner_id.value;
+  if (score === null || serving === null || winner === null) {
+    return { expected: NOTHING, box: null };
+  }
+  const receiving = otherTeam(roster, serving);
+  const server = previous.server_id.value;
+  const returner = previous.returner_id.value;
+  const partner = (id: string | null) => (id === null ? null : partnerOf(roster, id));
+  if (winner === serving) {
+    return {
+      expected: {
+        score: inferred({ ...score, serving: score.serving + 1 }),
+        serving_team_id: inferred(serving),
+        server_id: inferredOrUnknown(server),
+        returner_id: inferredOrUnknown(partner(returner)),
+      },
+      box: "flip",
+    };
+  }
+  if (score.server_number === 1) {
+    return {
+      expected: {
+        score: inferred({ ...score, server_number: 2 }),
+        serving_team_id: inferred(serving),
+        server_id: inferredOrUnknown(partner(server)),
+        returner_id: inferredOrUnknown(partner(returner)),
+      },
+      box: "flip",
+    };
+  }
+  // Side out: the Receiving Team serves from the right-hand court, Server 1.
+  return {
+    expected: {
+      score: inferred({ serving: score.receiving, receiving: score.serving, server_number: 1 }),
+      serving_team_id: inferred(receiving),
+      server_id: inferredOrUnknown(rightCourtPlayer(roster, state, receiving, score.receiving)),
+      returner_id: inferredOrUnknown(rightCourtPlayer(roster, state, serving, score.serving)),
+    },
+    box: "right",
+  };
+}
+
+/** The serving box when the transition doesn't say: from who serves and the even-score Player. */
+function boxFromServer(state: WalkState, rally: Rally): Box | null {
+  const score = rally.score.value;
+  const serving = rally.serving_team_id.value;
+  const server = rally.server_id.value;
+  if (score === null || serving === null || server === null) return null;
+  const even = state.evenRight.get(serving);
+  if (even === undefined) return null;
+  return (server === even) === (score.serving % 2 === 0) ? "right" : "left";
+}
+
+/** Learns who is in the right-hand court on an even score, from a Rally's Server and Returner. */
+function learn(roster: Roster, state: WalkState, rally: Rally, box: Box | null): void {
+  const score = rally.score.value;
+  const serving = rally.serving_team_id.value;
+  if (score === null || serving === null || box === null) return;
+  const receiving = otherTeam(roster, serving);
+  const server = rally.server_id.value;
+  const returner = rally.returner_id.value;
+  const right = box === "right";
+  if (server !== null) {
+    const even = right === (score.serving % 2 === 0) ? server : partnerOf(roster, server);
+    if (even !== null) state.evenRight.set(serving, even);
+  }
+  if (returner !== null) {
+    const even = right === (score.receiving % 2 === 0) ? returner : partnerOf(roster, returner);
+    if (even !== null) state.evenRight.set(receiving, even);
+  }
+}
+
+function keep<T>(current: Fact<T>, next: Fact<T>): Fact<T> {
+  return current.certainty === "observed" ? current : next;
+}
+
+/** Replaces every fact that isn't Observed with the expected one. */
+function prefill(rally: Rally, expected: Expected): Rally {
+  return {
+    ...rally,
+    score: keep(rally.score, expected.score),
+    serving_team_id: keep(rally.serving_team_id, expected.serving_team_id),
+    server_id: keep(rally.server_id, expected.server_id),
+    returner_id: keep(rally.returner_id, expected.returner_id),
+  };
+}
+
+/** Shot 1's Observed hitter is the Server; Shot 2's is the Returner (when not Observed). */
+function syncFromShots(roster: Roster, rally: Rally): Rally {
+  let next = rally;
+  for (const shot of shotsOf(rally)) {
+    const number = shot.shot_number.value;
+    const hitter = shot.hitter_id;
+    if (hitter.certainty !== "observed" || hitter.value === null) continue;
+    if (number === 1) {
+      const team = teamOf(roster, hitter.value);
+      if (next.server_id.certainty !== "observed") {
+        next = { ...next, server_id: inferred(hitter.value) };
+      }
+      if (team !== null && next.serving_team_id.certainty !== "observed") {
+        next = { ...next, serving_team_id: inferred(team) };
+      }
+    } else if (number === 2 && next.returner_id.certainty !== "observed") {
+      next = { ...next, returner_id: inferred(hitter.value) };
+    }
+  }
+  return next;
+}
+
+/** The winner seen in play: the Team opposite the Player whose Error ended the Rally. */
+function playWinnerFromError(roster: Roster, rally: Rally): string | null {
+  const last = shotsOf(rally).at(-1);
+  const player = last?.error?.player_id.value;
+  if (!player) return null;
+  const team = teamOf(roster, player);
+  return team === null ? null : otherTeam(roster, team);
+}
+
+function refereeCallWinner(roster: Roster, rally: Rally): string | null {
+  const call = rally.referee_call.value;
+  const serving = rally.serving_team_id.value;
+  if (call === null || serving === null) return null;
+  return call === "point" ? serving : otherTeam(roster, serving);
+}
+
+/** The winner implied by who serves the next Rally (only its Observed facts, to avoid circles). */
+function nextServeWinner(roster: Roster, rally: Rally, next: Rally | undefined): string | null {
+  const serving = rally.serving_team_id.value;
+  if (!next || serving === null || next.serving_team_id.certainty !== "observed") return null;
+  const receiving = otherTeam(roster, serving);
+  if (next.serving_team_id.value !== serving) return receiving;
+  const score = rally.score.value;
+  const nextScore = next.score.certainty === "observed" ? next.score.value : null;
+  if (score !== null && nextScore !== null) {
+    if (nextScore.server_number === 2 && score.server_number === 1) return receiving;
+    if (nextScore.serving > score.serving) return serving;
+  }
+  const server = rally.server_id.value;
+  const nextServer = next.server_id.certainty === "observed" ? next.server_id.value : null;
+  if (server !== null && nextServer !== null) {
+    return nextServer === server ? serving : receiving;
+  }
+  return null;
+}
+
+/**
+ * Who won a Rally and how we know, highest priority first: Challenge, Referee Call, scoreboard,
+ * next Serve, then play (an Error, or a winner the operator set by hand).
+ */
+export function resolveWinner(
+  roster: Roster,
+  rally: Rally,
+  next: Rally | undefined,
+): { winner_id: Fact<string>; winner_source: WinnerSource | null } {
+  const fromError = playWinnerFromError(roster, rally);
+  const manual =
+    rally.winner_source === "play" && known(rally.winner_id) ? rally.winner_id.value : null;
+  const fromCall = refereeCallWinner(roster, rally);
+  const ruling = rally.challenge?.ruling.value ?? null;
+  if (ruling !== null) {
+    const base = fromCall ?? fromError ?? manual;
+    if (base !== null) {
+      return {
+        winner_id: observed(ruling === "upheld" ? base : otherTeam(roster, base)),
+        winner_source: "challenge",
+      };
+    }
+  }
+  if (fromCall !== null) return { winner_id: inferred(fromCall), winner_source: "referee_call" };
+  if (known(rally.scoreboard_winner_id)) {
+    return { winner_id: inferred(rally.scoreboard_winner_id.value), winner_source: "scoreboard" };
+  }
+  const fromNext = nextServeWinner(roster, rally, next);
+  if (fromNext !== null) return { winner_id: inferred(fromNext), winner_source: "next_serve" };
+  if (fromError !== null) return { winner_id: observed(fromError), winner_source: "play" };
+  if (manual !== null) return { winner_id: observed(manual), winner_source: "play" };
+  return { winner_id: UNKNOWN, winner_source: null };
+}
+
+/**
+ * Brings a Game up to date after an edit: numbers Shots, syncs Server and Returner from Shots 1
+ * and 2, resolves every winner, and pre-fills the Rallies after `fromIndex` (forward cascade) for
+ * every fact not Observed. Pass -1 to pre-fill all of them.
+ */
+export function normalizeGame(game: Game, roster: Roster, fromIndex: number): Game {
+  const rallies = game.rallies.map(numberShots);
+  const state: WalkState = { evenRight: new Map() };
+  let box: Box | null = null;
+  for (let i = 0; i < rallies.length; i++) {
+    let rally = rallies[i]!;
+    let expected = OPENING;
+    let nextBox: Box | null = "right";
+    if (i > 0) {
+      const step = transition(roster, state, rallies[i - 1]!);
+      expected = step.expected;
+      nextBox = step.box === "flip" ? (box === null ? null : flip(box)) : step.box;
+    }
+    if (i > fromIndex) rally = prefill(rally, expected);
+    rally = syncFromShots(roster, rally);
+    box = nextBox ?? boxFromServer(state, rally);
+    learn(roster, state, rally, box);
+    rally = { ...rally, ...resolveWinner(roster, rally, rallies[i + 1]) };
+    rallies[i] = rally;
+  }
+  return { ...game, rallies };
+}

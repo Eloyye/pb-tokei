@@ -5,17 +5,21 @@ import {
   ApiError,
   type CalibrationOut,
   getCalibrations,
+  getGames,
   getPlayerAnchors,
   getPlaySegments,
   getTeamEnds,
   type PlaySegment,
   replaceCalibrations,
+  replaceGames,
   replacePlayerAnchors,
   replacePlaySegments,
   replaceTeamEnds,
 } from "../api/client";
 import { clearLandmark, currentFit, fitKey, placeLandmark } from "../lib/calibrations";
+import { addShot, markRallyStart, NO_SELECTION, swapShotTeammates } from "../lib/annotate";
 import { markIn, markOut } from "../lib/segments";
+import { ROSTER } from "../lib/testRoster";
 import { tabSaveStatus, waitUntilSaved } from "../lib/unsavedChanges";
 import { useRecording } from "./useRecording";
 
@@ -27,6 +31,8 @@ vi.mock("../api/client", async (importActual) => ({
   getCalibrations: vi.fn<Client["getCalibrations"]>(),
   getPlayerAnchors: vi.fn<Client["getPlayerAnchors"]>(),
   getTeamEnds: vi.fn<Client["getTeamEnds"]>(),
+  getGames: vi.fn<Client["getGames"]>(),
+  replaceGames: vi.fn<Client["replaceGames"]>(),
   replacePlaySegments: vi.fn<Client["replacePlaySegments"]>(),
   replaceCalibrations: vi.fn<Client["replaceCalibrations"]>(),
   replacePlayerAnchors: vi.fn<Client["replacePlayerAnchors"]>(),
@@ -77,6 +83,8 @@ beforeEach(() => {
   ]);
   vi.mocked(getPlayerAnchors).mockResolvedValue([]);
   vi.mocked(getTeamEnds).mockResolvedValue([]);
+  vi.mocked(getGames).mockResolvedValue([]);
+  vi.mocked(replaceGames).mockImplementation(async (_id, games) => games);
   vi.mocked(replacePlaySegments).mockImplementation(async (_id, segments) => segments);
   vi.mocked(replaceCalibrations).mockResolvedValue([]);
   vi.mocked(replacePlayerAnchors).mockImplementation(async (_id, anchors) => anchors);
@@ -98,6 +106,11 @@ function holdNextSegmentsSave(): () => void {
       }),
   );
   return () => land?.();
+}
+
+/** An Annotate context at frame 100 with nothing selected. */
+function ctx(games: Parameters<typeof markRallyStart>[0]["games"]) {
+  return { games, selection: NO_SELECTION, roster: ROSTER, frame: 100 };
 }
 
 describe("useRecording with a Rally Log switch", () => {
@@ -383,5 +396,64 @@ describe("useRecording", () => {
     await flush();
     expect(result.current[0].recording?.anchors).toHaveLength(1);
     expect(result.current[0].recording?.teamEnds).toHaveLength(1);
+  });
+
+  it("autosaves Rally Log edits and undoes them with the rest of the Recording", async () => {
+    const { result } = await loaded();
+
+    let started: ReturnType<typeof markRallyStart> | null = null;
+    act(() => {
+      started = result.current[1].editGames((games) => markRallyStart(ctx(games)));
+    });
+    await flush();
+    expect(result.current[0].recording?.games).toHaveLength(1);
+    expect(vi.mocked(replaceGames).mock.calls.at(-1)?.[1]).toHaveLength(1);
+    expect(replacePlaySegments).not.toHaveBeenCalled();
+
+    act(() => result.current[1].editSegments((s, p) => markIn(s, p, 500)));
+    act(() => result.current[1].editSegments((s, p) => markOut(s, p, 600)));
+    act(() => result.current[1].undo());
+    act(() => result.current[1].undo());
+    await flush();
+    expect(result.current[0].recording?.games).toEqual([]);
+    expect(vi.mocked(replaceGames).mock.calls.at(-1)).toEqual(["match-1", []]);
+
+    act(() => result.current[1].redo());
+    await flush();
+    expect(result.current[0].recording?.games).toEqual(started!.games);
+  });
+
+  it("records a Swap on the anchors and the selected Shot as one undo step", async () => {
+    const { result } = await loaded();
+    let selection = NO_SELECTION;
+    act(() => {
+      const started = result.current[1].editGames((games) =>
+        markRallyStart({ games, selection, roster: ROSTER, frame: 100 }),
+      );
+      selection = started!.selection;
+    });
+    act(() => {
+      const added = result.current[1].editGames((games) =>
+        addShot({ games, selection, roster: ROSTER, frame: 120 }, null),
+      );
+      selection = added!.selection;
+    });
+    const before = result.current[0].recording!;
+    act(() =>
+      result.current[1].editRecording((recording) => ({
+        recording: {
+          ...recording,
+          anchors: [{ frame: 120, player_id: "a1", kind: "position", image_x: 0.5, image_y: 0.5 }],
+          games: swapShotTeammates(
+            { games: recording.games, selection, roster: ROSTER, frame: 120 },
+            "A",
+          ).games,
+        },
+        message: "Swapped",
+      })),
+    );
+    expect(result.current[0].recording!.anchors).toHaveLength(1);
+    act(() => result.current[1].undo());
+    expect(result.current[0].recording).toEqual(before);
   });
 });

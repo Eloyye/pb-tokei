@@ -26,6 +26,24 @@ export interface CourtPlayerDot {
   y: number | null;
   certainty: Certainty;
   selected?: boolean;
+  /** The selected Shot's hitter: drawn with a white ring. */
+  hitter?: boolean;
+}
+
+/** A faint dot: where a Player stood at the previous Shot. */
+export interface CourtGhost {
+  id: string;
+  team: "a" | "b";
+  x: number;
+  y: number;
+}
+
+/** A Shot's landing, drawn as a ✕ in the hitter's Team colour with a dashed arc from them. */
+export interface CourtLanding {
+  x: number;
+  y: number;
+  team: "a" | "b" | null;
+  from: Point | null;
 }
 
 /** Parking slots outside the right sideline for Players whose position is Unknown. */
@@ -51,6 +69,9 @@ export function CourtDiagram({
   onSelectPlayer,
   onMovePlayer,
   onPlaceOnCourt,
+  ghosts = [],
+  landing = null,
+  onClickCourt,
 }: {
   nearTeam: string;
   farTeam: string;
@@ -64,6 +85,10 @@ export function CourtDiagram({
   onMovePlayer?: (playerId: string, courtPoint: Point) => void;
   /** Fired when empty court is clicked while placing an undetected Player. */
   onPlaceOnCourt?: (courtPoint: Point) => void;
+  ghosts?: readonly CourtGhost[];
+  landing?: CourtLanding | null;
+  /** Fired when the court (not a dot) is clicked, e.g. to set a Shot's landing. */
+  onClickCourt?: (courtPoint: Point) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<{ playerId: string; from: Point; at: Point } | null>(null);
@@ -100,7 +125,7 @@ export function CourtDiagram({
   return (
     <svg
       ref={svgRef}
-      className={`court ${interactive ? "interactive" : ""} ${canClickToPlace ? "placing" : ""}`}
+      className={`court ${interactive ? "interactive" : ""} ${canClickToPlace ? "placing" : ""} ${onClickCourt ? "landing-click" : ""}`}
       viewBox={`${VIEW_X} ${VIEW_Y} ${VIEW_W} ${VIEW_H}`}
       role="img"
       aria-label="Court diagram"
@@ -110,9 +135,10 @@ export function CourtDiagram({
         if (pt) setDrag({ ...drag, at: pt });
       }}
       onPointerDown={(event) => {
-        if (!canClickToPlace || !onPlaceOnCourt) return;
         const pt = clientToCourt(event);
-        if (pt) onPlaceOnCourt(pt);
+        if (!pt) return;
+        if (onClickCourt) return onClickCourt(pt);
+        if (canClickToPlace && onPlaceOnCourt) onPlaceOnCourt(pt);
       }}
       onPointerUp={(event) => {
         if (!drag) return;
@@ -179,6 +205,32 @@ export function CourtDiagram({
       <text className={`label ${farClass}`} x={0} y={Y(23.6) + 4} textAnchor="middle">
         {farTeam}
       </text>
+      {ghosts.map((g) => (
+        <circle
+          key={`ghost-${g.id}`}
+          className="ghost"
+          cx={X(g.x)}
+          cy={Y(g.y)}
+          r={9}
+          style={{ fill: `var(--team-${g.team})` }}
+        />
+      ))}
+      {landing && landing.from && (
+        <path
+          className="traj"
+          d={`M ${X(landing.from.x)} ${Y(landing.from.y)} Q ${(X(landing.from.x) + X(landing.x)) / 2} ${Math.min(Y(landing.from.y), Y(landing.y)) - 30} ${X(landing.x)} ${Y(landing.y)}`}
+        />
+      )}
+      {landing && (
+        <g
+          className={`landing team-${landing.team ?? "none"}`}
+          transform={`translate(${X(landing.x)}, ${Y(landing.y)})`}
+          aria-label="Landing"
+        >
+          <line x1={-5} y1={-5} x2={5} y2={5} />
+          <line x1={-5} y1={5} x2={5} y2={-5} />
+        </g>
+      )}
       {players.map((p, idx) => {
         const activeDrag = drag?.playerId === p.id ? drag : null;
         const unknown = !activeDrag && (p.certainty === "unknown" || p.x === null || p.y === null);
@@ -192,6 +244,7 @@ export function CourtDiagram({
           `team-${p.team}`,
           unknown ? "unknown" : inferred ? "inferred" : "observed",
           isSelected ? "selected" : "",
+          p.hitter ? "hitter" : "",
           interactive ? "draggable" : "",
         ]
           .filter(Boolean)

@@ -63,6 +63,7 @@ export function MatchList() {
             <span>Match</span>
             <span>Franchise Match</span>
             <span>Video</span>
+            <span>Progress</span>
           </div>
           {matches.data.map((match) => {
             const pill = videoPill(match);
@@ -85,11 +86,25 @@ export function MatchList() {
                 <span>
                   <span className={pill.className}>{pill.label}</span>
                 </span>
+                <Progress done={match.done_rallies} total={match.total_rallies} />
               </Link>
             );
           })}
         </div>
       )}
     </main>
+  );
+}
+
+/** Rallies Done out of all Rallies, with a bar; or a note when there are none yet. */
+function Progress({ done, total }: { done: number; total: number }) {
+  if (total === 0) return <span className="dimmed">no Rallies yet</span>;
+  return (
+    <span className="progress" title={`${done} of ${total} Rallies Done`}>
+      <span className="progress-bar" aria-hidden>
+        <span style={{ width: `${(done / total) * 100}%` }} />
+      </span>
+      {done} / {total}
+    </span>
   );
 }

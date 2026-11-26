@@ -295,3 +295,12 @@ describe("reconcileView", () => {
     });
   });
 });
+
+describe("fitRange", () => {
+  it("fits a Rally with 8% padding each side, inside the video", async () => {
+    const { fitRange } = await import("./timeline");
+    expect(fitRange(1000, 1099, 10000)).toEqual({ start: 992, end: 1108 });
+    expect(fitRange(0, 99, 10000)).toEqual({ start: 0, end: 116 });
+    expect(fitRange(9900, 9999, 10000)).toEqual({ start: 9884, end: 10000 });
+  });
+});

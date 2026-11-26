@@ -56,7 +56,7 @@ The workspace tabs are how the operator switches jobs. All three tabs use the sa
 | Workspace | Right column | Timeline | Notes |
 |---|---|---|---|
 | **Calibrate** (#10, #11, #51) | Two tabs: **Landmarks** and **Players**. Under **Landmarks**: the Calibration in effect at the playhead (mini court, 12-Landmark checklist with leave-one-out errors in feet, Camera Motion status and clickable unmapped ranges with one-click re-anchoring), then every Calibration of each Camera View (click to seek, × to delete, **Use here**). Under **Players**: explicit **Track Players** / **Cancel** with progress %, active compute device badge (`MPS` / `CUDA` / `CPU`), and per-segment status (prioritising the Play Segment under the playhead first); 4-Player checklist showing Zone, Settled, certainty, and active selection; 1-click **Swap A**, **Swap B**, and **Swap ends** buttons acting from the playhead forward; interactive Court diagram preview; and clickable lists of anchors and end changes (click to seek, × to delete) | Segments track editable (with amber hatching on unmapped Camera Motion ranges); Issues track shows clickable amber bars for unmapped ranges; Rallies and Shots dimmed | Under **Landmarks**: Landmarks are clicked on the Monitor with a 4× magnifier and lens-corrected court template; `Tab` skips, `V` marks not visible, `C` confirms carried-over clicks, `X` clears, `N` starts a new Calibration. Under **Players**: detected person boxes, foot dots, and Player labels render over the Monitor for 1-click/1-drag anchoring (see [Player positions and anchoring](#player-positions-and-anchoring)). Play Segment keys (`Shift+I`/`Shift+O`, `1`/`2`, `Backspace`, `Esc`, and edge drags) work on both tabs. |
-| **Annotate** (#11, #12, Gold) | Live Court diagram (with tracked Player dots and drag-to-place fixes) + Inspector | All tracks | Monitor header includes a toggleable **Players** overlay (boxes, foot dots, labels) plus quick **Swap A**, **Swap B**, and **Swap ends** controls. Unified 1-click/drag fixes work directly on the Monitor and Court diagram with `⌘Z` / `⇧⌘Z` undo/redo (no letter/digit key conflicts with #12). `Enter` marks the Rally Done (#12). |
+| **Annotate** (#11, #12, Gold) | Court diagram (the selected Shot's recorded positions, or live tracked Players when no Shot is selected) + Inspector | All tracks | Monitor header includes a toggleable **Players** overlay (boxes, foot dots, labels) plus quick **Swap A**, **Swap B**, and **Swap ends** controls; parked on the selected Shot's contact, Swap A / Swap B also swap those teammates on that Shot. A whole Game is entered with the keyboard (see [Keymap](#keymap)), apart from landing clicks on the Court diagram. `Enter` marks the Rally Done. |
 | **Review** (#30, Assisted) | Court + Inspector | All tracks; Shot markers with low-confidence fields get an amber dot | Low-confidence fields get an amber outline and a percentage. `N`/`Shift+N` move between them. `Enter` accepts the Rally. Threshold slider in the status bar. |
 
 Each key's meaning is set by the workspace. The same key never does two things in one workspace.
@@ -89,21 +89,21 @@ Follows Premiere's Program Monitor:
   - center: previous Rally, previous Shot, frame back, play, frame forward, next Shot, next Rally
   - right: a hint for `Enter`
 
-Playback pauses at the current Rally's end frame. Seeking outside the Rally is allowed so its bounds can be moved.
+Playback pauses at the selected Rally's end frame when playback started at or before it, unless the Rally is Done. `Space` there replays the Rally from its start; once it is Done, `Space` plays on. Seeking outside the Rally is always allowed so its bounds can be moved.
 
 ## Court diagram
 
 A top-down court in the right column. The near end, at the bottom, is the Main View camera's end, so it lines up with the video.
 
 - Zone bands are shaded: Frontcourt 0–9 ft, Midcourt 9–18 ft, Backcourt 18 ft and beyond. Dashed lines mark 9 and 18 ft, ticks outside the sidelines mark 12 ft (the Established rule), and the side labels read FC / MC / BC.
-- **Players at the current Shot.** Four dots in Team colors with initials:
+- **Players at the selected Shot.** Four dots in Team colors with initials, from the Shot's recorded `shot_positions`:
   - The hitter has a white ring.
   - An Inferred position is drawn at reduced opacity.
   - An Unknown position is drawn as a hollow dashed dot parked outside the court.
-  - Dragging a dot fixes the position and makes it Observed.
+  - Dragging any dot (parked Unknown ones included) sets that Shot's position only, as Observed, with no Calibration needed. A Player dragged out of the Frontcourt becomes not Settled, and the hitter's Contact Zone follows their dot. Clicking a dot without dragging just selects it.
 - **Previous Shot.** Its positions are drawn as faint ghosts for context.
-- **Landing.** Clicking the court sets the landing, shown as a ✕ in the hitter's Team color with a dashed arc from the hitter.
-- Clicks on the video do nothing until calibration exists. After that they map through the Camera View calibration.
+- **Landing.** Clicking the court sets the landing (Observed, clamped to the court and surround), shown as a ✕ in the hitter's Team color with a dashed arc from the hitter.
+- **No Shot selected.** The diagram shows live Player Tracking at the playhead with #11's anchor fixes (below).
 
 ## Player positions and anchoring (#11)
 
@@ -119,34 +119,38 @@ Both `Calibrate → Players` and `Annotate` share one click/drag correction mode
 
 Two tabs: **Shot** and **Rally**. Setting a field switches to the tab that owns it.
 
-The title shows the Shot or Rally, its frame and timecode, and counts. When a Shot follows an Observation Gap, the title says its number is unknown.
+The title shows the Shot or Rally, its frame and timecode, and counts. When a Shot follows an Observation Gap, the title says its number is unknown. When the playhead isn't on the selected Shot's contact (stepping on to watch where the ball lands, say), the title shows the offset and a **Move contact here** button.
 
 Each row has three parts: label, value, then key hints on the right. A key hint lights up when it matches the current value.
 
 **Shot tab**
 
 - Recorded:
-  - Hitter (`X` swaps to the partner)
-  - Shot Class (`S H L O`)
+  - Hitter (`X` swaps to the partner, `Shift+H` or clicking the row switches to the other Team; both Observed)
+  - Shot Class (`S H L O`), with a collapsible Soft/Hard checklist under it (open by default, remembered per browser):
+    - **Soft:** descending as it crosses the net and landing (or, for a Volley, would land) in the opponent's Frontcourt.
+    - **Hard:** anything else that isn't a Lob or Overhead.
   - Contact Kind (`V B`)
-  - Contact Zone (from the hitter's position)
+  - Contact Zone (follows the hitter's position; click to set it by hand when the position is Unknown)
   - Erne (`E`)
   - ATP (`T`)
   - Landing (click the court)
-  - Error (`1`–`5`, `0` clears; the Error's Player defaults to the hitter)
-- Positions at contact: one row per Player.
-- Derived, computed and never stored: Shot Type, Rally Phase, Team Status.
+  - Error (`1`–`5`, `0` clears). The Error's Player defaults to the hitter, except for a Body Hit, where it is the opponent nearest the landing (or the first opponent). Pressing `5` again cycles between the opponents and `3` again between the hitter and partner; the row's picker sets any Player.
+- Positions at contact, with a **Sync from tracking** button that re-pulls Player Tracking for the Shot (undoable): one row per Player with Team swatch, name, `(x, |y| ft, Zone)` in certainty style, and a clickable Settled badge (`Settled` / `Moving` / `Unknown`, ADR 0012).
+- Derived, computed and never stored: Shot Type, Rally Phase, Team Status, labeled "Derived · computed, never stored".
 
 **Rally tab**
 
 - Frames (`Shift+I` / `Shift+O`)
-- Score called, Serving Team, Server, Returner (pre-filled from side-out logic)
-- Referee Call (`Shift+P` / `Shift+2` / `Shift+X`)
-- Challenge (`Shift+C` opens an inline form: challenger, original call, ruling)
+- Score called, Serving Team, Server, Returner (pre-filled from side-out logic; `Shift+S` opens an inline form for them, the scoreboard reading and a winner seen in play)
+- Referee Call (`Shift+P` / `Shift+2` / `Shift+X`; the same key again clears it)
+- Challenge (`Shift+C` opens an inline form: challenger, original call from presets or free text, ruling, and Clear Challenge)
 - Winner, with its source: Challenge, Referee Call, scoreboard, next Serve, or seen in play
-- Scoreboard reading
+- Scoreboard reading (stored apart from the winner, ADR 0013)
 - Status
-- Shot issues in this Rally
+- Shot issues in this Rally (#13)
+
+In a form, `Enter` saves and `Esc` cancels; other shortcuts are off while a field has focus.
 
 **Field cursor.** The last field set keeps focus (blue row highlight). `Tab` / `Shift+Tab` move it. `C` acts on it. No other key depends on the cursor.
 
@@ -160,7 +164,7 @@ One rule, used everywhere:
 | Inferred | Italic, dimmed, with a small `inf` tag |
 | Unknown | The word "Unknown" in a dashed empty slot |
 
-`C` cycles the focused field: Observed → Inferred → Unknown → Observed. Going to Unknown clears the value, as the Rally Log requires. Coming back restores the stashed value.
+`C` cycles the focused field: Observed → Inferred → Unknown → Observed. Going to Unknown clears the value, as the Rally Log requires. Coming back restores the stashed value. The winner can't be cycled: it is worked out from its sources.
 
 Model confidence (Review only) is a separate channel: an amber outline and a percentage. Certainty and confidence never share a visual channel.
 
@@ -174,17 +178,32 @@ Rallies are grouped by Game. Each row shows:
 - the score called (dashed swatch and "—" when Unknown)
 - red and amber issue counts
 
-The panel header shows Done out of total. Clicking a row, or `PgUp`/`PgDn`, moves to that Rally and fits the timeline to it.
+The panel header shows Done out of total, with **+ Unseen** (`Shift+U`) and **+ Game** (`Shift+Enter`). Clicking a row, or `PgUp`/`PgDn`, moves to that Rally, selects its first Shot and fits the timeline to it. Clicking a Game's header makes it the active Game; an empty Game can be deleted from its header.
 
-Status rules:
+Status rules (stored on `rallies.status`, ADR 0013):
 
 - A Rally becomes In progress on its first edit.
-- `Enter` marks it Done and moves to the next Rally.
+- `Enter` marks it Done and moves to the next Rally. On the last Rally it stays selected, and since it is Done, `Space` plays on past its end to find the next Rally.
 - Done never locks editing.
+
+Lifecycle:
+
+- `Shift+I` with no Rally selected, or with the playhead past the selected Rally's end, starts a new open-ended Rally at the playhead (creating Game 1 if there is none), pre-filled from side-out logic. Otherwise it moves the selected Rally's start (an Unseen Rally gets framed this way). Rallies in a Game never overlap and are kept in frame order, numbered 1..N; Unseen Rallies stay where they were inserted.
+- Shots can be added to an open-ended Rally. `Shift+O` ends it at the playhead, or moves the end of a framed Rally (with a warning if that cuts off its last Shot).
+- `Shift+U` inserts an Unseen Rally after the selected one, `Shift+Backspace` deletes the selected Rally, and `Shift+Enter` starts Game N + 1, whose first Rally opens at 0-0-2.
+
+Side-out pre-fill (Inferred, never overwriting Observed):
+
+- Rally 1 of every Game starts at 0-0-2.
+- After a Point, the score goes up and the Server stays; after the first server loses, the partner serves at server 2; after a side out, the other Team serves at server 1 from the right-hand court.
+- The app learns which Player stands in the right-hand court on an even score from the legal serving box (right at 0-0-2 and every side out, flipping on each Point and on the second server), so it works whether or not Teams stack.
+- Editing a Rally's score, Serving Team, Server, Returner or winner recomputes every later Rally in the Game for each fact that isn't Observed.
+- Shot 1's Observed hitter fills in the Server and Serving Team, and Shot 2's the Returner, when those aren't Observed.
+- An Unseen Rally's winner is Inferred from the next Rally's Observed serve (`next Serve`).
 
 ## Timeline
 
-- **Header.** Zoom out and in around the playhead (`-` / `=`) and Fit Rally.
+- **Header.** Zoom out and in around the playhead (`-` / `=`), Fit Rally (the selected Rally with 8% padding) and Fit video.
 - **Overview bar.** The whole Game: Rally blocks in the Serving Team's color, the visible window outlined in blue, and the playhead. Click to jump or scroll in any direction to pan at the same scale as the lanes.
 - **Ruler.** HH:MM:SS:FF ticks, with the tick step chosen from the zoom. The blue playhead has a head on the ruler. Click or drag on the ruler or any lane to scrub.
 - **Track headers** on the left, Premiere-style, with the current timecode above them.
@@ -193,9 +212,9 @@ Status rules:
 - During a scrub or Play Segment edge drag, the drag follows the frame under the pointer after zooming or panning.
 - **Tracks:**
   - **Segments.** Play Segments colored by Camera View (Main blue-gray, Sideline brown). Editable only in Calibrate.
-  - **Rallies.** One clip per Rally in the Serving Team's color, labeled with status, number and score. The current clip is outlined.
-  - **Shots.** A pin per Shot in the hitter's Team color, labeled with its Shot Number (`?` after an Observation Gap). The current Shot has a white ring. Observation Gaps appear as hatched dashed boxes ("odd gap" / "even gap").
-  - **Issues.** A triangle at the offending Shot, or a bar across the Rally for Rally-level issues. Red or amber; hover shows the message.
+  - **Rallies.** One clip per framed Rally in the Serving Team's color, labeled with status, number and score; an open-ended Rally has a dashed end. The current clip is outlined. Click to select.
+  - **Shots.** A pin per Shot in the hitter's Team color (dimmed when the hitter is Inferred), labeled with its Shot Number (`?` after an Observation Gap). The current Shot has a white ring. Click a pin to select the Shot, or drag it to move its contact frame (Shots re-sort if it passes another). Observation Gaps appear as hatched dashed pills ("odd gap" / "even gap") halfway between the Shots around them; click one to select it.
+  - **Issues.** A triangle at the offending Shot, or a bar across the Rally for Rally-level issues. Red or amber; hover shows the message (#13). Today it shows Calibrate's unmapped Camera Motion ranges.
   - Space is reserved for an audio waveform track later (#26).
 - Entering a Rally zooms to it with 8% padding. During playback the view pages along with the playhead.
 
@@ -228,40 +247,47 @@ Every change autosaves at once through the API. There is no Save button. The sta
 
 Playback keys are unchanged from the current app (`web/src/lib/keymap.ts`). Plain letters and digits never move the playhead.
 
-This is the Annotate and Review keymap. **Today** marks the inputs that work in the current app (✓). The remaining shortcuts are planned with Rally and Shot entry (#12) and the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet lists the current shortcuts and Timeline gestures.
+This is the Annotate and Review keymap. **Today** marks the inputs that work in the current app (✓). The remaining shortcuts are planned with the Assisted Annotation review (#30). Calibrate's own keys are under [Workspaces](#workspaces). The in-app `?` sheet lists the current shortcuts, Timeline gestures and the Soft/Hard checklist. Shift combinations are matched by physical key, so `Shift+2` works on any layout.
 
 | Action | Input | Today |
 |---|---|---|
-| Play / pause (stops at the Rally's end) | `Space` | ✓ (stopping at the Rally's end is planned) |
+| Play / pause (stops at the Rally's end; again replays it until Done) | `Space` | ✓ |
 | One frame back / forward | `←` / `→` | ✓ |
 | ±1 s / ±10 s | `Shift+←/→` / `Alt+←/→` | ✓ |
 | Slower / faster / back to 1× | `[` / `]` / `\` | ✓ |
 | Go to frame or time | `/` | ✓ |
-| Previous / next Shot (seek to contact) | `↑` / `↓` | planned |
-| Previous / next Rally | `PgUp` / `PgDn` | planned |
+| Previous / next Shot (seek to contact) | `↑` / `↓` | ✓ |
+| Previous / next Rally (fit and seek to it) | `PgUp` / `PgDn` | ✓ |
 | Zoom the Timeline | `-` / `=`, vertical scroll or pinch | ✓ |
 | Pan the Timeline | Horizontal swipe, `Shift`+scroll, or scroll on the Overview bar | ✓ |
-| Move field cursor | `Tab` / `Shift+Tab` | planned (in Calibrate, `Tab` skips to the next Landmark) |
-| Rally start / end at playhead | `Shift+I` / `Shift+O` | planned (in Calibrate: Play Segment start / end) |
-| Add Shot at playhead | `M` | planned |
-| Shot Class: Soft / Hard / Lob / Overhead | `S` `H` `L` `O` | planned |
-| Contact Kind: Volley / Bounce | `V` `B` | planned |
-| Swap hitter to partner | `X` | planned (in Calibrate: clear the selected Landmark) |
-| Toggle Erne / ATP | `E` / `T` | planned |
-| Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear | `1`–`5` / `0` | planned (in Calibrate, `1` / `2` set Main / Sideline View) |
-| Observation Gap after current Shot: odd / even | `G` / `Shift+G` | planned |
-| Delete Shot | `Backspace` | planned (in Calibrate: remove the Play Segment) |
-| Cycle certainty of focused field | `C` | planned |
-| Referee Call: point / second server / side out | `Shift+P` / `Shift+2` / `Shift+X` | planned |
-| Record a Challenge | `Shift+C` | planned |
-| Mark Rally Done (Review: accept), go to next | `Enter` | planned |
+| Move field cursor | `Tab` / `Shift+Tab` | ✓ (in Calibrate, `Tab` skips to the next Landmark) |
+| Rally start / end at playhead (starts a new open-ended Rally when none is selected or past its end) | `Shift+I` / `Shift+O` | ✓ (in Calibrate: Play Segment start / end) |
+| Rally details form (score, Serving Team, Server, Returner, scoreboard, winner in play) | `Shift+S` | ✓ |
+| Insert an Unseen Rally after this one | `Shift+U` | ✓ |
+| Delete the Rally | `Shift+Backspace` | ✓ |
+| Start the next Game | `Shift+Enter` | ✓ |
+| Add Shot at playhead (snapshots tracked positions and Settled) | `M` | ✓ |
+| Shot Class: Soft / Hard / Lob / Overhead | `S` `H` `L` `O` | ✓ |
+| Contact Kind: Volley / Bounce | `V` `B` | ✓ |
+| Swap hitter to partner / to the other Team | `X` / `Shift+H` | ✓ (in Calibrate, `X` clears the selected Landmark) |
+| Toggle Erne / ATP | `E` / `T` | ✓ |
+| Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear (repeat `5` / `3` cycles the Player) | `1`–`5` / `0` | ✓ (in Calibrate, `1` / `2` set Main / Sideline View) |
+| Observation Gap after current Shot (a leading gap before any Shot): odd / even; again removes, the other key flips | `G` / `Shift+G` | ✓ |
+| Delete Shot or Observation Gap | `Backspace` | ✓ (in Calibrate: remove the Play Segment) |
+| Cycle certainty of focused field | `C` | ✓ (in Calibrate, `C` confirms a Landmark) |
+| Referee Call: point / second server / side out (again clears) | `Shift+P` / `Shift+2` / `Shift+X` | ✓ |
+| Record a Challenge | `Shift+C` | ✓ |
+| Mark Rally Done (Review: accept), go to next | `Enter` | ✓ in Annotate |
+| Close an inline form | `Esc` | ✓ |
 | Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
-| Undo / redo | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate and Annotate |
+| Undo / redo (Rally Log, anchors and Team ends alike) | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate and Annotate |
 | Shortcut sheet | `?` | ✓ |
 
 Premiere's `J/K/L` shuttle is deliberately left out: `L` is Lob, and `Space` plus `[ ]` cover shuttling. Premiere's `I`/`O` move to `Shift+I`/`Shift+O` because `O` is Overhead.
 
-New Shots alternate Teams. A new Shot's hitter is the first Player of the other Team, and `X` picks the partner. Its positions are copied from the previous Shot as Inferred.
+New Shots alternate Teams. Shot 1's hitter defaults to the Rally's Server (else the Serving Team's first Player), Shot 2's to the Returner (else the Receiving Team's first Player), and later Shots' to the first Player of the Team expected to hit, counting odd and even Observation Gaps; all Inferred. `X` picks the partner. Shots 2 and 3 are Inferred to Bounce (the two-bounce rule); the Serve's Contact Kind starts Unknown. New Shots start with no Error and Erne and ATP Observed off. Shot Numbers count 1, 2, ... up to the first Observation Gap and are Unknown after it.
+
+A new Shot snapshots all four Players' positions and Settled facts from Player Tracking (#11) at its contact frame, keeping their certainties, and its Contact Zone follows the hitter's position. Where Tracking hasn't been run, or the frame is unmapped or outside a Play Segment, they stay Unknown: nothing is copied from the previous Shot.
 
 ## Visual tokens
 
