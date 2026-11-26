@@ -51,6 +51,7 @@ export function Monitor({
   annotate?: AnnotateTransport;
 }) {
   const lastFrame = Math.max(0, state.totalFrames - 1);
+  const shownFrame = state.previewFrame ?? state.frame;
   return (
     <Panel
       id="monitor"
@@ -62,7 +63,7 @@ export function Monitor({
           {headerTools}
           {src && (
             <span className="mono">
-              {state.frame.toLocaleString("en-US")} / {lastFrame.toLocaleString("en-US")}
+              {shownFrame.toLocaleString("en-US")} / {lastFrame.toLocaleString("en-US")}
             </span>
           )}
         </>
@@ -78,7 +79,7 @@ export function Monitor({
               playsInline
               onClick={controls.togglePlay}
             />
-            {overlay}
+            {state.previewFrame === null && overlay}
             {cameraView && (
               <div className={`overlay overlay-camera ${cameraView === "none" ? "off" : ""}`}>
                 {cameraTag(cameraView)}
@@ -87,9 +88,9 @@ export function Monitor({
             <div className="overlay overlay-frame">
               <span className="frame">
                 <small>FRAME</small>
-                {state.frame.toLocaleString("en-US")}
+                {shownFrame.toLocaleString("en-US")}
               </span>
-              <span className="timecode">{formatTimecode(state.frame)}</span>
+              <span className="timecode">{formatTimecode(shownFrame)}</span>
             </div>
             <div className="overlay overlay-right">
               <div className={`speed ${state.speed < 1 ? "slow" : ""}`}>{state.speed}×</div>

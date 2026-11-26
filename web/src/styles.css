@@ -2948,8 +2948,7 @@ fieldset.transport-group {
   bottom: 4px;
   z-index: 3;
   min-width: 3px;
-  padding: 2px 6px;
-  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--line-2);
   border-radius: 3px;
   background: var(--raised);
@@ -2959,6 +2958,16 @@ fieldset.transport-group {
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.clip-label {
+  display: block;
+  overflow: hidden;
+  padding: 0 6px;
+}
+
+.clip .seg-handle {
+  width: min(7px, calc(3px + 50%));
 }
 
 .clip.team-a {

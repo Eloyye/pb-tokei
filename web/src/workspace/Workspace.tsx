@@ -56,6 +56,7 @@ import {
   setContactKind,
   setError,
   setLanding,
+  setRallyEdge,
   setRefereeCall,
   setShotClass,
   startNextGame,
@@ -141,7 +142,7 @@ const MESSAGES: Record<WorkspaceName, string> = {
 export function Workspace({ match, workspace }: { match: MatchDetail; workspace: WorkspaceName }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [state, controls] = usePlayer(videoRef);
-  const { frame, totalFrames, playing, speed } = state;
+  const { frame, previewFrame, totalFrames, playing, speed } = state;
   const { step, togglePlay, setSpeed } = controls;
   const [gotoOpen, setGotoOpen] = useState(false);
   const [view, setView] = useState<FrameRange>(() => fullView(totalFrames));
@@ -150,6 +151,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [focused, setFocused] = useState<PanelId>("monitor");
   const gridRef = useRef<HTMLDivElement>(null);
   const [recordingState, recording] = useRecording(match.id);
+  const defaultMessage = MESSAGES[workspace];
+  const { notify } = recording;
+  useEffect(() => notify(defaultMessage), [defaultMessage, notify]);
+  const [edgeDragHint, setEdgeDragHint] = useState<string | null>(null);
   const calibrating = workspace === "calibrate";
   const annotating = workspace === "annotate";
   const reviewing = workspace === "review";
@@ -179,8 +184,6 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [form, setForm] = useState<InspectorForm>(null);
   const stashRef = useRef<Stash>(new Map());
   const lastJumpedIssueIdRef = useRef<string | null>(null);
-  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
-  if (!reviewing && reviewMessage !== null) setReviewMessage(null);
 
   // Live non-blocking rule checks (#13) across all Games in Annotate and Review.
   const ruleIssues = useMemo(
@@ -191,6 +194,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
 
   const segments = recordingState.recording?.segments ?? null;
   const segment = (segments && segmentAt(segments, frame)) || undefined;
+  const monitorSegment =
+    previewFrame !== null && segments ? segmentAt(segments, previewFrame) : segment;
 
   // Calibration at the playhead: the one in effect for its Play Segment's Camera View, and the
   // Landmark to place next. The selection belongs to one Calibration; on another, it restarts.
@@ -408,11 +413,6 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       controls.seek(entry.contact_frame.value);
   };
 
-  const notifyIssue = (text: string) => {
-    if (reviewing) setReviewMessage(text);
-    else recording.notify(text);
-  };
-
   /** Navigates straight to a rule issue's Game, Rally, Shot, Inspector tab, and field cursor. */
   const jumpToIssue = (issue: RuleIssue) => {
     const index = ruleIssues.findIndex((i) => i.id === issue.id);
@@ -439,14 +439,14 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       focusField("rally", issue.field as RallyField);
     }
     if (ruleIssues.length > 0) {
-      notifyIssue(formatIssueHint(issue, index >= 0 ? index : 0, ruleIssues.length));
+      recording.notify(formatIssueHint(issue, index >= 0 ? index : 0, ruleIssues.length));
     }
   };
 
   /** Cycles chronologically to the next (`1`) or previous (`-1`) rule issue in the Match. */
   const cycleRuleIssue = (direction: 1 | -1) => {
     if (ruleIssues.length === 0) {
-      notifyIssue("No rule issues in this Match");
+      recording.notify("No rule issues in this Match");
       return;
     }
     const focusedField =
@@ -777,7 +777,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return;
       }
     }
-    if ((calibrating || annotating) && totalFrames > 0) {
+    if (totalFrames > 0) {
       const historyAction = historyKeyAction(event);
       if (historyAction) {
         event.preventDefault();
@@ -898,7 +898,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           gotoOpen={gotoOpen}
           onCloseGoto={() => setGotoOpen(false)}
           focused={focused === "monitor"}
-          cameraView={segments ? (segment?.camera_view ?? "none") : null}
+          cameraView={segments ? (monitorSegment?.camera_view ?? "none") : null}
           headerTools={
             annotating &&
             src && (
@@ -1154,12 +1154,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           segments={segments}
           unmappedRanges={calibrating ? unmappedRanges : undefined}
           pending={calibrating ? recordingState.pending : null}
-          editableSegments={calibrating}
           onMoveEdge={(segmentStart, edge, to) =>
             recording.editSegments((list, pending) =>
               moveEdge(list, pending, segmentStart, edge, to),
             )
           }
+          onPreviewEdge={(target, reason) => {
+            controls.preview(target);
+            setEdgeDragHint(reason);
+          }}
           rallyLog={
             showRuleChecks
               ? {
@@ -1167,7 +1170,29 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   selection: current,
                   roster,
                   issues: ruleIssues,
-                  onSelectRally: (gi, ri) => goToRally(selectRally(games, gi, ri)),
+                  onSelectRally: (gi, ri, mode) => {
+                    const next = selectRally(games, gi, ri);
+                    if (mode === "edge-drag") {
+                      setRallySelection(next);
+                      setInspectorTab("rally");
+                      setForm(null);
+                    } else {
+                      goToRally(next);
+                    }
+                  },
+                  onMoveRallyEdge: (gi, ri, edge, to) =>
+                    recording.editGames((list) =>
+                      setRallyEdge(
+                        {
+                          games: list,
+                          selection: { game: gi, rally: ri, entry: null },
+                          roster,
+                          frame,
+                        },
+                        edge,
+                        to,
+                      ),
+                    ),
                   onSelectEntry: (gi, ri, ei) => {
                     setInspectorTab("shot");
                     goToEntry({ game: gi, rally: ri, entry: ei });
@@ -1186,10 +1211,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         />
       </div>
       <StatusBar
-        message={
-          (reviewing ? reviewMessage : (calibrating || annotating) && recordingState.message) ||
-          MESSAGES[workspace]
-        }
+        message={edgeDragHint || recordingState.message || defaultMessage}
         saveStatus={recordingState.saveStatus}
         match={match}
         workspace={workspace}

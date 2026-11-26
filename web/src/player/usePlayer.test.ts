@@ -68,7 +68,13 @@ describe("usePlayer", () => {
   it("opens paused on frame 0 once the duration is known", () => {
     const player = renderPlayer();
 
-    expect(player.state()).toEqual({ frame: 0, totalFrames: 600, playing: false, speed: 1 });
+    expect(player.state()).toEqual({
+      frame: 0,
+      previewFrame: null,
+      totalFrames: 600,
+      playing: false,
+      speed: 1,
+    });
     expect(video.currentTime).toBe(frameToSeekTime(0));
   });
 
@@ -116,6 +122,23 @@ describe("usePlayer", () => {
     expect(video.pause).toHaveBeenCalled();
     expect(player.state()).toMatchObject({ frame: 41, playing: false });
     expect(video.currentTime).toBe(frameToSeekTime(41));
+  });
+
+  it("pauses for an edge preview and restores the playhead frame when it ends", () => {
+    const player = renderPlayer();
+    act(() => player.controls().play());
+    video.present(42);
+
+    act(() => player.controls().preview(72));
+    video.present(72);
+
+    expect(video.pause).toHaveBeenCalledOnce();
+    expect(player.state()).toMatchObject({ frame: 42, previewFrame: 72, playing: false });
+    expect(video.currentTime).toBe(frameToSeekTime(72));
+
+    act(() => player.controls().preview(null));
+    expect(player.state()).toMatchObject({ frame: 42, previewFrame: null, playing: false });
+    expect(video.currentTime).toBe(frameToSeekTime(42));
   });
 
   it("clamps steps to the first and last frame", () => {

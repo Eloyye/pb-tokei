@@ -3,7 +3,10 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlaySegment } from "../api/client";
-import { Timeline } from "./Timeline";
+import { NO_SELECTION } from "../lib/annotate";
+import { newRally, newShot, numberShots } from "../lib/rallyLog";
+import { ROSTER } from "../lib/testRoster";
+import { Timeline, type TimelineRallies } from "./Timeline";
 
 afterEach(cleanup);
 
@@ -12,10 +15,14 @@ const SEGMENTS: PlaySegment[] = [{ start_frame: 450, end_frame: 750, camera_view
 type TimelineProps = Parameters<typeof Timeline>[0];
 type Playback = Pick<TimelineProps, "frame" | "playing">;
 
-function renderTimeline(playback: Playback = { frame: 800, playing: false }) {
+function renderTimeline(
+  playback: Playback = { frame: 800, playing: false },
+  rallyLog?: TimelineRallies,
+) {
   const onViewChange = vi.fn<TimelineProps["onViewChange"]>();
   const onSeek = vi.fn<TimelineProps["onSeek"]>();
   const onMoveEdge = vi.fn<TimelineProps["onMoveEdge"]>();
+  const onPreviewEdge = vi.fn<TimelineProps["onPreviewEdge"]>();
   const onZoom = vi.fn<TimelineProps["onZoom"]>();
 
   function TimelineHarness({ frame, playing }: Playback) {
@@ -35,8 +42,9 @@ function renderTimeline(playback: Playback = { frame: 800, playing: false }) {
         focused={false}
         segments={SEGMENTS}
         pending={null}
-        editableSegments
         onMoveEdge={onMoveEdge}
+        onPreviewEdge={onPreviewEdge}
+        rallyLog={rallyLog}
       />
     );
   }
@@ -54,6 +62,7 @@ function renderTimeline(playback: Playback = { frame: 800, playing: false }) {
     onViewChange,
     onSeek,
     onMoveEdge,
+    onPreviewEdge,
     rerenderPlayback: (next: Playback) => rerender(<TimelineHarness {...next} />),
   };
 }
@@ -185,4 +194,100 @@ describe("Timeline wheel input", () => {
       expect(onMoveEdge).not.toHaveBeenCalled();
     },
   );
+});
+
+function renderRallies(selection = NO_SELECTION) {
+  const onSelectRally = vi.fn<TimelineRallies["onSelectRally"]>();
+  const onMoveRallyEdge = vi.fn<TimelineRallies["onMoveRallyEdge"]>();
+  const log: TimelineRallies = {
+    roster: ROSTER,
+    selection,
+    games: [
+      {
+        number: 1,
+        rallies: [
+          numberShots({
+            ...newRally(1, 450),
+            end_frame: 600,
+            entries: [newShot(480), newShot(550)],
+          }),
+          newRally(2, 700),
+          newRally(3),
+        ],
+      },
+    ],
+    onSelectRally,
+    onMoveRallyEdge,
+    onSelectEntry: vi.fn<TimelineRallies["onSelectEntry"]>(),
+    onMoveContact: vi.fn<TimelineRallies["onMoveContact"]>(),
+    onFitRally: vi.fn<TimelineRallies["onFitRally"]>(),
+  };
+  const timeline = renderTimeline(undefined, log);
+  const clip = screen.getByTitle("Game 1 Rally 1: frames 450–600");
+  return { ...timeline, clip, onSelectRally, onMoveRallyEdge };
+}
+
+describe("Timeline Rally edge drags", () => {
+  it("previews the clamped edge in both tracks and commits once without seeking", () => {
+    const { clip, container, onMoveRallyEdge, onPreviewEdge, onSelectRally, onSeek } =
+      renderRallies();
+    const handle = clip.querySelector(".seg-handle.start")!;
+    const overview = container.querySelector<HTMLElement>(".ov-block")!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 210 });
+
+    expect(Number.parseFloat(clip.style.left)).toBeCloseTo((80 / 600) * 100);
+    expect(overview.style.left).toBe("16%");
+    expect(onPreviewEdge).toHaveBeenLastCalledWith(510, "Stopped at Shot 1's contact (frame 480)");
+    expect(onSelectRally).toHaveBeenCalledExactlyOnceWith(0, 0, "edge-drag");
+    expect(onMoveRallyEdge).not.toHaveBeenCalled();
+    expect(onSeek).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 210 });
+    fireEvent.click(handle);
+    expect(onPreviewEdge).toHaveBeenLastCalledWith(null, null);
+    expect(onMoveRallyEdge).toHaveBeenCalledExactlyOnceWith(0, 0, "start", 480);
+    expect(onSelectRally).toHaveBeenCalledTimes(1);
+    expect(onSeek).not.toHaveBeenCalled();
+  });
+
+  it("selects on a plain click at the clip's edge", () => {
+    const { clip, onMoveRallyEdge, onPreviewEdge, onSelectRally } = renderRallies();
+    const handle = clip.querySelector(".seg-handle.start")!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 150 });
+    fireEvent.click(handle);
+
+    expect(onSelectRally).toHaveBeenCalledExactlyOnceWith(0, 0);
+    expect(onMoveRallyEdge).not.toHaveBeenCalled();
+    expect(onPreviewEdge).not.toHaveBeenCalled();
+  });
+
+  it("recalculates the frame after wheel pan and zoom without reselecting the Rally", () => {
+    const { clip, onMoveRallyEdge, onPreviewEdge, onSelectRally } = renderRallies({
+      game: 0,
+      rally: 0,
+      entry: 1,
+    });
+    const handle = clip.querySelector(".seg-handle.end")!;
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 301 });
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 330 });
+
+    fireEvent(handle, wheelEvent({ clientX: 330, deltaX: 30 }));
+    expect(onPreviewEdge).toHaveBeenLastCalledWith(660, null);
+    fireEvent(handle, wheelEvent({ clientX: 330, deltaY: -100, ctrlKey: true }));
+    expect(onPreviewEdge).toHaveBeenLastCalledWith(660, null);
+
+    fireEvent.pointerUp(handle, { pointerId: 1, clientX: 330 });
+    expect(onMoveRallyEdge).toHaveBeenCalledExactlyOnceWith(0, 0, "end", 660);
+    expect(onSelectRally).not.toHaveBeenCalled();
+  });
+
+  it("renders a start handle for an open-ended Rally and omits Unseen Rallies", () => {
+    const { container } = renderRallies();
+    const open = screen.getByTitle("Game 1 Rally 2: frames 700–open");
+    expect(open.querySelector(".seg-handle.start")).toBeTruthy();
+    expect(open.querySelector(".seg-handle.end")).toBeNull();
+    expect(container.querySelectorAll(".clip")).toHaveLength(2);
+  });
 });

@@ -248,6 +248,7 @@ function renderTracks() {
     selection: { game: 0, rally: 0, entry: 0 },
     roster: ROSTER,
     onSelectRally: vi.fn<(game: number, rally: number) => void>(),
+    onMoveRallyEdge: vi.fn<() => void>(),
     onSelectEntry: vi.fn<(game: number, rally: number, entry: number) => void>(),
     onMoveContact: vi.fn<(game: number, rally: number, entry: number, frame: number) => void>(),
     onFitRally: vi.fn<() => void>(),
@@ -264,8 +265,8 @@ function renderTracks() {
       focused={false}
       segments={[]}
       pending={null}
-      editableSegments={false}
       onMoveEdge={vi.fn<() => void>()}
+      onPreviewEdge={vi.fn<() => void>()}
       rallyLog={rallyLog}
     />,
   );
@@ -542,14 +543,15 @@ describe("rule check UI surfaces", () => {
         segments={[]}
         unmappedRanges={[{ camera_view: "main", start_frame: 10, end_frame: 50 }]}
         pending={null}
-        editableSegments={false}
         onMoveEdge={vi.fn<() => void>()}
+        onPreviewEdge={vi.fn<() => void>()}
         rallyLog={{
           games,
           selection: { game: 0, rally: 0, entry: 0 },
           roster: ROSTER,
           issues,
           onSelectRally: vi.fn<() => void>(),
+          onMoveRallyEdge: vi.fn<() => void>(),
           onSelectEntry: vi.fn<() => void>(),
           onMoveContact: vi.fn<() => void>(),
           onSelectIssue,
@@ -595,8 +597,8 @@ describe("rule check UI surfaces", () => {
         segments={[]}
         unmappedRanges={[{ camera_view: "main", start_frame: 10, end_frame: 50 }]}
         pending={null}
-        editableSegments
         onMoveEdge={vi.fn<() => void>()}
+        onPreviewEdge={vi.fn<() => void>()}
       />,
     );
     expect(cal.container.querySelectorAll(".issue-unmapped")).toHaveLength(1);
