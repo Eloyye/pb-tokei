@@ -340,17 +340,35 @@ describe("CourtPanel with a Shot selected", () => {
     expect(onSetLanding).toHaveBeenCalledWith({ x: 0, y: -0 });
   });
 
-  it("pins a Player standing beyond the drawn area to its edge, keeping the real position", () => {
+  it("draws a Player standing well behind the baseline where they are", () => {
     const { games } = annotated();
     const serve = games[0]!.rallies[0]!.entries[0];
     if (serve?.type !== "shot") throw new Error("expected a Shot");
-    const behind = { ...serve, positions: { ...serve.positions, a1: at(8, -28) } };
+    const deep = {
+      ...serve,
+      positions: { ...serve.positions, a1: at(8, -28), b1: at(14, 28) },
+    };
+    const { container } = render(
+      <CourtPanel match={MATCH} focused={false} roster={ROSTER} shot={deep} />,
+    );
+    // 6 ft behind either baseline and wide of the sideline is inside the playing area.
+    const near = container.querySelector<SVGGElement>('[data-player-id="a1"]')!;
+    expect(near.getAttribute("transform")).toBe("translate(80, 280)");
+    const far = container.querySelector<SVGGElement>('[data-player-id="b1"]')!;
+    expect(far.getAttribute("transform")).toBe("translate(140, -280)");
+  });
+
+  it("pins a Player beyond the playing area to its edge, keeping the real position", () => {
+    const { games } = annotated();
+    const serve = games[0]!.rallies[0]!.entries[0];
+    if (serve?.type !== "shot") throw new Error("expected a Shot");
+    const behind = { ...serve, positions: { ...serve.positions, a1: at(8, -36) } };
     const { container } = render(
       <CourtPanel match={MATCH} focused={false} roster={ROSTER} shot={behind} />,
     );
     const dot = container.querySelector<SVGGElement>('[data-player-id="a1"]')!;
-    // 28 ft back is drawn at the bottom edge (23.8 ft, a dot's radius in), not off the diagram.
-    expect(dot.getAttribute("transform")).toBe("translate(80, 238)");
-    expect(dot.querySelector("title")!.textContent).toContain("(8.0, -28.0 ft");
+    // 36 ft back is drawn at the bottom edge (30.8 ft, a dot's radius in), not off the diagram.
+    expect(dot.getAttribute("transform")).toBe("translate(80, 308)");
+    expect(dot.querySelector("title")!.textContent).toContain("(8.0, -36.0 ft");
   });
 });
