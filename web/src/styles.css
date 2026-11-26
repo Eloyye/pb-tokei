@@ -971,6 +971,7 @@ fieldset.transport-group {
   grid-template-columns: auto auto;
   justify-content: space-between;
   padding-inline: 4px;
+  white-space: nowrap;
 }
 
 [data-panel="monitor"].area-side .transport-group.end {

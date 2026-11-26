@@ -98,7 +98,7 @@ export function Monitor({
                 <small>FRAME</small>
                 {shownFrame.toLocaleString("en-US")}
               </span>
-              <span className="timecode">{formatTimecode(shownFrame)}</span>
+              {!compact && <span className="timecode">{formatTimecode(shownFrame)}</span>}
             </div>
             <div className="overlay overlay-right">
               <div className={`speed ${state.speed < 1 ? "slow" : ""}`}>{state.speed}×</div>
