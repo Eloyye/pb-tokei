@@ -105,6 +105,8 @@ Playback pauses at the selected Rally's end frame when playback started at or be
 
 A top-down court in the right column. The near end, at the bottom, is the Main View camera's end, so it lines up with the video.
 
+- The diagram draws the standard 34 × 64 ft playing area around the court (32 ft from the net, 16 ft from the centre line), so a Player standing well behind a baseline is drawn where they are. Team names sit outside it, above and below. A Player tracked beyond the playing area is drawn at its edge, and their dot's title still gives the real position.
+
 - Zone bands are shaded: Frontcourt 0–9 ft, Midcourt 9–18 ft, Backcourt 18 ft and beyond. Dashed lines mark 9 and 18 ft, ticks outside the sidelines mark 12 ft (the Established rule), and the side labels read FC / MC / BC.
 - **Players at the selected Shot.** Four dots in Team colors with initials, from the Shot's recorded `shot_positions`:
   - The hitter has a white ring.

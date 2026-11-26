@@ -6,15 +6,20 @@ import type { Point } from "../lib/calibrations";
  * A top-down court in feet, 10 SVG units to the foot. The near end (negative `y`, the Main View
  * camera's end) is at the bottom so it lines up with the video. Zone bands are shaded:
  * Frontcourt 0–9 ft, Midcourt 9–18 ft, Backcourt 18 ft and beyond; ticks mark 12 ft, where an
- * Established Team stops being Established.
+ * Established Team stops being Established. Around the court is the standard 34 × 64 ft playing
+ * area, out to the barriers, so Players standing well behind a baseline are drawn where they are;
+ * the Team names sit in strips beyond it.
  */
+/** SVG units to the foot, for lengths; `X` and `Y` turn court positions into SVG positions. */
+const UNITS_PER_FT = 10;
+
 /** Feet from the net to SVG `y`: the far end is up. */
 function Y(feet: number): number {
-  return -feet * 10;
+  return -feet * UNITS_PER_FT;
 }
 
 function X(feet: number): number {
-  return feet * 10;
+  return feet * UNITS_PER_FT;
 }
 
 export interface CourtPlayerDot {
@@ -54,19 +59,30 @@ const UNKNOWN_SLOTS: readonly Point[] = [
   { x: 12.2, y: 15.5 },
 ];
 
-const VIEW_X = -140;
-const VIEW_Y = -250;
-const VIEW_W = 280;
-const VIEW_H = 500;
+/** Half the playing area's width and length in feet: 34 × 64 ft, the court plus its run-off. */
+const AREA_HALF_W_FT = 16;
+const AREA_HALF_L_FT = 32;
+/** SVG units above and below the playing area for the Team names. */
+const LABEL_STRIP = 16;
+
+/** How far in from the playing area's edge a pinned dot is drawn: a little over its radius. */
+const DOT_INSET_FT = 1.2;
+
+const AREA_W = 2 * AREA_HALF_W_FT * UNITS_PER_FT;
+const AREA_H = 2 * AREA_HALF_L_FT * UNITS_PER_FT;
+const VIEW_X = X(-AREA_HALF_W_FT);
+const VIEW_Y = Y(AREA_HALF_L_FT) - LABEL_STRIP;
+const VIEW_W = AREA_W;
+const VIEW_H = AREA_H + 2 * LABEL_STRIP;
 
 /**
- * Keeps a point inside the drawn area (a dot's radius in from the edge). A Player standing
- * further back than the diagram shows, such as a returner well behind the baseline, is drawn at
- * its edge rather than off it; their title still gives the real position.
+ * Keeps a point inside the playing area (a dot's radius in from the edge). A Player tracked
+ * beyond it, past where the barriers usually stand, is drawn at its edge rather than off it;
+ * their title still gives the real position.
  */
 function inView(point: Point): Point {
-  const maxX = (VIEW_X + VIEW_W) / 10 - 1.2;
-  const maxY = (VIEW_Y + VIEW_H) / 10 - 1.2;
+  const maxX = AREA_HALF_W_FT - DOT_INSET_FT;
+  const maxY = AREA_HALF_L_FT - DOT_INSET_FT;
   return {
     x: Math.max(-maxX, Math.min(maxX, point.x)),
     y: Math.max(-maxY, Math.min(maxY, point.y)),
@@ -131,8 +147,8 @@ export function CourtDiagram({
     const svgX = VIEW_X + (event.clientX - offsetX) / scale;
     const svgY = VIEW_Y + (event.clientY - offsetY) / scale;
     return {
-      x: Math.max(-16, Math.min(16, svgX / 10)),
-      y: Math.max(-32, Math.min(32, -svgY / 10)),
+      x: Math.max(-AREA_HALF_W_FT, Math.min(AREA_HALF_W_FT, svgX / UNITS_PER_FT)),
+      y: Math.max(-AREA_HALF_L_FT, Math.min(AREA_HALF_L_FT, -svgY / UNITS_PER_FT)),
     };
   };
 
@@ -164,7 +180,7 @@ export function CourtDiagram({
       }}
       onPointerCancel={() => setDrag(null)}
     >
-      <rect className="surround" x={VIEW_X} y={VIEW_Y} width={VIEW_W} height={VIEW_H} />
+      <rect className="surround" x={VIEW_X} y={Y(AREA_HALF_L_FT)} width={AREA_W} height={AREA_H} />
       {sides.map((s) => (
         <g key={s}>
           <rect
@@ -213,10 +229,22 @@ export function CourtDiagram({
       <line className="line" x1={0} y1={-220} x2={0} y2={-70} />
       <line className="line" x1={0} y1={70} x2={0} y2={220} />
       <line className="net" x1={-110} y1={0} x2={110} y2={0} />
-      <text className={`label ${nearClass}`} x={0} y={Y(-23.6) + 4} textAnchor="middle">
+      <text
+        className={`label ${nearClass}`}
+        x={0}
+        y={Y(-AREA_HALF_L_FT) + LABEL_STRIP / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
         {nearTeam}
       </text>
-      <text className={`label ${farClass}`} x={0} y={Y(23.6) + 4} textAnchor="middle">
+      <text
+        className={`label ${farClass}`}
+        x={0}
+        y={Y(AREA_HALF_L_FT) - LABEL_STRIP / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
         {farTeam}
       </text>
       {ghosts.map((g) => (
