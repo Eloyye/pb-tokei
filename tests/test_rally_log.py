@@ -944,14 +944,27 @@ def test_replacing_games_checks_every_team_and_player_is_in_the_match(log: Rally
         log.save_match(replace(match, games=(Game(1, (bad_rallies[0],)),)))
 
 
-def test_opening_an_older_database_migrates_rally_status_and_scoreboard(tmp_path: Path) -> None:
+@pytest.mark.parametrize("needs_match_migration", [False, True])
+def test_opening_an_older_database_migrates_rally_status_and_scoreboard(
+    tmp_path: Path, needs_match_migration: bool
+) -> None:
     path = tmp_path / "legacy_rallies.duckdb"
-    match = small_match()
+    video = SourceVideo("https://example.com/legacy", "legacy", Path("footage/legacy.mkv"))
+    match = replace(small_match(), source_video=video)
     with RallyLog.open(path) as log:
         save_roster(log)
         log.save_match(match)
 
     with duckdb.connect(str(path)) as conn:
+        if needs_match_migration:
+            conn.execute(
+                "CREATE TABLE legacy_matches AS SELECT * EXCLUDE "
+                "(annotation_mode, source_video_frames) FROM matches"
+            )
+            conn.execute("DROP TABLE matches")
+            conn.execute("ALTER TABLE legacy_matches RENAME TO matches")
+            conn.execute("DROP TABLE operator_sessions")
+
         # Legacy rallies without status / scoreboard_winner_id.
         conn.execute(
             "CREATE TABLE legacy AS SELECT * EXCLUDE "
@@ -970,6 +983,12 @@ def test_opening_an_older_database_migrates_rally_status_and_scoreboard(tmp_path
         )
 
     with RallyLog.open(path) as log:
+        summary = log.get_match_summary(match.id)
+        assert summary.source_video == video
+        assert summary.annotation_mode is AnnotationMode.GOLD
+        assert summary.source_video_frames is None
+        assert summary.operator_time == OperatorTimeSummary()
+        assert (summary.done_rallies, summary.total_rallies) == (0, 4)
         rallies = log.get_games(match.id)[0].rallies
         assert [r.status for r in rallies] == [
             RallyStatus.IN_PROGRESS,  # Shots and known facts

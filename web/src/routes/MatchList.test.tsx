@@ -149,6 +149,8 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
       operator_time,
       broadcast_seconds: 3600,
       operator_time_ratio: 0.25,
+      done_rallies: 3,
+      total_rallies: 12,
     }),
     makeMatch("over-budget", {
       annotation_mode: "assisted",
@@ -168,7 +170,9 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
   ).toBe(true);
   expect(screen.getByText("0:00")).toBeTruthy();
   expect(screen.getAllByTitle("Calibrate 4:00 · Annotate 10:00 · Review 1:00")).toHaveLength(2);
-  expect(screen.getByText("0.25").classList.contains("within-budget")).toBe(true);
+  const atBudget = screen.getByText("0.25");
+  expect(atBudget.classList.contains("within-budget")).toBe(true);
+  expect(screen.getByTitle("3 of 12 Rallies Done").closest("a")).toBe(atBudget.closest("a"));
   expect(screen.getByText("0.30").classList.contains("over-budget")).toBe(true);
   const unknown = screen.getByText("Gold").closest("a")?.querySelector(".ratio");
   expect(unknown?.textContent).toBe("—");
