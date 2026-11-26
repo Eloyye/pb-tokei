@@ -6,8 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import type { Game, PlaySegment, UnmappedRangeOut } from "../api/client";
-import { moveRallyEdge, type RallyEdge, type Selection } from "../lib/annotate";
+import type { Game, PlaySegment, Rally, UnmappedRangeOut } from "../api/client";
+import { moveRallyEdge, type RallyEdge, type Selection, withRallyEdge } from "../lib/annotate";
 import { formatScore, type Roster, teamKey, teamOf } from "../lib/rallyLog";
 import { type RuleIssue, timelineIssueMarkers } from "../lib/ruleChecks";
 import { clampFrame, formatTimecode } from "../lib/frames";
@@ -32,6 +32,8 @@ const TRACKS = [
   { id: "issues", label: "Issues", empty: "" },
 ] as const;
 
+const EDGE_DRAG_THRESHOLD_PX = 3;
+
 type EdgeTarget =
   | { kind: "segment"; start: number }
   | { kind: "rally"; game: number; rally: number };
@@ -45,8 +47,8 @@ interface EdgeDrag {
   frame: number;
   originX: number;
   originView: FrameRange;
-  /** The frame under the pointer, even when the edge itself is clamped. */
-  previewFrame: number | null;
+  /** The frame under the pointer, or null until the drag starts. */
+  pointerFrame: number | null;
 }
 
 interface PinDrag {
@@ -133,32 +135,10 @@ export function Timeline({
   const [edgePreview, setEdgePreview] = useState<EdgeDrag>();
   const [pinPreview, setPinPreview] = useState<PinDrag>();
   const edgeTarget = edgePreview?.target;
-  const shown =
+  const shownSegments =
     segments && edgePreview && edgeTarget?.kind === "segment"
       ? moveEdge(segments, null, edgeTarget.start, edgePreview.edge, edgePreview.frame).segments
       : segments;
-  const shownRallyLog =
-    rallyLog && edgePreview && edgeTarget?.kind === "rally"
-      ? {
-          ...rallyLog,
-          games: rallyLog.games.map((game, gi) =>
-            gi === edgeTarget.game
-              ? {
-                  ...game,
-                  rallies: game.rallies.map((rally, ri) =>
-                    ri === edgeTarget.rally
-                      ? {
-                          ...rally,
-                          [edgePreview.edge === "start" ? "start_frame" : "end_frame"]:
-                            edgePreview.frame,
-                        }
-                      : rally,
-                  ),
-                }
-              : game,
-          ),
-        }
-      : rallyLog;
 
   // Several wheel events can arrive before React commits the view.
   const currentView = () => {
@@ -172,10 +152,12 @@ export function Timeline({
     const target = clampFrame(frameAt(nextView, (clientX - rect.left) / rect.width), totalFrames);
     if (drag.kind === "edge") {
       activeDrag.current = { ...drag, clientX };
-      const starting = drag.previewFrame === null;
+      const starting = drag.pointerFrame === null;
       if (
-        target === drag.previewFrame ||
-        (starting && Math.abs(clientX - drag.originX) < 3 && nextView === drag.originView)
+        target === drag.pointerFrame ||
+        (starting &&
+          Math.abs(clientX - drag.originX) < EDGE_DRAG_THRESHOLD_PX &&
+          nextView === drag.originView)
       )
         return;
 
@@ -197,7 +179,7 @@ export function Timeline({
           rallyLog.onSelectRally(game, rally, "edge-drag");
         }
       }
-      const next = { ...drag, clientX, frame: reached, previewFrame: target };
+      const next = { ...drag, clientX, frame: reached, pointerFrame: target };
       activeDrag.current = next;
       if (starting || reached !== drag.frame) setEdgePreview(next);
       onPreviewEdge(target, reason);
@@ -235,7 +217,7 @@ export function Timeline({
 
   const clearEdgePreview = (drag: EdgeDrag) => {
     setEdgePreview(undefined);
-    if (drag.previewFrame !== null) onPreviewEdge(null, null);
+    if (drag.pointerFrame !== null) onPreviewEdge(null, null);
   };
 
   const finishDrag = (event: PointerEvent<HTMLElement>, commitEdge = false) => {
@@ -247,7 +229,7 @@ export function Timeline({
       if (!commitEdge) return;
       if (drag.target.kind === "segment") {
         onMoveEdge(drag.target.start, drag.edge, drag.frame);
-      } else if (drag.previewFrame === null) {
+      } else if (drag.pointerFrame === null) {
         rallyLog?.onSelectRally(drag.target.game, drag.target.rally);
       } else {
         rallyLog?.onMoveRallyEdge(drag.target.game, drag.target.rally, drag.edge, drag.frame);
@@ -285,7 +267,7 @@ export function Timeline({
             clientX: event.clientX,
             originX: event.clientX,
             originView: currentView(),
-            previewFrame: null,
+            pointerFrame: null,
           };
         }}
         onPointerMove={moveDrag}
@@ -414,11 +396,12 @@ export function Timeline({
               width: `${((view.end - view.start) / whole.end) * 100}%`,
             }}
           />
-          {shownRallyLog?.games.flatMap((game) =>
-            game.rallies.map((rally) => {
+          {rallyLog?.games.flatMap((game, gi) =>
+            game.rallies.map((original, ri) => {
+              const rally = rallyWithPreview(original, gi, ri, edgePreview);
               if (rally.start_frame === null) return null;
               const end = rallyEnd(rally);
-              const team = teamKey(shownRallyLog.roster, rally.serving_team_id.value);
+              const team = teamKey(rallyLog.roster, rally.serving_team_id.value);
               return (
                 <div
                   key={`ov-${game.number}-${rally.number}`}
@@ -466,10 +449,10 @@ export function Timeline({
               {track.label}
             </div>
             <div className={`lane ${track.id}`} style={{ gridRow: i + 3 }}>
-              {track.id === "segments" && shown?.length ? (
+              {track.id === "segments" && shownSegments?.length ? (
                 // Keyed by position, which an edge drag never changes (segments can't pass each
                 // other), so the dragged handle keeps its pointer capture.
-                shown.map((segment, index) => (
+                shownSegments.map((segment, index) => (
                   <div
                     key={index}
                     className={`seg ${segment.camera_view} ${hasVideo ? "editable" : ""}`}
@@ -489,10 +472,8 @@ export function Timeline({
                     )}
                   </div>
                 ))
-              ) : track.id === "rallies" &&
-                shownRallyLog &&
-                hasFramedRallies(shownRallyLog.games) ? (
-                rallyClips(shownRallyLog, view, edgeHandle)
+              ) : track.id === "rallies" && rallyLog && hasFramedRallies(rallyLog.games) ? (
+                rallyClips(rallyLog, view, edgePreview, edgeHandle)
               ) : track.id === "shots" && rallyLog && hasShots(rallyLog.games) ? (
                 <ShotMarks
                   rallyLog={rallyLog}
@@ -604,14 +585,28 @@ function hasShots(games: readonly Game[]): boolean {
   return games.some((g) => g.rallies.some((r) => r.entries.length > 0));
 }
 
+function rallyWithPreview(
+  rally: Rally,
+  game: number,
+  index: number,
+  preview: EdgeDrag | undefined,
+): Rally {
+  const target = preview?.target;
+  return preview && target?.kind === "rally" && target.game === game && target.rally === index
+    ? withRallyEdge(rally, preview.edge, preview.frame)
+    : rally;
+}
+
 function rallyClips(
   rallyLog: TimelineRallies,
   view: FrameRange,
+  preview: EdgeDrag | undefined,
   edgeHandle: (target: EdgeTarget, edge: RallyEdge, frame: number) => React.ReactNode,
 ) {
   const { games, selection, roster } = rallyLog;
   return games.flatMap((game, gi) =>
-    game.rallies.map((rally, ri) => {
+    game.rallies.map((original, ri) => {
+      const rally = rallyWithPreview(original, gi, ri, preview);
       if (rally.start_frame === null) return null;
       const end = rallyEnd(rally);
       const team = teamKey(roster, rally.serving_team_id.value);

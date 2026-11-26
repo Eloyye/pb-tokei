@@ -24,6 +24,7 @@ import {
   setError,
   setLanding,
   setRallyDetails,
+  setRallyEdge,
   setRefereeCall,
   startNextGame,
   swapHitterToPartner,
@@ -233,6 +234,52 @@ describe("dragging Rally edges", () => {
     expect(moveRallyEdge(games, selection, "start", 450).frame).toBe(330);
     expect(moveRallyEdge(games, selection, "end", 450).frame).toBeNull();
     expect(moveRallyEdge(games, { ...selection, rally: 0 }, "start", 250).frame).toBeNull();
+  });
+
+  it("keeps a start edge after an earlier open-ended Rally's start", () => {
+    const games: Game[] = [
+      {
+        number: 1,
+        rallies: [{ ...newRally(1, 0), end_frame: 40 }, newRally(2, 100), { ...rally, number: 3 }],
+      },
+    ];
+    expect(moveRallyEdge(games, { game: 0, rally: 2, entry: null }, "start", 50)).toEqual({
+      frame: 101,
+      reason: "Stopped after the start of G1 R2 (frame 101)",
+    });
+  });
+
+  it("stops at frame zero and respects an unnumbered Shot's known contact", () => {
+    const games = [{ number: 1, rallies: [{ ...rally, entries: [newShot(330)] }] }];
+    const first = { game: 0, rally: 0, entry: null };
+    expect(moveRallyEdge(games, first, "start", -10)).toEqual({
+      frame: 0,
+      reason: "Stopped at the start of the video (frame 0)",
+    });
+    expect(moveRallyEdge(games, first, "start", 400)).toEqual({
+      frame: 330,
+      reason: "Stopped at a Shot's contact (frame 330)",
+    });
+  });
+
+  it("commits a clamped frame and keeps the selected Shot", () => {
+    const games = gamesWith();
+    const pickedShot = { ...selection, entry: 1 };
+    const edit = setRallyEdge(ctx(games, pickedShot), "start", 450);
+    expect(edit.selection).toEqual(pickedShot);
+    expect(selectedRally(edit.games, pickedShot)).toMatchObject({
+      start_frame: 330,
+      end_frame: 500,
+      status: "in_progress",
+    });
+    expect(selectedRally(games, pickedShot)?.start_frame).toBe(300);
+  });
+
+  it("leaves the Rally alone if no end frame fits between the last Shot and next Rally", () => {
+    const games = gamesWith({ ...rally, entries: [newShot(620)] });
+    const edit = setRallyEdge(ctx(games, selection), "end", 580);
+    expect(edit.games).toBe(games);
+    expect(edit.message).toBe("No frame fits this Rally's end limits");
   });
 
   it("keeps Shift+O's warning for an end before the last Shot", () => {

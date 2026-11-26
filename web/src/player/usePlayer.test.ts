@@ -141,6 +141,25 @@ describe("usePlayer", () => {
     expect(video.currentTime).toBe(frameToSeekTime(42));
   });
 
+  it("keeps the preview visible through a seek and follows playback after the preview clears", () => {
+    const player = renderPlayer();
+    act(() => player.controls().preview(72));
+    act(() => {
+      player.controls().seek(25);
+      player.controls().play();
+      player.controls().togglePlay();
+    });
+    expect(video.play).not.toHaveBeenCalled();
+    expect(video.currentTime).toBe(frameToSeekTime(72));
+    expect(player.state()).toMatchObject({ frame: 25, previewFrame: 72, playing: false });
+
+    act(() => player.controls().preview(null));
+    expect(video.currentTime).toBe(frameToSeekTime(25));
+    act(() => player.controls().play());
+    video.present(26);
+    expect(player.state()).toMatchObject({ frame: 26, previewFrame: null, playing: true });
+  });
+
   it("clamps steps to the first and last frame", () => {
     const player = renderPlayer();
 

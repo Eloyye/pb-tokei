@@ -246,21 +246,23 @@ export function moveRallyEdge(
     return { frame: null, reason: "Set the open-ended Rally's end with Shift+O" };
   }
 
-  // The Timeline covers every Game. Skip Unseen Rallies, and look for the previous known end
-  // when an earlier Rally is still open.
+  // The Timeline covers every Game. An earlier open Rally still has a start that this
+  // Rally can't move past. Other earlier Rallies might extend past that start.
   const ordered = framedRallies(games).toSorted(
     (a, b) => a.value.start_frame! - b.value.start_frame!,
   );
   const at = ordered.findIndex((r) => r.game === selection.game && r.rally === selection.rally);
-  const neighbour = start
-    ? ordered.slice(0, at).findLast((r) => r.value.end_frame !== null)
-    : ordered[at + 1];
-  const boundary = start ? neighbour?.value.end_frame : neighbour?.value.start_frame;
-  const outerFrame = boundary == null ? (start ? 0 : Infinity) : boundary + (start ? 1 : -1);
-  const outerReason =
-    neighbour && boundary != null
-      ? `Stopped ${start ? "after" : "before"} G${neighbour.gameNumber} R${neighbour.value.number} (frame ${outerFrame})`
-      : "Stopped at the start of the video (frame 0)";
+  const neighbours = start ? ordered.slice(0, at) : ordered.slice(at + 1, at + 2);
+  let outerFrame = start ? 0 : Infinity;
+  let outerReason = "Stopped at the start of the video (frame 0)";
+  for (const { value: other, gameNumber } of neighbours) {
+    const boundary = start ? (other.end_frame ?? other.start_frame!) + 1 : other.start_frame! - 1;
+    if (start ? boundary < outerFrame : boundary > outerFrame) continue;
+    outerFrame = boundary;
+    const label = `G${gameNumber} R${other.number}`;
+    const limit = start && other.end_frame === null ? `the start of ${label}` : label;
+    outerReason = `Stopped ${start ? "after" : "before"} ${limit} (frame ${boundary})`;
+  }
 
   let innerFrame = start ? (rally.end_frame ?? Infinity) : rally.start_frame;
   let innerLabel = start ? "this Rally's end" : "this Rally's start";
@@ -287,15 +289,20 @@ export function moveRallyEdge(
   return { frame, reason: null };
 }
 
+/** Replaces one bound on a copy of the Rally, for preview and commit. */
+export function withRallyEdge(rally: Rally, edge: RallyEdge, frame: number): Rally {
+  return edge === "start" ? { ...rally, start_frame: frame } : { ...rally, end_frame: frame };
+}
+
 /** Commits a Timeline edge drag without changing the selected entry or the Rally's order. */
 export function setRallyEdge(ctx: AnnotateContext, edge: RallyEdge, target: number): AnnotateEdit {
   const { frame, reason } = moveRallyEdge(ctx.games, ctx.selection, edge, target);
   const rally = selectedRally(ctx.games, ctx.selection);
   if (!rally || frame === null) return unchanged(ctx, reason ?? "");
-  const field = edge === "start" ? "start_frame" : "end_frame";
+  const current = edge === "start" ? rally.start_frame : rally.end_frame;
   const label = rallyLabel(ctx.games[ctx.selection.game]!, rally);
-  if (rally[field] === frame) return unchanged(ctx, reason ?? `${label} unchanged`);
-  const edit = editRally(ctx, (r) => ({ ...r, [field]: frame }));
+  if (current === frame) return unchanged(ctx, reason ?? `${label} unchanged`);
+  const edit = editRally(ctx, (r) => withRallyEdge(r, edge, frame));
   return { ...edit, message: reason ?? `${label} ${edge}s at frame ${frame}` };
 }
 
