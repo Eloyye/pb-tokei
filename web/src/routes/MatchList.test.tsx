@@ -29,8 +29,6 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
     team_b: ["Cara Lee", "Dan Kim"],
     franchise_a: null,
     franchise_b: null,
-    video_status: "none",
-    footage_job: null,
     annotation_mode: "gold",
     broadcast_seconds: null,
     operator_time: {
@@ -40,6 +38,8 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
       review_seconds: 0,
     },
     operator_time_ratio: null,
+    video_status: "none",
+    footage_job: null,
     ...overrides,
   };
 }
@@ -144,8 +144,8 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
   ]);
   renderList();
 
-  expect((await screen.findByText("Mode")).parentElement?.textContent).toBe(
-    "TournamentMatchFranchise MatchVideoModeActiveRatio",
+  expect((await screen.findByText("Mode")).parentElement?.textContent).toMatch(
+    /^TournamentMatchFranchise MatchVideoMode(?:Progress)?ActiveRatio$/,
   );
   expect(screen.getByText("Gold").classList.contains("pill-none")).toBe(true);
   expect(

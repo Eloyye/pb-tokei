@@ -44,24 +44,17 @@ function totals(annotate = 0, calibrate = 0, review = 0): OperatorTime {
   };
 }
 
-const match: MatchDetail = {
+type TimingMatch = Pick<
+  MatchDetail,
+  "id" | "video_status" | "operator_time" | "broadcast_seconds" | "operator_time_ratio"
+>;
+
+const match: TimingMatch = {
   id: "match",
-  tournament: "Test Open",
-  team_a: ["A1", "A2"],
-  team_b: ["B1", "B2"],
-  franchise_a: null,
-  franchise_b: null,
   video_status: "ready",
-  annotation_mode: "gold",
   operator_time: totals(10),
   broadcast_seconds: 100,
   operator_time_ratio: 0.1,
-  fix_command: null,
-  source_url: null,
-  original_present: true,
-  team_a_id: "team-a",
-  team_b_id: "team-b",
-  players: [],
 };
 
 function renderClock(initialWorkspace: Workspace = "annotate", initialMatch = match) {

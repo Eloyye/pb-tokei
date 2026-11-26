@@ -527,15 +527,17 @@ class RallyLog:
     def _match_summaries(self, where: str, *params: Any) -> list[MatchSummary]:
         rows = self._all(
             f"""
-            SELECT m.id, t.name,
+            SELECT m.id, t.name, m.source_video_frames, m.annotation_mode,
+                COALESCE(ot.calibrate_seconds, 0), COALESCE(ot.annotate_seconds, 0),
+                COALESCE(ot.review_seconds, 0),
                 pa1.name, pa2.name, pb1.name, pb2.name,
                 fa.name, fb.name,
-                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id,
-                m.source_video_frames, m.annotation_mode,
-                COALESCE(ot.calibrate_seconds, 0), COALESCE(ot.annotate_seconds, 0),
-                COALESCE(ot.review_seconds, 0)
+                m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id
             FROM matches m
             JOIN tournaments t ON t.id = m.tournament_id
+            LEFT JOIN (
+                SELECT match_id, {_OPERATOR_TOTALS} FROM operator_sessions GROUP BY match_id
+            ) ot ON ot.match_id = m.id
             JOIN teams ta ON ta.id = m.team_a_id
             JOIN players pa1 ON pa1.id = ta.player_low_id
             JOIN players pa2 ON pa2.id = ta.player_high_id
@@ -545,9 +547,6 @@ class RallyLog:
             LEFT JOIN franchise_matches fm ON fm.id = m.franchise_match_id
             LEFT JOIN franchises fa ON fa.id = fm.franchise_a_id
             LEFT JOIN franchises fb ON fb.id = fm.franchise_b_id
-            LEFT JOIN (
-                SELECT match_id, {_OPERATOR_TOTALS} FROM operator_sessions GROUP BY match_id
-            ) ot ON ot.match_id = m.id
             WHERE {where}
             ORDER BY t.name, m.id
             """,
@@ -557,19 +556,24 @@ class RallyLog:
             MatchSummary(
                 id=MatchId(id_),
                 tournament=tournament_name,
+                annotation_mode=AnnotationMode(mode),
+                source_video_frames=frames,
+                operator_time=OperatorTimeSummary(calibrate, annotate, review),
                 team_a=_pair(a1, a2),
                 team_b=_pair(b1, b2),
                 franchise_a=fa,
                 franchise_b=fb,
                 source_video=_source_video(video_url, video_id, video_path),
                 franchise_match_id=None if fm_id is None else FranchiseMatchId(fm_id),
-                annotation_mode=AnnotationMode(mode),
-                source_video_frames=frames,
-                operator_time=OperatorTimeSummary(calibrate, annotate, review),
             )
             for (
                 id_,
                 tournament_name,
+                frames,
+                mode,
+                calibrate,
+                annotate,
+                review,
                 a1,
                 a2,
                 b1,
@@ -580,11 +584,6 @@ class RallyLog:
                 video_id,
                 video_path,
                 fm_id,
-                frames,
-                mode,
-                calibrate,
-                annotate,
-                review,
             ) in rows
         ]
 

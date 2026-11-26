@@ -61,51 +61,6 @@ def _fact(name: str, sql_type: str, *, optional: bool = False, values: str = "")
     return ",\n    ".join(columns)
 
 
-def play_segments_table(name: str) -> str:
-    """The Play Segments table. Frame ranges are inclusive, so a one-frame segment is allowed."""
-    return f"""
-CREATE TABLE IF NOT EXISTS {name} (
-    match_id UUID NOT NULL,
-    start_frame INTEGER NOT NULL CHECK (start_frame >= 0),
-    end_frame INTEGER NOT NULL,
-    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
-    CHECK (start_frame <= end_frame),
-    PRIMARY KEY (match_id, start_frame)
-)"""
-
-
-def calibration_landmarks_table(name: str) -> str:
-    """The Calibration Landmarks table: placed (image coords + click frame) or not visible."""
-    return f"""
-CREATE TABLE IF NOT EXISTS {name} (
-    match_id UUID NOT NULL,
-    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
-    effective_from_frame INTEGER NOT NULL,
-    landmark VARCHAR NOT NULL {_one_of("landmark", Landmark)},
-    status VARCHAR NOT NULL CHECK (status IN ('placed', 'not_visible')),
-    image_x DOUBLE CHECK (image_x BETWEEN 0 AND 1),
-    image_y DOUBLE CHECK (image_y BETWEEN 0 AND 1),
-    frame INTEGER CHECK (frame >= 0),
-    CHECK (
-        (status = 'placed' AND image_x IS NOT NULL AND image_y IS NOT NULL AND frame IS NOT NULL)
-        OR (status = 'not_visible' AND image_x IS NULL AND image_y IS NULL AND frame IS NULL)
-    ),
-    PRIMARY KEY (match_id, camera_view, effective_from_frame, landmark)
-)"""
-
-
-def shot_positions_table(name: str) -> str:
-    """Each Player's court position and Settled fact at a Shot's contact."""
-    return f"""
-CREATE TABLE IF NOT EXISTS {name} (
-    {_SHOT_KEY},
-    player_id UUID NOT NULL REFERENCES players (id),
-    {_fact("position", "POINT")},
-    {_fact("settled", "BOOLEAN")},
-    PRIMARY KEY (match_id, game_number, rally_number, log_position, player_id)
-)"""
-
-
 def matches_table(name: str) -> str:
     return f"""
 CREATE TABLE IF NOT EXISTS {name} (
@@ -170,6 +125,51 @@ def _migrate_matches(db: duckdb.DuckDBPyConnection) -> None:
         db.execute("ROLLBACK")
         raise
     db.execute("COMMIT")
+
+
+def play_segments_table(name: str) -> str:
+    """The Play Segments table. Frame ranges are inclusive, so a one-frame segment is allowed."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    match_id UUID NOT NULL,
+    start_frame INTEGER NOT NULL CHECK (start_frame >= 0),
+    end_frame INTEGER NOT NULL,
+    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
+    CHECK (start_frame <= end_frame),
+    PRIMARY KEY (match_id, start_frame)
+)"""
+
+
+def calibration_landmarks_table(name: str) -> str:
+    """The Calibration Landmarks table: placed (image coords + click frame) or not visible."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    match_id UUID NOT NULL,
+    camera_view VARCHAR NOT NULL {_one_of("camera_view", CameraView)},
+    effective_from_frame INTEGER NOT NULL,
+    landmark VARCHAR NOT NULL {_one_of("landmark", Landmark)},
+    status VARCHAR NOT NULL CHECK (status IN ('placed', 'not_visible')),
+    image_x DOUBLE CHECK (image_x BETWEEN 0 AND 1),
+    image_y DOUBLE CHECK (image_y BETWEEN 0 AND 1),
+    frame INTEGER CHECK (frame >= 0),
+    CHECK (
+        (status = 'placed' AND image_x IS NOT NULL AND image_y IS NOT NULL AND frame IS NOT NULL)
+        OR (status = 'not_visible' AND image_x IS NULL AND image_y IS NULL AND frame IS NULL)
+    ),
+    PRIMARY KEY (match_id, camera_view, effective_from_frame, landmark)
+)"""
+
+
+def shot_positions_table(name: str) -> str:
+    """Each Player's court position and Settled fact at a Shot's contact."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    {_SHOT_KEY},
+    player_id UUID NOT NULL REFERENCES players (id),
+    {_fact("position", "POINT")},
+    {_fact("settled", "BOOLEAN")},
+    PRIMARY KEY (match_id, game_number, rally_number, log_position, player_id)
+)"""
 
 
 def migrate(db: duckdb.DuckDBPyConnection) -> None:

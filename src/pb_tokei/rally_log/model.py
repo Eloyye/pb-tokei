@@ -689,10 +689,10 @@ class MatchSummary:
     franchise_a: str | None
     franchise_b: str | None
     source_video: SourceVideo | None
+    annotation_mode: AnnotationMode = field(default=AnnotationMode.GOLD, kw_only=True)
+    source_video_frames: int | None = field(default=None, kw_only=True)
+    operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary, kw_only=True)
     franchise_match_id: FranchiseMatchId | None = None
-    annotation_mode: AnnotationMode = AnnotationMode.GOLD
-    source_video_frames: int | None = None
-    operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary)
 
     @property
     def has_video(self) -> bool:
