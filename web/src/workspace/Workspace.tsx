@@ -1099,7 +1099,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       <StatusBar
         message={((calibrating || annotating) && recordingState.message) || MESSAGES[workspace]}
         saveStatus={recordingState.saveStatus}
-        totalFrames={totalFrames}
+        match={match}
+        workspace={workspace}
       />
     </div>
   );

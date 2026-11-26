@@ -18,7 +18,12 @@ import duckdb
 if TYPE_CHECKING:
     from pb_tokei.player_vision import VisionBackend
 
-from pb_tokei.convert import ConvertProgress, FootageConversionError, convert_footage
+from pb_tokei.convert import (
+    ConvertProgress,
+    FootageConversionError,
+    convert_footage,
+    converted_path_for,
+)
 from pb_tokei.footage import (
     DEFAULT_FOOTAGE_DIR,
     CommandRunner,
@@ -350,7 +355,7 @@ def _run_download(
         try:
             with RallyLog.open(db_path) as log:
                 log.set_match_source_video(match_id, recorded_video)
-        except KeyError as exc:
+        except (KeyError, duckdb.Error, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
@@ -374,6 +379,21 @@ def _run_download(
         return 1
     finally:
         progress_line.finish()
+
+    if match_id is not None and db_path is not None:
+        from pb_tokei.camera_motion import video_frame_count
+
+        frames = video_frame_count(converted.output_path)
+        if frames is not None:
+            try:
+                with RallyLog.open(db_path) as log:
+                    log.set_match_video_frames(match_id, frames, expected_source=recorded_video)
+            except (KeyError, duckdb.Error, OSError) as exc:
+                print(
+                    f"error: could not record the converted video frame count: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
 
     print(converted.output_path)
     return 0
@@ -433,20 +453,28 @@ def _match_add(args: argparse.Namespace) -> int:
     db_path = _resolve_cli_db(args.db, allow_create=True)
     if db_path is None:
         return 1
+    frames = None
     if roster.video is not None:
+        from pb_tokei.camera_motion import video_frame_count
+
         if not roster.video.path.is_file():
             print(
                 f"warning: source video not found at {roster.video.path} "
                 f"(relative [video] paths are resolved against the Roster File)",
                 file=sys.stderr,
             )
+        try:
+            converted = converted_path_for(roster.video.path)
+        except FootageConversionError:
+            converted = roster.video.path
+        frames = video_frame_count(converted)
         roster = replace(
             roster,
             video=replace(roster.video, path=stored_video_path(roster.video.path, db_path)),
         )
     try:
         with RallyLog.open(db_path) as log:
-            match = set_up_match(log, roster)
+            match = set_up_match(log, roster, source_video_frames=frames)
     except AmbiguousFranchiseMatchError as exc:
         ids = ", ".join(str(id_) for id_ in exc.choices)
         print(f"error: {exc} ({ids}). Give [franchise_match] id to pick one.", file=sys.stderr)
@@ -479,6 +507,17 @@ def _match_line(summary: MatchSummary) -> str:
     if summary.franchise_a is not None:
         parts.append(f"({summary.franchise_a} vs {summary.franchise_b})")
     parts.append("video" if summary.has_video else "no video")
+    hours, remainder = divmod(int(summary.active_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    active = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+    ratio = summary.operator_time_ratio
+    parts.extend(
+        (
+            summary.annotation_mode.title(),
+            f"active {active}",
+            f"ratio {ratio:.2f}" if ratio is not None else "ratio —",
+        )
+    )
     return "  ".join(parts)
 
 

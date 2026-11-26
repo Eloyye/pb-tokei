@@ -12,7 +12,8 @@ import math
 import shlex
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
@@ -22,7 +23,7 @@ from uuid import UUID
 import duckdb
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from pb_tokei.annotate.footage_jobs import (
@@ -61,6 +62,8 @@ from pb_tokei.footage import (
 from pb_tokei.player_tracking import default_player_cache_dir
 from pb_tokei.player_vision import DevicePreference, VisionBackend
 from pb_tokei.rally_log import (
+    ASSISTED_RATIO_BUDGET,
+    AnnotationMode,
     Calibration,
     CameraView,
     Landmark,
@@ -68,6 +71,9 @@ from pb_tokei.rally_log import (
     MatchNotFound,
     MatchRoster,
     MatchSummary,
+    OperatorSession,
+    OperatorTimeSummary,
+    OperatorWorkspace,
     PlacedLandmark,
     PlayerAnchor,
     PlaySegment,
@@ -142,8 +148,39 @@ class OpenRallyLogIn(BaseModel):
     create: bool = False
 
 
+class OperatorSessionIn(BaseModel):
+    workspace: OperatorWorkspace
+    started_at: AwareDatetime
+    ended_at: AwareDatetime
+    active_seconds: float = Field(ge=0, allow_inf_nan=False)
+
+    @field_validator("active_seconds", mode="before")
+    @classmethod
+    def _json_safe_validation_input(cls, value: object) -> object:
+        # Preserve the validation failure while keeping its input serializable in a 422 response.
+        if isinstance(value, float) and not math.isfinite(value):
+            return str(value)
+        return value
+
+
+class OperatorTimeOut(BaseModel):
+    active_seconds: float
+    calibrate_seconds: float
+    annotate_seconds: float
+    review_seconds: float
+
+    @classmethod
+    def from_summary(cls, time: OperatorTimeSummary) -> OperatorTimeOut:
+        return cls(
+            active_seconds=time.total_seconds,
+            calibrate_seconds=time.calibrate_seconds,
+            annotate_seconds=time.annotate_seconds,
+            review_seconds=time.review_seconds,
+        )
+
+
 class MatchOut(BaseModel):
-    """A Match's roster by name and whether its 60 fps video can be played."""
+    """A Match's roster, footage status and active operator time."""
 
     id: UUID
     tournament: str
@@ -152,6 +189,11 @@ class MatchOut(BaseModel):
     franchise_a: str | None
     franchise_b: str | None
     video_status: VideoStatus
+    annotation_mode: AnnotationMode
+    broadcast_seconds: float | None
+    operator_time: OperatorTimeOut
+    operator_time_ratio: float | None
+    assisted_ratio_budget: float = ASSISTED_RATIO_BUDGET
     footage_job: FootageJobSummaryOut | None = None
     # Rallies marked Done, and all Rallies, for Home's Progress column.
     done_rallies: int = 0
@@ -172,6 +214,10 @@ class MatchOut(BaseModel):
             franchise_a=summary.franchise_a,
             franchise_b=summary.franchise_b,
             video_status=video_status,
+            annotation_mode=summary.annotation_mode,
+            broadcast_seconds=summary.broadcast_seconds,
+            operator_time=OperatorTimeOut.from_summary(summary.operator_time),
+            operator_time_ratio=summary.operator_time_ratio,
             footage_job=footage_job,
             done_rallies=summary.done_rallies,
             total_rallies=summary.total_rallies,
@@ -433,6 +479,33 @@ class _OpenRallyLog:
 
     def video(self, source_video: SourceVideo | None) -> _VideoState:
         return _VideoState(source_video, self.db_file)
+
+    def match_views(self, summaries: list[MatchSummary]) -> list[tuple[MatchOut, _VideoState]]:
+        """Uses the converted footage on disk and caches changed counts for offline use."""
+        views = []
+        backfills = []
+        for summary in summaries:
+            video = self.video(summary.source_video)
+            if video.status is VideoStatus.READY:
+                frames = video_frame_count(video.converted_path)
+                if frames is not None and frames != summary.source_video_frames:
+                    summary = replace(summary, source_video_frames=frames)
+                    backfills.append(summary)
+            job = self.footage.summary(summary.id, ready_url=video.ready_url)
+            views.append((MatchOut.from_summary(summary, video.status, job), video))
+
+        if backfills:
+
+            def backfill(log: RallyLog) -> None:
+                for match in backfills:
+                    log.set_match_video_frames(
+                        match.id, match.source_video_frames, expected_source=match.source_video
+                    )
+
+            # A busy Rally Log can try again on the next read. This response has the live count.
+            with suppress(duckdb.Error):
+                self.run(backfill)
+        return views
 
     def lookup(self, match_id: UUID) -> tuple[MatchSummary, _VideoState]:
         summary = self.run(lambda log: _match_summary(log, match_id))
@@ -727,12 +800,7 @@ def create_app(
     @app.get("/api/matches", operation_id="listMatches")
     def list_matches(rally_log: OpenLog) -> list[MatchOut]:
         summaries = rally_log.run(lambda log: log.list_matches())
-        out: list[MatchOut] = []
-        for s in summaries:
-            video = rally_log.video(s.source_video)
-            job = rally_log.footage.summary(s.id, ready_url=video.ready_url)
-            out.append(MatchOut.from_summary(s, video.status, job))
-        return out
+        return [match for match, _ in rally_log.match_views(summaries)]
 
     @app.get("/api/roster", operation_id="getRoster")
     def get_roster(rally_log: OpenLog) -> RosterOut:
@@ -762,15 +830,29 @@ def create_app(
             return summary, log.get_match_roster(mid)
 
         summary, roster = rally_log.run(load)
-        video = rally_log.video(summary.source_video)
-        job = rally_log.footage.summary(summary.id, ready_url=video.ready_url)
+        [(match, video)] = rally_log.match_views([summary])
         return MatchDetailOut.from_match(
-            MatchOut.from_summary(summary, video.status, job),
+            match,
             roster,
             video.fix_command(summary.id, rally_log.db_file),
             source_url=None if summary.source_video is None else summary.source_video.url,
             original_present=video.original_present,
         )
+
+    @app.put(
+        "/api/matches/{match_id}/operator-sessions/{session_id}",
+        operation_id="upsertOperatorSession",
+    )
+    def upsert_operator_session(
+        match_id: UUID, session_id: UUID, body: OperatorSessionIn, rally_log: OpenLog
+    ) -> OperatorTimeOut:
+        def save(log: RallyLog) -> OperatorTimeSummary:
+            session = OperatorSession(
+                session_id, body.workspace, body.started_at, body.ended_at, body.active_seconds
+            )
+            return log.upsert_operator_session(MatchId(match_id), session)
+
+        return OperatorTimeOut.from_summary(rally_log.run(save))
 
     @app.get("/api/matches/{match_id}/footage", operation_id="getMatchFootage")
     def get_match_footage(match_id: UUID, rally_log: OpenLog) -> FootageJobOut:

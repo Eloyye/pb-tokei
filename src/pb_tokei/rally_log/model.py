@@ -23,6 +23,7 @@ import itertools
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, NewType
@@ -34,6 +35,9 @@ TournamentId = NewType("TournamentId", UUID)
 FranchiseId = NewType("FranchiseId", UUID)
 FranchiseMatchId = NewType("FranchiseMatchId", UUID)
 MatchId = NewType("MatchId", UUID)
+
+BROADCAST_FPS = 60
+ASSISTED_RATIO_BUDGET = 0.25
 
 
 def new_id() -> UUID:
@@ -564,6 +568,61 @@ class SourceVideo:
             raise ValueError("SourceVideo path cannot be empty")
 
 
+def check_video_frames(frames: int | None) -> None:
+    if frames is not None and frames <= 0:
+        raise ValueError("Source video frame count must be positive")
+
+
+class AnnotationMode(StrEnum):
+    GOLD = "gold"
+    ASSISTED = "assisted"
+
+
+class OperatorWorkspace(StrEnum):
+    CALIBRATE = "calibrate"
+    ANNOTATE = "annotate"
+    REVIEW = "review"
+
+
+@dataclass(frozen=True)
+class OperatorSession:
+    """The cumulative active time recorded during one visit to a Match workspace."""
+
+    session_id: UUID
+    workspace: OperatorWorkspace
+    started_at: datetime
+    ended_at: datetime
+    active_seconds: float
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.active_seconds) or self.active_seconds < 0:
+            raise ValueError("Operator session active time must be finite and nonnegative")
+        if self.started_at.utcoffset() is None or self.ended_at.utcoffset() is None:
+            raise ValueError("Operator session timestamps require a time zone")
+        try:
+            start = self.started_at.astimezone(UTC)
+            end = self.ended_at.astimezone(UTC)
+        except OverflowError:
+            raise ValueError("Operator session timestamps must be representable in UTC") from None
+        if end < start:
+            raise ValueError("Operator session cannot end before it starts")
+        if self.active_seconds > (end - start).total_seconds():
+            raise ValueError("Operator session active time cannot exceed its elapsed time")
+        object.__setattr__(self, "started_at", start)
+        object.__setattr__(self, "ended_at", end)
+
+
+@dataclass(frozen=True)
+class OperatorTimeSummary:
+    calibrate_seconds: float = 0.0
+    annotate_seconds: float = 0.0
+    review_seconds: float = 0.0
+
+    @property
+    def total_seconds(self) -> float:
+        return self.calibrate_seconds + self.annotate_seconds + self.review_seconds
+
+
 @dataclass(frozen=True)
 class PlayerAnchor:
     """An operator-placed anchor for one Player on one frame, in normalised image coordinates."""
@@ -687,10 +746,15 @@ class Match:
     calibrations: tuple[Calibration, ...] = ()
     player_anchors: tuple[PlayerAnchor, ...] = ()
     team_ends: tuple[TeamEnd, ...] = ()
+    annotation_mode: AnnotationMode = AnnotationMode.GOLD
+    source_video_frames: int | None = None
 
     def __post_init__(self) -> None:
         if self.team_a_id == self.team_b_id:
             raise ValueError("a Match needs two different Teams")
+        check_video_frames(self.source_video_frames)
+        if self.source_video_frames is not None and self.source_video is None:
+            raise ValueError("Source video frames require a recorded source video")
         check_play_segments(self.play_segments)
         check_calibrations(self.calibrations)
         check_player_anchors(self.player_anchors)
@@ -719,6 +783,9 @@ class MatchSummary:
     franchise_a: str | None
     franchise_b: str | None
     source_video: SourceVideo | None
+    annotation_mode: AnnotationMode = field(default=AnnotationMode.GOLD, kw_only=True)
+    source_video_frames: int | None = field(default=None, kw_only=True)
+    operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary, kw_only=True)
     franchise_match_id: FranchiseMatchId | None = None
     done_rallies: int = 0
     total_rallies: int = 0
@@ -726,3 +793,18 @@ class MatchSummary:
     @property
     def has_video(self) -> bool:
         return self.source_video is not None
+
+    @property
+    def broadcast_seconds(self) -> float | None:
+        return (
+            None if self.source_video_frames is None else self.source_video_frames / BROADCAST_FPS
+        )
+
+    @property
+    def active_seconds(self) -> float:
+        return self.operator_time.total_seconds
+
+    @property
+    def operator_time_ratio(self) -> float | None:
+        broadcast = self.broadcast_seconds
+        return None if broadcast is None else self.active_seconds / broadcast

@@ -42,12 +42,12 @@ A clickable prototype with sample data and working keys lives in [design/annotat
   - save state
   - the last action or hint
   - in Review only, the confidence threshold slider
-  - active time
-  - Operator Time Ratio (in Review, shown against the 0.25 budget)
+  - `Active m:ss` or `Active h:mm:ss`, dimmed while idle. Hover to see the Calibrate, Annotate, and Review totals.
+  - `Ratio 0.19`, with the full broadcast length in its tooltip. In Assisted mode or Review, it shows `Ratio 0.19 / 0.25` in green within budget or amber over it. A known broadcast length and zero active time show `0.00`. An unknown broadcast length shows `—`.
   - issue counts, red and amber
   - the `?` hint
 
-- **Rally Log picker.** A modal opened from the Rally Log's name. It shows the open Rally Log and up to 10 recent ones (the open one and missing files can't be chosen; missing files carry an amber `missing` pill). It has a path field, prefilled with the open Rally Log's folder, with **Open** and **New Rally Log** buttons. Choosing one waits for queued saves ("Saving changes…"), and refuses with the save's error if any save is retrying or was refused. On success the app goes Home on the new Rally Log. The picker opens by itself when no Rally Log is open, and the header then reads `No Rally Log` in amber. When another tab has switched the Rally Log, the name becomes an amber **Rally Log switched elsewhere: reload**.
+- **Rally Log picker.** A modal opened from the Rally Log's name. It shows the open Rally Log and up to 10 recent ones (the open one and missing files can't be chosen; missing files carry an amber `missing` pill). It has a path field, prefilled with the open Rally Log's folder, with **Open** and **New Rally Log** buttons. Choosing one waits for queued saves ("Saving changes…"), and refuses with the save's error if any save is retrying or was refused. After saves land, the picker gives the operator time flush up to two seconds before opening the Rally Log. On success the app goes Home on the new Rally Log. The picker opens by itself when no Rally Log is open, and the header then reads `No Rally Log` in amber. When another tab has switched the Rally Log, the name becomes an amber **Rally Log switched elsewhere: reload**.
 
 ## Workspaces
 
@@ -66,15 +66,25 @@ Each key's meaning is set by the workspace. The same key never does two things i
 A separate screen: a dense table of Matches with these columns:
 
 - Tournament
-- Teams (with Team color swatches)
+- Match (Teams with color swatches)
 - Franchise Match
-- Video status
-- Mode (Gold or Assisted)
+- Video
+- Mode (Gold or Assisted pill)
 - Progress (Rallies Done out of total, with a bar)
-- Active time
-- Operator Time Ratio (in Assisted mode, green within the 0.25 budget and amber over it)
+- Active (persisted active time, with a workspace breakdown on hover)
+- Ratio (green within the 0.25 budget and amber over it in Assisted mode)
 
 Clicking a row opens the Match in Annotate.
+
+The table footer explains the Operator Time Ratio. Divide operator minutes by full broadcast minutes. Assisted Annotation has a 0.25 budget under ADR 0004. Gold Annotation has no time budget. Both Home and the workspace can show the ratio from the saved broadcast length while footage is offline.
+
+## Operator time
+
+The clock starts idle in Calibrate, Annotate, or Review when the video is ready. It tracks keyboard presses, pointer presses, scrolling, and form input in a focused, visible Match window. Pointer movement and playback alone leave the clock idle. The clock stays idle on Home, on New Match, and while footage is fetching or unavailable.
+
+The Active display ticks after the first deliberate input. Each subsequent input within two minutes commits the time since the previous input. Two minutes of inactivity, a hidden tab, lost window focus, or leaving the workspace pauses the clock and removes the uncommitted interval. The next input starts a fresh interval. Changing workspace starts a new session and carries forward the Match's totals.
+
+Committed time saves in the background every 15 seconds during activity and when pausing or leaving. The Rally Log picker and page close also flush it. These writes run independently of the save indicator and the annotation undo history.
 
 ## Monitor
 

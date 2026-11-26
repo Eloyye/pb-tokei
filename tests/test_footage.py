@@ -532,12 +532,19 @@ def test_cli_download_converts_when_original_already_exists_without_converted_fi
 
 
 def test_cli_download_records_original_source_video_and_prints_converted_path(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "rally_log.duckdb"
     footage_dir = tmp_path / "footage"
     match = _create_match_in_db(db_path)
     fake = FakeYtDlp(video_id=SAMPLE_ID, ext="mp4")
+    converted_path = footage_dir / f"{SAMPLE_ID}.60fps.mp4"
+
+    def probe(path: Path) -> int:
+        assert path == converted_path and path.is_file()
+        return 6000
+
+    monkeypatch.setattr("pb_tokei.camera_motion.video_frame_count", probe)
 
     code = main(
         [
@@ -554,7 +561,6 @@ def test_cli_download_records_original_source_video_and_prints_converted_path(
     )
     captured = capsys.readouterr()
 
-    converted_path = footage_dir / f"{SAMPLE_ID}.60fps.mp4"
     assert code == 0
     assert captured.out == f"{converted_path}\n"
     assert f"Rally Log: {db_path.resolve()}" in captured.err
@@ -563,6 +569,7 @@ def test_cli_download_records_original_source_video_and_prints_converted_path(
     assert loaded.source_video == SourceVideo(
         url=SAMPLE_URL, video_id=SAMPLE_ID, path=Path("footage") / f"{SAMPLE_ID}.mp4"
     )
+    assert loaded.source_video_frames == 6000
 
 
 def test_cli_download_records_absolute_path_when_footage_is_outside_rally_log_dir(

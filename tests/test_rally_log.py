@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -7,6 +8,7 @@ import pytest
 from pb_tokei.rally_log import (
     UNKNOWN,
     AnchorKind,
+    AnnotationMode,
     Calibration,
     CameraView,
     Certainty,
@@ -23,6 +25,9 @@ from pb_tokei.rally_log import (
     MatchId,
     MatchNotFound,
     ObservationGap,
+    OperatorSession,
+    OperatorTimeSummary,
+    OperatorWorkspace,
     Parity,
     PlacedLandmark,
     Player,
@@ -255,7 +260,12 @@ def test_match_source_video_round_trips(log: RallyLog) -> None:
         video_id="abc123XYZ00",
         path=Path("footage/abc123XYZ00.mp4"),
     )
-    match = replace(small_match(), source_video=video)
+    match = replace(
+        small_match(),
+        source_video=video,
+        source_video_frames=3600,
+        annotation_mode=AnnotationMode.ASSISTED,
+    )
 
     log.save_match(match)
 
@@ -271,9 +281,9 @@ def test_recording_source_video_against_existing_match_preserves_rallies(log: Ra
         path=Path("footage/abc123XYZ00.mkv"),
     )
 
-    log.set_match_source_video(match.id, video)
+    log.set_match_source_video(match.id, video, frames=3600)
 
-    assert log.load_match(match.id) == replace(match, source_video=video)
+    assert log.load_match(match.id) == replace(match, source_video=video, source_video_frames=3600)
 
 
 def test_recording_source_video_for_missing_match_fails(log: RallyLog) -> None:
@@ -337,13 +347,15 @@ def test_saving_a_match_without_source_video_preserves_recorded_video(log: Rally
         video_id="abc123XYZ00",
         path=Path("footage/abc123XYZ00.mkv"),
     )
-    log.set_match_source_video(match.id, video)
+    log.set_match_source_video(match.id, video, frames=600)
 
     # Saving the Match again with source_video=None keeps the recorded source video.
     edited = replace(match, games=())
     log.save_match(edited)
 
-    assert log.load_match(match.id) == replace(edited, source_video=video)
+    assert log.load_match(match.id) == replace(edited, source_video=video, source_video_frames=600)
+    log.save_match(replace(edited, source_video=video))
+    assert log.load_match(match.id).source_video_frames == 600
 
 
 def test_saving_a_match_with_new_source_video_replaces_recorded_video(log: RallyLog) -> None:
@@ -359,11 +371,72 @@ def test_saving_a_match_with_new_source_video_replaces_recorded_video(log: Rally
         video_id="second00002",
         path=Path("footage/second00002.mkv"),
     )
-    log.set_match_source_video(match.id, first)
+    log.set_match_source_video(match.id, first, frames=600)
 
     log.save_match(replace(match, source_video=second))
 
     assert log.load_match(match.id).source_video == second
+    assert log.load_match(match.id).source_video_frames is None
+
+
+def test_frame_count_updates_require_the_probed_source(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    first = SourceVideo("https://example.com/first", "first", Path("first.mp4"))
+    second = SourceVideo("https://example.com/second", "second", Path("second.mp4"))
+
+    with pytest.raises(ValueError, match="require a recorded source"):
+        log.set_match_video_frames(match.id, 60)
+    with pytest.raises(ValueError, match="require a recorded source"):
+        replace(match, source_video_frames=60)
+    log.set_match_source_video(match.id, first)
+    with pytest.raises(ValueError, match="positive"):
+        log.set_match_video_frames(match.id, 0)
+    log.set_match_video_frames(match.id, 120, expected_source=first)
+    assert log.get_match_summary(match.id).source_video_frames == 120
+    log.set_match_source_video(match.id, second)
+    log.set_match_video_frames(match.id, 180, expected_source=first)
+    assert log.get_match_summary(match.id).source_video_frames is None
+    log.set_match_video_frames(match.id, 60)
+    assert log.get_match_summary(match.id).broadcast_seconds == 1
+    log.set_match_video_frames(match.id, None)
+    assert log.get_match_summary(match.id).broadcast_seconds is None
+
+
+def test_operator_sessions_are_monotonic_and_survive_saving_match_content(log: RallyLog) -> None:
+    video = SourceVideo("https://example.com/first", "first", Path("first.mp4"))
+    match = replace(small_match(), source_video=video, source_video_frames=3600)
+    log.save_match(match)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(seconds=8)
+    session = OperatorSession(new_id(), OperatorWorkspace.CALIBRATE, start, end, 6)
+    review = OperatorSession(
+        new_id(), OperatorWorkspace.REVIEW, end, end + timedelta(seconds=5), 4.5
+    )
+
+    assert log.upsert_operator_session(match.id, session).total_seconds == 6
+    newer = replace(session, ended_at=end + timedelta(seconds=5), active_seconds=9.5)
+    assert log.upsert_operator_session(match.id, newer).total_seconds == 9.5
+    assert log.upsert_operator_session(match.id, newer).total_seconds == 9.5
+    earlier = replace(session, started_at=start - timedelta(seconds=2))
+    assert log.upsert_operator_session(match.id, earlier).total_seconds == 9.5
+    with pytest.raises(ValueError, match="cannot change workspace"):
+        log.upsert_operator_session(match.id, replace(newer, workspace=OperatorWorkspace.ANNOTATE))
+    with pytest.raises(MatchNotFound):
+        log.upsert_operator_session(MatchId(new_id()), newer)
+
+    expected = OperatorTimeSummary(calibrate_seconds=9.5, review_seconds=4.5)
+    assert log.upsert_operator_session(match.id, review) == expected
+    log.save_match(replace(match, games=()))
+    assert log.get_operator_time(match.id) == expected
+    assert log.get_operator_sessions(match.id) == (
+        replace(newer, started_at=earlier.started_at),
+        review,
+    )
+    summary = log.list_matches()[0]
+    assert summary.operator_time == expected
+    assert summary.active_seconds == 14
+    assert summary.operator_time_ratio == 14 / 60
 
 
 def test_source_video_columns_are_all_or_nothing(tmp_path: Path) -> None:
@@ -380,7 +453,10 @@ def test_source_video_columns_are_all_or_nothing(tmp_path: Path) -> None:
         )
 
 
-def test_opening_an_older_database_adds_source_video_columns(tmp_path: Path) -> None:
+@pytest.mark.parametrize("has_video_columns", [False, True])
+def test_opening_an_older_database_migrates_match_metadata(
+    tmp_path: Path, has_video_columns: bool
+) -> None:
     path = tmp_path / "legacy.duckdb"
     match_id = MatchId(new_id())
     with duckdb.connect(str(path)) as conn:
@@ -402,11 +478,16 @@ def test_opening_an_older_database_adds_source_video_columns(tmp_path: Path) -> 
             "id UUID PRIMARY KEY, tournament_id UUID NOT NULL, "
             "franchise_a_id UUID NOT NULL, franchise_b_id UUID NOT NULL)"
         )
-        # Pre-PR 5-column matches table without source_video_* columns.
+        video_columns = (
+            ", source_video_url VARCHAR, source_video_id VARCHAR, source_video_path VARCHAR"
+            if has_video_columns
+            else ""
+        )
         conn.execute(
             "CREATE TABLE matches ("
             "id UUID PRIMARY KEY, tournament_id UUID NOT NULL, "
-            "team_a_id UUID NOT NULL, team_b_id UUID NOT NULL, franchise_match_id UUID)"
+            "team_a_id UUID NOT NULL, team_b_id UUID NOT NULL, "
+            f"franchise_match_id UUID{video_columns})"
         )
         conn.execute(
             "INSERT INTO tournaments VALUES (?, ?, ?)",
@@ -420,9 +501,15 @@ def test_opening_an_older_database_adds_source_video_columns(tmp_path: Path) -> 
         conn.execute("INSERT INTO teams VALUES (?, ?, ?)", [SERVERS.id, *SERVERS.player_ids])
         conn.execute("INSERT INTO teams VALUES (?, ?, ?)", [RECEIVERS.id, *RECEIVERS.player_ids])
         conn.execute(
-            "INSERT INTO matches VALUES (?, ?, ?, ?, NULL)",
+            "INSERT INTO matches (id, tournament_id, team_a_id, team_b_id) VALUES (?, ?, ?, ?)",
             [match_id, TOURNAMENT.id, SERVERS.id, RECEIVERS.id],
         )
+        if has_video_columns:
+            conn.execute(
+                "UPDATE matches SET source_video_url = ?, "
+                "source_video_id = ?, source_video_path = ?",
+                ["https://example.com/existing", "existing", "footage/existing.mp4"],
+            )
 
     video = SourceVideo(
         url="https://www.youtube.com/watch?v=legacy00001",
@@ -430,7 +517,15 @@ def test_opening_an_older_database_adds_source_video_columns(tmp_path: Path) -> 
         path=Path("footage/legacy00001.mp4"),
     )
     with RallyLog.open(path) as log:
-        assert log.load_match(match_id).source_video is None
+        migrated = log.load_match(match_id)
+        assert migrated.source_video == (
+            SourceVideo("https://example.com/existing", "existing", Path("footage/existing.mp4"))
+            if has_video_columns
+            else None
+        )
+        assert migrated.annotation_mode is AnnotationMode.GOLD
+        assert migrated.source_video_frames is None
+        assert log.get_operator_time(match_id) == OperatorTimeSummary()
         log.set_match_source_video(match_id, video)
         assert log.load_match(match_id).source_video == video
 
@@ -849,14 +944,27 @@ def test_replacing_games_checks_every_team_and_player_is_in_the_match(log: Rally
         log.save_match(replace(match, games=(Game(1, (bad_rallies[0],)),)))
 
 
-def test_opening_an_older_database_migrates_rally_status_and_scoreboard(tmp_path: Path) -> None:
+@pytest.mark.parametrize("needs_match_migration", [False, True])
+def test_opening_an_older_database_migrates_rally_status_and_scoreboard(
+    tmp_path: Path, needs_match_migration: bool
+) -> None:
     path = tmp_path / "legacy_rallies.duckdb"
-    match = small_match()
+    video = SourceVideo("https://example.com/legacy", "legacy", Path("footage/legacy.mkv"))
+    match = replace(small_match(), source_video=video)
     with RallyLog.open(path) as log:
         save_roster(log)
         log.save_match(match)
 
     with duckdb.connect(str(path)) as conn:
+        if needs_match_migration:
+            conn.execute(
+                "CREATE TABLE legacy_matches AS SELECT * EXCLUDE "
+                "(annotation_mode, source_video_frames) FROM matches"
+            )
+            conn.execute("DROP TABLE matches")
+            conn.execute("ALTER TABLE legacy_matches RENAME TO matches")
+            conn.execute("DROP TABLE operator_sessions")
+
         # Legacy rallies without status / scoreboard_winner_id.
         conn.execute(
             "CREATE TABLE legacy AS SELECT * EXCLUDE "
@@ -875,6 +983,12 @@ def test_opening_an_older_database_migrates_rally_status_and_scoreboard(tmp_path
         )
 
     with RallyLog.open(path) as log:
+        summary = log.get_match_summary(match.id)
+        assert summary.source_video == video
+        assert summary.annotation_mode is AnnotationMode.GOLD
+        assert summary.source_video_frames is None
+        assert summary.operator_time == OperatorTimeSummary()
+        assert (summary.done_rallies, summary.total_rallies) == (0, 4)
         rallies = log.get_games(match.id)[0].rallies
         assert [r.status for r in rallies] == [
             RallyStatus.IN_PROGRESS,  # Shots and known facts

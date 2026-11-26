@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 import duckdb
 from pydantic import BaseModel
 
+from pb_tokei.camera_motion import video_frame_count
 from pb_tokei.convert import ConvertProgress, FootageConversionError, convert_footage
 from pb_tokei.footage import (
     DEFAULT_FOOTAGE_DIR,
@@ -26,7 +28,7 @@ from pb_tokei.footage import (
     StreamRunner,
     download_footage,
 )
-from pb_tokei.rally_log import MatchId, RallyLog, SourceVideo, stored_video_path
+from pb_tokei.rally_log import MatchId, RallyLog, resolve_video_path, stored_video_path
 from pb_tokei.state import read_cookies_from_browser
 
 _DB_RETRY_DELAYS_S = (0.05, 0.1, 0.25, 0.5, 1.0)
@@ -326,6 +328,7 @@ class FootageJobService:
     def _run_job(self, job: _FootageJob) -> None:
         try:
             source_path = job.convert_source
+            recorded = None
             if source_path is None:
                 assert job.url is not None
 
@@ -357,7 +360,9 @@ class FootageJobService:
                     dl_result.source_video,
                     path=stored_video_path(dl_result.source_video.path, self._db_file),
                 )
-                self._record_source_video(job, recorded)
+                self._write_match(
+                    job, lambda log: log.set_match_source_video(job.match_id, recorded)
+                )
                 source_path = dl_result.source_video.path
 
             if job.cancel.is_set() or self._closed:
@@ -378,7 +383,7 @@ class FootageJobService:
                     if progress.percent is not None:
                         job.percent = progress.percent
 
-            convert_footage(
+            converted = convert_footage(
                 source_path,
                 run=self._runner,
                 on_progress=on_convert_progress,
@@ -386,6 +391,19 @@ class FootageJobService:
             )
             if job.cancel.is_set() or self._closed:
                 raise CommandCancelledError("Footage job cancelled")
+
+            frames = video_frame_count(converted.output_path)
+            if frames is not None:
+
+                def record_frames(log: RallyLog) -> None:
+                    source = recorded or log.get_match_summary(job.match_id).source_video
+                    if (
+                        source is not None
+                        and resolve_video_path(source.path, self._db_file) == source_path
+                    ):
+                        log.set_match_video_frames(job.match_id, frames, expected_source=source)
+
+                self._write_match(job, record_frames)
 
             with self._lock:
                 if self._jobs.get(job.match_id) is job:
@@ -399,14 +417,14 @@ class FootageJobService:
         except Exception as exc:
             self._record_error(job, str(exc), stderr_tail=None)
 
-    def _record_source_video(self, job: _FootageJob, source_video: SourceVideo) -> None:
+    def _write_match(self, job: _FootageJob, write: Callable[[RallyLog], None]) -> None:
         last_exc: duckdb.Error | None = None
         for attempt in range(len(_DB_RETRY_DELAYS_S) + 1):
             if job.cancel.is_set() or self._closed:
                 raise CommandCancelledError("Footage job cancelled")
             try:
                 with RallyLog.open(self._db_file) as log:
-                    log.set_match_source_video(job.match_id, source_video)
+                    write(log)
                 return
             except duckdb.Error as exc:
                 last_exc = exc
