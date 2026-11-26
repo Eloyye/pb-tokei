@@ -114,7 +114,7 @@ export function RalliesPanel({
                   aria-pressed={on}
                   className={`r-row ${on ? "on" : ""}`}
                   onClick={() => onSelectRally(gi, ri)}
-                  title={`${STATUS_LABEL[rally.status]}${rally.start_frame === null ? " · Unseen" : ""}`}
+                  title={`${STATUS_LABEL[rally.status]}${rally.start_frame === null ? " · Unseen" : ""}${on ? " · click to deselect" : ""}`}
                 >
                   <span className={`st ${rally.status}`}>{STATUS_MARK[rally.status]}</span>
                   <span className="num">R{rally.number}</span>

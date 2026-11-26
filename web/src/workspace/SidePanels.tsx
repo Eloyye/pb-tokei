@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { MatchDetail, PlayerTrackingFrameOut, Shot, TeamEnd } from "../api/client";
 import type { Point } from "../lib/calibrations";
+import { formatTimecode } from "../lib/frames";
 import { nearTeamKeyFor, playerInitialsMap } from "../lib/players";
 import { teamKey, type Roster } from "../lib/rallyLog";
 import {
@@ -32,6 +33,7 @@ export function CourtPanel({
   previousShot,
   onSetLanding,
   onMoveShotPlayer,
+  onDeselectShot,
 }: {
   match: MatchDetail;
   focused: boolean;
@@ -48,6 +50,8 @@ export function CourtPanel({
   previousShot?: Shot;
   onSetLanding?: (courtPoint: Point) => void;
   onMoveShotPlayer?: (playerId: string, courtPoint: Point) => void;
+  /** Deselects the current Shot so the diagram returns to live Player Tracking. */
+  onDeselectShot?: () => void;
 }) {
   const initials = useMemo(() => playerInitialsMap(match.players), [match.players]);
   const trackedById = useMemo(
@@ -110,7 +114,36 @@ export function CourtPanel({
       id="court"
       focused={focused}
       tabs={<PanelTitle>Court</PanelTitle>}
-      tools={<span>{shot ? "Shot at contact" : "live"} · near end = Main View camera</span>}
+      tools={
+        shot ? (
+          <>
+            <span className="court-mode" title="Near end = Main View camera">
+              Shot {shot.shot_number.value ?? "?"} ·{" "}
+              {shot.contact_frame.value === null ? (
+                "contact Unknown"
+              ) : (
+                <>
+                  contact <span className="mono">{formatTimecode(shot.contact_frame.value)}</span>
+                </>
+              )}
+            </span>
+            {onDeselectShot && (
+              <button
+                type="button"
+                className="icon-button court-live-button"
+                title="Deselect Shot to show live Player Tracking (Esc)"
+                onClick={onDeselectShot}
+              >
+                Live
+              </button>
+            )}
+          </>
+        ) : (
+          <span className="court-mode live" title="Near end = Main View camera">
+            Live · <span className="mono">{formatTimecode(frame)}</span>
+          </span>
+        )
+      }
     >
       <div className="court-wrap">
         <CourtDiagram

@@ -32,7 +32,7 @@ const TRACKS = [
   { id: "issues", label: "Issues", empty: "" },
 ] as const;
 
-const EDGE_DRAG_THRESHOLD_PX = 3;
+const DRAG_THRESHOLD_PX = 3;
 
 type EdgeTarget =
   | { kind: "segment"; start: number }
@@ -57,6 +57,8 @@ interface PinDrag {
   entry: number;
   from: number;
   frame: number;
+  startX: number;
+  moved: boolean;
 }
 
 type TimelineDrag = { pointerId: number; clientX: number } & (
@@ -146,7 +148,7 @@ export function Timeline({
     return queued?.from === view ? queued.to : view;
   };
 
-  const applyDrag = (clientX: number, nextView: FrameRange, rect: DOMRect) => {
+  const applyDrag = (clientX: number, nextView: FrameRange, rect: DOMRect, fromWheel = false) => {
     const drag = activeDrag.current;
     if (!drag || rect.width <= 0) return;
     const target = clampFrame(frameAt(nextView, (clientX - rect.left) / rect.width), totalFrames);
@@ -156,7 +158,7 @@ export function Timeline({
       if (
         target === drag.pointerFrame ||
         (starting &&
-          Math.abs(clientX - drag.originX) < EDGE_DRAG_THRESHOLD_PX &&
+          Math.abs(clientX - drag.originX) < DRAG_THRESHOLD_PX &&
           nextView === drag.originView)
       )
         return;
@@ -186,11 +188,24 @@ export function Timeline({
       return;
     }
 
+    if (drag.kind === "pin") {
+      const moved =
+        drag.moved ||
+        Math.abs(clientX - drag.startX) >= DRAG_THRESHOLD_PX ||
+        (fromWheel && target !== drag.from);
+      if (!moved) {
+        activeDrag.current = { ...drag, clientX };
+        return;
+      }
+      const next = { ...drag, clientX, frame: target, moved: true };
+      activeDrag.current = next;
+      if (target !== drag.frame || !drag.moved) setPinPreview(next);
+      return;
+    }
+
     const next = { ...drag, clientX, frame: target };
     activeDrag.current = next;
-    if (next.kind === "pin") {
-      if (target !== drag.frame) setPinPreview(next);
-    } else if (target !== drag.frame || (playing && target !== frame)) {
+    if (target !== drag.frame || (playing && target !== frame)) {
       // Playback can advance while the scrub still points to the same frame.
       onSeek(target);
     }
@@ -203,14 +218,19 @@ export function Timeline({
     if (rect) applyDrag(event.clientX, currentView(), rect);
   };
 
-  const startPinDrag = (event: PointerEvent<HTMLElement>, pin: PinDrag) => {
-    if (activeDrag.current) return;
+  const startPinDrag = (
+    event: PointerEvent<HTMLElement>,
+    pin: Omit<PinDrag, "startX" | "moved">,
+  ) => {
+    if (event.button !== 0 || activeDrag.current) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     activeDrag.current = {
       kind: "pin",
       pointerId: event.pointerId,
       clientX: event.clientX,
+      startX: event.clientX,
+      moved: false,
       ...pin,
     };
   };
@@ -220,13 +240,13 @@ export function Timeline({
     if (drag.pointerFrame !== null) onPreviewEdge(null, null);
   };
 
-  const finishDrag = (event: PointerEvent<HTMLElement>, commitEdge = false) => {
+  const finishDrag = (event: PointerEvent<HTMLElement>, commit = false) => {
     const drag = activeDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     activeDrag.current = null;
     if (drag.kind === "edge") {
       clearEdgePreview(drag);
-      if (!commitEdge) return;
+      if (!commit) return;
       if (drag.target.kind === "segment") {
         onMoveEdge(drag.target.start, drag.edge, drag.frame);
       } else if (drag.pointerFrame === null) {
@@ -237,9 +257,11 @@ export function Timeline({
     }
     if (drag.kind === "pin") {
       setPinPreview(undefined);
-      if (!commitEdge) return;
-      if (drag.frame !== drag.from) {
-        rallyLog?.onMoveContact(drag.game, drag.rally, drag.entry, drag.frame);
+      if (!commit) return;
+      if (drag.moved) {
+        if (drag.frame !== drag.from) {
+          rallyLog?.onMoveContact(drag.game, drag.rally, drag.entry, drag.frame);
+        }
       } else {
         rallyLog?.onSelectEntry(drag.game, drag.rally, drag.entry);
       }
@@ -312,7 +334,7 @@ export function Timeline({
     queuedWheelView.current = { from: view, to: next };
     onViewChange(next);
     const drag = activeDrag.current;
-    if (drag) applyDrag(drag.clientX, next, rect);
+    if (drag) applyDrag(drag.clientX, next, rect, true);
   });
 
   useEffect(() => {
@@ -616,6 +638,7 @@ function rallyClips(
         <button
           key={`clip-${gi}-${ri}`}
           type="button"
+          aria-pressed={on}
           className={`clip ${team ? `team-${team}` : ""} ${on ? "on" : ""} ${rally.end_frame === null ? "open" : ""}`}
           style={{
             left: `${toPercent(view, rally.start_frame)}%`,
@@ -648,7 +671,7 @@ function ShotMarks({
   rallyLog: TimelineRallies;
   view: FrameRange;
   preview: PinDrag | undefined;
-  onPinDown: (event: PointerEvent<HTMLElement>, pin: PinDrag) => void;
+  onPinDown: (event: PointerEvent<HTMLElement>, pin: Omit<PinDrag, "startX" | "moved">) => void;
   onMove: (event: PointerEvent<HTMLElement>) => void;
   onUp: (event: PointerEvent<HTMLElement>, commit?: boolean) => void;
 }) {
@@ -676,9 +699,10 @@ function ShotMarks({
                 <button
                   key={`gap-${gi}-${ri}-${ei}`}
                   type="button"
+                  aria-pressed={on}
                   className={`gap-pill ${on ? "on" : ""}`}
                   style={{ left: `${toPercent(view, (a + b) / 2)}%` }}
-                  title={`An ${entry.missing} number of Shots unseen (click, then ⌫ deletes or G / ⇧G flips)`}
+                  title={`An ${entry.missing} number of Shots unseen (${on ? "click to deselect, " : "click, then "}⌫ deletes or G / ⇧G flips)`}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => rallyLog.onSelectEntry(gi, ri, ei)}
                 >
@@ -695,9 +719,10 @@ function ShotMarks({
               <button
                 key={`pin-${gi}-${ri}-${ei}`}
                 type="button"
+                aria-pressed={on}
                 className={`pin ${team ? `team-${team}` : ""} ${entry.hitter_id.certainty === "inferred" ? "inferred" : ""} ${on ? "on" : ""}`}
                 style={{ left: `${toPercent(view, frame)}%` }}
-                title={`Shot ${number ?? "?"} at frame ${frame} (drag to move its contact)`}
+                title={`Shot ${number ?? "?"} at frame ${frame} (${on ? "click to deselect, or " : ""}drag to move its contact)`}
                 aria-label={`Shot ${number ?? "?"} at frame ${frame}`}
                 onPointerDown={(event) =>
                   onPinDown(event, { game: gi, rally: ri, entry: ei, from: frame, frame })

@@ -1156,6 +1156,28 @@ fieldset.transport-group {
   text-align: center;
 }
 
+.court-mode {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.court-mode.live {
+  color: var(--text);
+}
+
+.court-live-button {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line-2);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.court-live-button:hover {
+  border-color: var(--dim);
+}
+
 .court .surround {
   fill: var(--surround);
 }
