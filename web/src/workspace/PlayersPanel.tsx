@@ -9,7 +9,8 @@ import type {
 import type { Point } from "../lib/calibrations";
 import { nearTeamKeyFor, playerInitialsMap, settledLabel, zoneShortLabel } from "../lib/players";
 import { VIEW_LABELS } from "../lib/segments";
-import { CourtDiagram, type CourtPlayerDot } from "./CourtDiagram";
+import { CourtDiagram, type CourtNavigation, type CourtPlayerDot } from "./CourtDiagram";
+import { CourtViewControls } from "./CourtViewControls";
 
 /**
  * `Calibrate → Players` tab: tracking trigger/cancel with active device badge & per-segment
@@ -34,6 +35,7 @@ export function PlayersPanel({
   onSeek,
   onDeleteAnchor,
   onDeleteTeamEnd,
+  courtNavigation,
 }: {
   match: MatchDetail;
   frame: number;
@@ -52,6 +54,7 @@ export function PlayersPanel({
   onSeek: (frame: number) => void;
   onDeleteAnchor: (frame: number, playerId: string) => void;
   onDeleteTeamEnd: (effectiveFromFrame: number) => void;
+  courtNavigation?: CourtNavigation;
 }) {
   const initials = useMemo(() => playerInitialsMap(match.players), [match.players]);
   const playerById = useMemo(() => new Map(match.players.map((p) => [p.id, p])), [match.players]);
@@ -218,7 +221,7 @@ export function PlayersPanel({
       <section className="cal-view players-court-preview">
         <h3>
           Court preview
-          <span>drag dots to place</span>
+          {courtNavigation && <CourtViewControls navigation={courtNavigation} />}
         </h3>
         <div className="players-court-wrap">
           <CourtDiagram
@@ -231,6 +234,8 @@ export function PlayersPanel({
             onSelectPlayer={onSelectPlayer}
             onMovePlayer={onMovePlayerOnCourt}
             onPlaceOnCourt={onPlacePlayerOnCourt}
+            navigation={courtNavigation}
+            placementTarget={frame}
           />
         </div>
       </section>

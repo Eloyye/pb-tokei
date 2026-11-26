@@ -1,26 +1,51 @@
-import { type PointerEvent, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type PointerEvent,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import type { Certainty } from "../api/client";
 import type { Point } from "../lib/calibrations";
-
-/**
- * A top-down court in feet, 10 SVG units to the foot. The near end (negative `y`, the Main View
- * camera's end) is at the bottom so it lines up with the video. Zone bands are shaded:
- * Frontcourt 0–9 ft, Midcourt 9–18 ft, Backcourt 18 ft and beyond; ticks mark 12 ft, where an
- * Established Team stops being Established. Around the court is the standard 34 × 64 ft playing
- * area, out to the barriers, so Players standing well behind a baseline are drawn where they are;
- * the Team names sit in strips beyond it.
- */
-/** SVG units to the foot, for lengths; `X` and `Y` turn court positions into SVG positions. */
-const UNITS_PER_FT = 10;
+import {
+  clampCourtPoint,
+  COURT_BOUNDS,
+  COURT_UNITS_PER_FT,
+  type CourtOrientation,
+  courtSvgPoint,
+  courtTransform,
+  type CourtView,
+  courtViewBox,
+  FIT_COURT,
+  panCourtView,
+  TEAM_LABEL_STRIP,
+  zoomCourtView,
+} from "../lib/courtView";
+import { wheelPixels, wheelZoomFactor } from "../lib/wheel";
 
 /** Feet from the net to SVG `y`: the far end is up. */
 function Y(feet: number): number {
-  return -feet * UNITS_PER_FT;
+  return -feet * COURT_UNITS_PER_FT;
 }
 
 function X(feet: number): number {
-  return feet * UNITS_PER_FT;
+  return feet * COURT_UNITS_PER_FT;
 }
+
+export interface CourtNavigation {
+  orientation: CourtOrientation;
+  view: CourtView;
+  setView: Dispatch<SetStateAction<CourtView>>;
+  consumeSpaceForPan: () => boolean;
+  toggleOrientation: () => void;
+}
+
+type CourtDrag =
+  | { kind: "pan"; pointerId: number; last: Point }
+  | { kind: "player"; pointerId: number; playerId: string; start: Point; from: Point };
 
 export interface CourtPlayerDot {
   id: string;
@@ -59,35 +84,10 @@ const UNKNOWN_SLOTS: readonly Point[] = [
   { x: 12.2, y: 15.5 },
 ];
 
-/** Half the playing area's width and length in feet: 34 × 64 ft, the court plus its run-off. */
-const AREA_HALF_W_FT = 16;
-const AREA_HALF_L_FT = 32;
-/** SVG units above and below the playing area for the Team names. */
-const LABEL_STRIP = 16;
-
 /** How far in from the playing area's edge a pinned dot is drawn: a little over its radius. */
 const DOT_INSET_FT = 1.2;
-
-const AREA_W = 2 * AREA_HALF_W_FT * UNITS_PER_FT;
-const AREA_H = 2 * AREA_HALF_L_FT * UNITS_PER_FT;
-const VIEW_X = X(-AREA_HALF_W_FT);
-const VIEW_Y = Y(AREA_HALF_L_FT) - LABEL_STRIP;
-const VIEW_W = AREA_W;
-const VIEW_H = AREA_H + 2 * LABEL_STRIP;
-
-/**
- * Keeps a point inside the playing area (a dot's radius in from the edge). A Player tracked
- * beyond it, past where the barriers usually stand, is drawn at its edge rather than off it;
- * their title still gives the real position.
- */
-function inView(point: Point): Point {
-  const maxX = AREA_HALF_W_FT - DOT_INSET_FT;
-  const maxY = AREA_HALF_L_FT - DOT_INSET_FT;
-  return {
-    x: Math.max(-maxX, Math.min(maxX, point.x)),
-    y: Math.max(-maxY, Math.min(maxY, point.y)),
-  };
-}
+const DOUBLE_CLICK_MS = 500;
+const SIDES = [-1, 1] as const;
 
 export function CourtDiagram({
   nearTeam,
@@ -102,6 +102,8 @@ export function CourtDiagram({
   ghosts = [],
   landing = null,
   onClickCourt,
+  navigation,
+  placementTarget,
 }: {
   nearTeam: string;
   farTeam: string;
@@ -119,12 +121,27 @@ export function CourtDiagram({
   landing?: CourtLanding | null;
   /** Fired when the court (not a dot) is clicked, e.g. to set a Shot's landing. */
   onClickCourt?: (courtPoint: Point) => void;
+  navigation?: CourtNavigation;
+  /** The Shot or live frame an empty-court click would edit. */
+  placementTarget?: object | number;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [drag, setDrag] = useState<{ playerId: string; from: Point; at: Point } | null>(null);
-  const sides = [-1, 1] as const;
-  const nearClass = nearTeamKey === "a" ? "team-a" : "team-b";
-  const farClass = nearTeamKey === "a" ? "team-b" : "team-a";
+  const surroundRef = useRef<SVGRectElement>(null);
+  const dragRef = useRef<CourtDrag | null>(null);
+  const pendingClick = useRef<{
+    timer: number;
+    target: typeof placementTarget;
+    playerId: typeof selectedPlayerId;
+    orientation: CourtOrientation;
+  } | null>(null);
+  const [playerDrag, setPlayerDrag] = useState<{ id: string; at: Point } | null>(null);
+  const [panning, setPanning] = useState(false);
+  const orientation = navigation?.orientation ?? "vertical";
+  const view = navigation?.view ?? FIT_COURT;
+  const setView = navigation?.setView;
+  const horizontal = orientation === "horizontal";
+  const box = courtViewBox(orientation);
+  const transform = courtTransform(orientation, view);
 
   const selectedPlayer = players.find((p) => p.id === selectedPlayerId);
   const canClickToPlace =
@@ -133,154 +150,268 @@ export function CourtDiagram({
     selectedPlayer !== undefined &&
     selectedPlayer.certainty === "unknown";
 
-  const clientToCourt = (event: PointerEvent<SVGSVGElement>): Point | null => {
-    const svg = svgRef.current;
-    if (!svg) return null;
+  const clearPendingClick = useCallback(() => {
+    if (pendingClick.current === null) return;
+    window.clearTimeout(pendingClick.current.timer);
+    pendingClick.current = null;
+  }, []);
+  useEffect(() => {
+    const pending = pendingClick.current;
+    if (
+      pending &&
+      (pending.target !== placementTarget ||
+        pending.playerId !== selectedPlayerId ||
+        pending.orientation !== orientation)
+    ) {
+      clearPendingClick();
+    }
+  }, [clearPendingClick, placementTarget, selectedPlayerId, orientation]);
+  useEffect(() => clearPendingClick, [clearPendingClick]);
+
+  const onWheel = useEffectEvent((event: WheelEvent, svg: SVGSVGElement) => {
+    if (!setView) return;
+    event.preventDefault();
+    if (dragRef.current) return;
     const rect = svg.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    // Account for default SVG preserveAspectRatio="xMidYMid meet".
-    const scale = Math.min(rect.width / VIEW_W, rect.height / VIEW_H);
-    const drawnW = VIEW_W * scale;
-    const drawnH = VIEW_H * scale;
-    const offsetX = rect.left + (rect.width - drawnW) / 2;
-    const offsetY = rect.top + (rect.height - drawnH) / 2;
-    const svgX = VIEW_X + (event.clientX - offsetX) / scale;
-    const svgY = VIEW_Y + (event.clientY - offsetY) / scale;
-    return {
-      x: Math.max(-AREA_HALF_W_FT, Math.min(AREA_HALF_W_FT, svgX / UNITS_PER_FT)),
-      y: Math.max(-AREA_HALF_L_FT, Math.min(AREA_HALF_L_FT, -svgY / UNITS_PER_FT)),
-    };
+    const anchor = courtSvgPoint(orientation, rect, { x: event.clientX, y: event.clientY });
+    if (!anchor) return;
+    const { y } = wheelPixels(event, rect.width, rect.height);
+    const factor = wheelZoomFactor(y, event.ctrlKey);
+    setView((current) => zoomCourtView(orientation, current, factor, anchor));
+  });
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const listener = (event: WheelEvent) => onWheel(event, svg);
+    svg.addEventListener("wheel", listener, { passive: false });
+    return () => svg.removeEventListener("wheel", listener);
+  }, []);
+
+  function pointerPoint(event: PointerEvent<SVGSVGElement>) {
+    return courtSvgPoint(orientation, event.currentTarget.getBoundingClientRect(), {
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  function endDrag(event: PointerEvent<SVGSVGElement>, commit: boolean) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (drag.kind === "pan") {
+      setPanning(false);
+      return;
+    }
+    setPlayerDrag(null);
+    if (!commit || (event.clientX === drag.start.x && event.clientY === drag.start.y)) return;
+    const at = pointerPoint(event);
+    if (!at) return;
+    const point = transform.toCourt(at);
+    if (point.x !== drag.from.x || point.y !== drag.from.y) onMovePlayer?.(drag.playerId, point);
+  }
+
+  const dots = players.map((player, index) => {
+    const active = playerDrag?.id === player.id ? playerDrag : null;
+    const unknown =
+      !active && (player.certainty === "unknown" || player.x === null || player.y === null);
+    const at = active
+      ? active.at
+      : unknown
+        ? UNKNOWN_SLOTS[index % UNKNOWN_SLOTS.length]!
+        : clampCourtPoint({ x: player.x!, y: player.y! }, DOT_INSET_FT);
+    return { player, at, unknown, dragging: active !== null };
+  });
+
+  const guide = (x: number, y: number, text: string, className = "label") => (
+    <text
+      className={className}
+      {...transform.toSvg({ x, y })}
+      textAnchor={horizontal ? "middle" : "start"}
+      dominantBaseline="central"
+    >
+      {text}
+    </text>
+  );
+  const teamName = (name: string, team: string, end: -1 | 1) => {
+    const at = transform.toSvg({ x: 0, y: end * COURT_BOUNDS.y });
+    const offset = (-end * TEAM_LABEL_STRIP[orientation]) / 2;
+    const x = at.x + (horizontal ? offset : 0);
+    const y = at.y + (horizontal ? 0 : offset);
+    const names = horizontal ? name.split(" / ") : [name];
+    return (
+      <text className={`label team-${team}`} textAnchor="middle" dominantBaseline="central">
+        {names.map((player, i) => (
+          <tspan key={i} x={x} y={y + (i - (names.length - 1) / 2) * 11}>
+            {player}
+          </tspan>
+        ))}
+      </text>
+    );
   };
 
   return (
     <svg
       ref={svgRef}
-      className={`court ${interactive ? "interactive" : ""} ${canClickToPlace ? "placing" : ""} ${onClickCourt ? "landing-click" : ""}`}
-      viewBox={`${VIEW_X} ${VIEW_Y} ${VIEW_W} ${VIEW_H}`}
+      className={`court ${canClickToPlace ? "placing" : ""} ${onClickCourt ? "landing-click" : ""} ${panning ? "panning" : ""}`}
+      viewBox={`${-box.width / 2} ${-box.height / 2} ${box.width} ${box.height}`}
+      data-orientation={orientation}
       role="img"
       aria-label="Court diagram"
       onPointerMove={(event) => {
-        if (!drag || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
-        const pt = clientToCourt(event);
-        if (pt) setDrag({ ...drag, at: pt });
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const pt = pointerPoint(event);
+        if (!pt) return;
+        if (drag.kind === "pan") {
+          const delta = { x: pt.x - drag.last.x, y: pt.y - drag.last.y };
+          drag.last = pt;
+          setView?.((current) => panCourtView(orientation, current, delta));
+        } else {
+          setPlayerDrag({ id: drag.playerId, at: transform.toCourt(pt) });
+        }
       }}
       onPointerDown={(event) => {
-        const pt = clientToCourt(event);
+        if (dragRef.current || (event.button !== 0 && event.button !== 1)) return;
+        clearPendingClick();
+        const pt = pointerPoint(event);
         if (!pt) return;
-        if (onClickCourt) return onClickCourt(pt);
-        if (canClickToPlace && onPlaceOnCourt) onPlaceOnCourt(pt);
-      }}
-      onPointerUp={(event) => {
-        if (!drag) return;
-        event.currentTarget.releasePointerCapture(event.pointerId);
-        if (drag.at.x !== drag.from.x || drag.at.y !== drag.from.y) {
-          onMovePlayer?.(drag.playerId, drag.at);
+        if (setView && (navigation?.consumeSpaceForPan() || event.button === 1)) {
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          dragRef.current = { kind: "pan", pointerId: event.pointerId, last: pt };
+          setPanning(true);
+          return;
         }
-        setDrag(null);
+        if (event.button !== 0) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const playerId = target?.closest("[data-player-id]")?.getAttribute("data-player-id");
+        const dot = playerId ? dots.find(({ player }) => player.id === playerId) : undefined;
+        if (dot) {
+          onSelectPlayer?.(dot.player.id);
+          if (interactive && onMovePlayer) {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            dragRef.current = {
+              kind: "player",
+              pointerId: event.pointerId,
+              playerId: dot.player.id,
+              start: { x: event.clientX, y: event.clientY },
+              from: dot.at,
+            };
+          }
+          return;
+        }
+        const place = onClickCourt ?? (canClickToPlace ? onPlaceOnCourt : undefined);
+        if (!place) return;
+        const at = transform.toCourt(pt);
+        if (setView && target === surroundRef.current) {
+          // Delay just the surround, where a second click may be Fit rather than an edit.
+          pendingClick.current = {
+            target: placementTarget,
+            playerId: selectedPlayerId,
+            orientation,
+            timer: window.setTimeout(() => {
+              pendingClick.current = null;
+              place(at);
+            }, DOUBLE_CLICK_MS),
+          };
+        } else {
+          place(at);
+        }
       }}
-      onPointerCancel={() => setDrag(null)}
+      onPointerUp={(event) => endDrag(event, true)}
+      onPointerCancel={(event) => {
+        clearPendingClick();
+        endDrag(event, false);
+      }}
+      onLostPointerCapture={(event) => endDrag(event, false)}
     >
-      <rect className="surround" x={VIEW_X} y={Y(AREA_HALF_L_FT)} width={AREA_W} height={AREA_H} />
-      {sides.map((s) => (
+      <g transform={transform.svg}>
+        <rect
+          ref={surroundRef}
+          className="surround"
+          x={X(-COURT_BOUNDS.x)}
+          y={Y(COURT_BOUNDS.y)}
+          width={X(2 * COURT_BOUNDS.x)}
+          height={X(2 * COURT_BOUNDS.y)}
+          onDoubleClick={() => {
+            clearPendingClick();
+            setView?.(FIT_COURT);
+          }}
+        />
+        {SIDES.map((s) => (
+          <g key={s}>
+            <rect
+              className="zone-bc"
+              x={-100}
+              y={Math.min(Y(s * 18), Y(s * 22))}
+              width={200}
+              height={40}
+            />
+            <rect
+              className="zone-mc"
+              x={-100}
+              y={Math.min(Y(s * 9), Y(s * 18))}
+              width={200}
+              height={90}
+            />
+            <rect className="zone-fc" x={-100} y={Math.min(0, Y(s * 9))} width={200} height={90} />
+            {[9, 18].map((d) => (
+              <line key={d} className="band" x1={-100} y1={Y(s * d)} x2={100} y2={Y(s * d)} />
+            ))}
+            <line className="line" x1={-106} y1={Y(s * 12)} x2={-100} y2={Y(s * 12)} />
+            <line className="line" x1={100} y1={Y(s * 12)} x2={106} y2={Y(s * 12)} />
+          </g>
+        ))}
+        <rect className="line" x={-100} y={-220} width={200} height={440} />
+        <line className="line" x1={-100} y1={-70} x2={100} y2={-70} />
+        <line className="line" x1={-100} y1={70} x2={100} y2={70} />
+        <line className="line" x1={0} y1={-220} x2={0} y2={-70} />
+        <line className="line" x1={0} y1={70} x2={0} y2={220} />
+        <line className="net" x1={-110} y1={0} x2={110} y2={0} />
+        {landing && landing.from && (
+          <path
+            className="traj"
+            d={`M ${X(landing.from.x)} ${Y(landing.from.y)} Q ${(X(landing.from.x) + X(landing.x)) / 2} ${Math.min(Y(landing.from.y), Y(landing.y)) - 30} ${X(landing.x)} ${Y(landing.y)}`}
+          />
+        )}
+      </g>
+      {SIDES.map((s) => (
         <g key={s}>
-          <rect
-            className="zone-bc"
-            x={-100}
-            y={Math.min(Y(s * 18), Y(s * 22))}
-            width={200}
-            height={40}
-          />
-          <rect
-            className="zone-mc"
-            x={-100}
-            y={Math.min(Y(s * 9), Y(s * 18))}
-            width={200}
-            height={90}
-          />
-          <rect className="zone-fc" x={-100} y={Math.min(0, Y(s * 9))} width={200} height={90} />
-          {[9, 18].map((d) => (
-            <line key={d} className="band" x1={-100} y1={Y(s * d)} x2={100} y2={Y(s * d)} />
-          ))}
-          <line className="line" x1={-106} y1={Y(s * 12)} x2={-100} y2={Y(s * 12)} />
-          <line className="line" x1={100} y1={Y(s * 12)} x2={106} y2={Y(s * 12)} />
-          <text className="label" x={108} y={Y(s * 12) + 3}>
-            12
-          </text>
-          <text className="label" x={-134} y={Y(s * 9) + 3}>
-            9
-          </text>
-          <text className="label" x={-138} y={Y(s * 18) + 3}>
-            18
-          </text>
-          <text className="zone-label" x={-94} y={Y(s * 4.5) + 3}>
-            FC
-          </text>
-          <text className="zone-label" x={-94} y={Y(s * 13.5) + 3}>
-            MC
-          </text>
-          <text className="zone-label" x={-94} y={Y(s * 20) + 3}>
-            BC
-          </text>
+          {guide(10.8, s * 12, "12")}
+          {guide(-13.4, s * 9, "9")}
+          {guide(-13.8, s * 18, "18")}
+          {guide(-9.4, s * 4.5, "FC", "zone-label")}
+          {guide(-9.4, s * 13.5, "MC", "zone-label")}
+          {guide(-9.4, s * 20, "BC", "zone-label")}
         </g>
       ))}
-      <rect className="line" x={-100} y={-220} width={200} height={440} />
-      <line className="line" x1={-100} y1={-70} x2={100} y2={-70} />
-      <line className="line" x1={-100} y1={70} x2={100} y2={70} />
-      <line className="line" x1={0} y1={-220} x2={0} y2={-70} />
-      <line className="line" x1={0} y1={70} x2={0} y2={220} />
-      <line className="net" x1={-110} y1={0} x2={110} y2={0} />
-      <text
-        className={`label ${nearClass}`}
-        x={0}
-        y={Y(-AREA_HALF_L_FT) + LABEL_STRIP / 2}
-        textAnchor="middle"
-        dominantBaseline="central"
-      >
-        {nearTeam}
-      </text>
-      <text
-        className={`label ${farClass}`}
-        x={0}
-        y={Y(AREA_HALF_L_FT) - LABEL_STRIP / 2}
-        textAnchor="middle"
-        dominantBaseline="central"
-      >
-        {farTeam}
-      </text>
-      {ghosts.map((g) => (
-        <circle
-          key={`ghost-${g.id}`}
-          className="ghost"
-          cx={X(inView(g).x)}
-          cy={Y(inView(g).y)}
-          r={9}
-          style={{ fill: `var(--team-${g.team})` }}
-        />
-      ))}
-      {landing && landing.from && (
-        <path
-          className="traj"
-          d={`M ${X(landing.from.x)} ${Y(landing.from.y)} Q ${(X(landing.from.x) + X(landing.x)) / 2} ${Math.min(Y(landing.from.y), Y(landing.y)) - 30} ${X(landing.x)} ${Y(landing.y)}`}
-        />
-      )}
+      {teamName(nearTeam, nearTeamKey, -1)}
+      {teamName(farTeam, nearTeamKey === "a" ? "b" : "a", 1)}
+      {ghosts.map((g) => {
+        const { x, y } = transform.toSvg(clampCourtPoint(g, DOT_INSET_FT));
+        return (
+          <circle
+            key={`ghost-${g.id}`}
+            className="ghost"
+            cx={x}
+            cy={y}
+            r={9}
+            style={{ fill: `var(--team-${g.team})` }}
+          />
+        );
+      })}
       {landing && (
         <g
           className={`landing team-${landing.team ?? "none"}`}
-          transform={`translate(${X(landing.x)}, ${Y(landing.y)})`}
+          transform={translate(transform.toSvg(landing))}
           aria-label="Landing"
         >
           <line x1={-5} y1={-5} x2={5} y2={5} />
           <line x1={-5} y1={5} x2={5} y2={-5} />
         </g>
       )}
-      {players.map((p, idx) => {
-        const activeDrag = drag?.playerId === p.id ? drag : null;
-        const unknown = !activeDrag && (p.certainty === "unknown" || p.x === null || p.y === null);
-        const inferred = !activeDrag && p.certainty === "inferred";
-        const slot = UNKNOWN_SLOTS[idx % UNKNOWN_SLOTS.length]!;
-        const shown = activeDrag ? activeDrag.at : unknown ? slot : inView({ x: p.x!, y: p.y! });
-        const cx = shown.x;
-        const cy = shown.y;
+      {dots.map(({ player: p, at, unknown, dragging }) => {
+        const inferred = !dragging && p.certainty === "inferred";
         const isSelected = Boolean(p.selected || p.id === selectedPlayerId);
         const classes = [
           "court-player",
@@ -296,23 +427,15 @@ export function CourtDiagram({
           <g
             key={p.id}
             className={classes}
-            transform={`translate(${X(cx)}, ${Y(cy)})`}
+            transform={translate(transform.toSvg(at))}
             data-player-id={p.id}
             data-certainty={p.certainty}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              onSelectPlayer?.(p.id);
-              if (!interactive || !onMovePlayer) return;
-              svgRef.current?.setPointerCapture(event.pointerId);
-              const from = { x: cx, y: cy };
-              setDrag({ playerId: p.id, from, at: from });
-            }}
           >
             <title>
               {p.name}
               {unknown
                 ? " (Unknown — drag onto court to place)"
-                : ` (${(activeDrag ? cx : p.x!).toFixed(1)}, ${(activeDrag ? cy : p.y!).toFixed(1)} ft, ${p.certainty})`}
+                : ` (${(dragging ? at.x : p.x!).toFixed(1)}, ${(dragging ? at.y : p.y!).toFixed(1)} ft, ${p.certainty})`}
             </title>
             <circle r={11} />
             <text y={3.5} textAnchor="middle">
@@ -323,4 +446,8 @@ export function CourtDiagram({
       })}
     </svg>
   );
+}
+
+function translate({ x, y }: Point): string {
+  return `translate(${x}, ${y})`;
 }

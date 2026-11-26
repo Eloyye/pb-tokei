@@ -1,3 +1,5 @@
+import type { CourtOrientation } from "./courtView";
+
 /**
  * The workspace's resizable panel sizes, in CSS pixels, and how they are kept per browser.
  * Splitters change them; anything stored that is missing or out of range falls back to the
@@ -5,7 +7,7 @@
  */
 
 export interface PanelSizes {
-  /** Width of the right column (Court and Inspector). */
+  /** Width of the right column. */
   side: number;
   /** Height of the bottom row (Rallies and Timeline). */
   bottom: number;
@@ -60,5 +62,42 @@ export function saveSizes(sizes: PanelSizes): void {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sizes));
   } catch {
     // Storage can be unavailable (private window, blocked site data); sizes then last a session.
+  }
+}
+
+export type CourtSlot = "main" | "side";
+
+export interface CourtLayout {
+  swapped: boolean;
+  orientation: Record<CourtSlot, CourtOrientation>;
+}
+
+const COURT_LAYOUT_KEY = "pb-tokei:court-layout";
+const DEFAULT_COURT_LAYOUT: CourtLayout = {
+  swapped: false,
+  orientation: { main: "horizontal", side: "vertical" },
+};
+
+export function loadCourtLayout(): CourtLayout {
+  try {
+    const stored = window.localStorage.getItem(COURT_LAYOUT_KEY);
+    const saved = stored ? (JSON.parse(stored) as Partial<CourtLayout> | null) : null;
+    return {
+      swapped: saved?.swapped === true,
+      orientation: {
+        main: saved?.orientation?.main === "vertical" ? "vertical" : "horizontal",
+        side: saved?.orientation?.side === "horizontal" ? "horizontal" : "vertical",
+      },
+    };
+  } catch {
+    return DEFAULT_COURT_LAYOUT;
+  }
+}
+
+export function saveCourtLayout(layout: CourtLayout): void {
+  try {
+    window.localStorage.setItem(COURT_LAYOUT_KEY, JSON.stringify(layout));
+  } catch {
+    // The preference still applies while this Match is open.
   }
 }

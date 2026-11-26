@@ -1,14 +1,17 @@
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 import type { MatchDetail, PlayerTrackingFrameOut, Shot, TeamEnd } from "../api/client";
 import type { Point } from "../lib/calibrations";
+import type { CourtSlot } from "../lib/layout";
 import { nearTeamKeyFor, playerInitialsMap } from "../lib/players";
 import { teamKey, type Roster } from "../lib/rallyLog";
 import {
   type CourtGhost,
   CourtDiagram,
   type CourtLanding,
+  type CourtNavigation,
   type CourtPlayerDot,
 } from "./CourtDiagram";
+import { CourtViewControls } from "./CourtViewControls";
 import { Panel, PanelTitle } from "./Panel";
 
 /**
@@ -32,6 +35,9 @@ export function CourtPanel({
   previousShot,
   onSetLanding,
   onMoveShotPlayer,
+  slot = "side",
+  navigation,
+  swapButton,
 }: {
   match: MatchDetail;
   focused: boolean;
@@ -48,6 +54,9 @@ export function CourtPanel({
   previousShot?: Shot;
   onSetLanding?: (courtPoint: Point) => void;
   onMoveShotPlayer?: (playerId: string, courtPoint: Point) => void;
+  slot?: CourtSlot;
+  navigation?: CourtNavigation;
+  swapButton?: ReactNode;
 }) {
   const initials = useMemo(() => playerInitialsMap(match.players), [match.players]);
   const trackedById = useMemo(
@@ -109,8 +118,17 @@ export function CourtPanel({
     <Panel
       id="court"
       focused={focused}
+      className={`area-${slot}`}
       tabs={<PanelTitle>Court</PanelTitle>}
-      tools={<span>{shot ? "Shot at contact" : "live"} · near end = Main View camera</span>}
+      tools={
+        <>
+          <span title="Near end is the Main View camera's end">
+            {shot ? "Shot at contact" : "Live"}
+          </span>
+          {navigation && <CourtViewControls navigation={navigation} />}
+          {swapButton}
+        </>
+      }
     >
       <div className="court-wrap">
         <CourtDiagram
@@ -126,6 +144,8 @@ export function CourtPanel({
           ghosts={ghosts}
           landing={landing}
           onClickCourt={shot ? onSetLanding : undefined}
+          navigation={navigation}
+          placementTarget={shot ?? frame}
         />
         <div className="court-note">
           {shot
