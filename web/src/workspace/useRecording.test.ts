@@ -5,10 +5,14 @@ import {
   ApiError,
   type CalibrationOut,
   getCalibrations,
+  getPlayerAnchors,
   getPlaySegments,
+  getTeamEnds,
   type PlaySegment,
   replaceCalibrations,
+  replacePlayerAnchors,
   replacePlaySegments,
+  replaceTeamEnds,
 } from "../api/client";
 import { clearLandmark, currentFit, fitKey, placeLandmark } from "../lib/calibrations";
 import { markIn, markOut } from "../lib/segments";
@@ -21,8 +25,12 @@ vi.mock("../api/client", async (importActual) => ({
   ...(await importActual<Client>()),
   getPlaySegments: vi.fn<Client["getPlaySegments"]>(),
   getCalibrations: vi.fn<Client["getCalibrations"]>(),
+  getPlayerAnchors: vi.fn<Client["getPlayerAnchors"]>(),
+  getTeamEnds: vi.fn<Client["getTeamEnds"]>(),
   replacePlaySegments: vi.fn<Client["replacePlaySegments"]>(),
   replaceCalibrations: vi.fn<Client["replaceCalibrations"]>(),
+  replacePlayerAnchors: vi.fn<Client["replacePlayerAnchors"]>(),
+  replaceTeamEnds: vi.fn<Client["replaceTeamEnds"]>(),
 }));
 
 const SEGMENTS: PlaySegment[] = [
@@ -67,8 +75,12 @@ beforeEach(() => {
     calibrationOut("main", 100),
     calibrationOut("sideline", 300),
   ]);
+  vi.mocked(getPlayerAnchors).mockResolvedValue([]);
+  vi.mocked(getTeamEnds).mockResolvedValue([]);
   vi.mocked(replacePlaySegments).mockImplementation(async (_id, segments) => segments);
   vi.mocked(replaceCalibrations).mockResolvedValue([]);
+  vi.mocked(replacePlayerAnchors).mockImplementation(async (_id, anchors) => anchors);
+  vi.mocked(replaceTeamEnds).mockImplementation(async (_id, ends) => ends);
 });
 
 afterEach(() => {
@@ -339,5 +351,37 @@ describe("useRecording", () => {
     await waitFor(() => expect(result.current[0].message).toMatch(/Match not found/));
     expect(getPlaySegments).toHaveBeenCalledTimes(1);
     expect(result.current[0].recording).toBeNull();
+  });
+
+  it("autosaves and undoes/redoes Player anchor and team_ends edits", async () => {
+    const { result } = await loaded();
+
+    act(() =>
+      result.current[1].editPlayers(() => ({
+        anchors: [{ frame: 120, player_id: "p1", kind: "identity", image_x: 0.3, image_y: 0.7 }],
+        teamEnds: [{ effective_from_frame: 0, near_team_id: "team-a" }],
+        message: "Anchored p1",
+      })),
+    );
+    await flush();
+
+    expect(replacePlayerAnchors).toHaveBeenCalledWith("match-1", [
+      { frame: 120, player_id: "p1", kind: "identity", image_x: 0.3, image_y: 0.7 },
+    ]);
+    expect(replaceTeamEnds).toHaveBeenCalledWith("match-1", [
+      { effective_from_frame: 0, near_team_id: "team-a" },
+    ]);
+
+    act(() => result.current[1].undo());
+    await flush();
+    expect(result.current[0].recording?.anchors).toEqual([]);
+    expect(result.current[0].recording?.teamEnds).toEqual([]);
+    expect(vi.mocked(replacePlayerAnchors).mock.calls.at(-1)).toEqual(["match-1", []]);
+    expect(vi.mocked(replaceTeamEnds).mock.calls.at(-1)).toEqual(["match-1", []]);
+
+    act(() => result.current[1].redo());
+    await flush();
+    expect(result.current[0].recording?.anchors).toHaveLength(1);
+    expect(result.current[0].recording?.teamEnds).toHaveLength(1);
   });
 });

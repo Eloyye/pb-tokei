@@ -15,6 +15,8 @@ from enum import StrEnum
 import duckdb
 
 from .model import (
+    FRONTCOURT_MAX_Y_FT,
+    AnchorKind,
     CameraView,
     Certainty,
     ContactKind,
@@ -90,6 +92,18 @@ CREATE TABLE IF NOT EXISTS {name} (
 )"""
 
 
+def shot_positions_table(name: str) -> str:
+    """Each Player's court position and Settled fact at a Shot's contact."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    {_SHOT_KEY},
+    player_id UUID NOT NULL REFERENCES players (id),
+    {_fact("position", "POINT")},
+    {_fact("settled", "BOOLEAN")},
+    PRIMARY KEY (match_id, game_number, rally_number, log_position, player_id)
+)"""
+
+
 def migrate(db: duckdb.DuckDBPyConnection) -> None:
     """Brings a Rally Log made by an older version up to the current schema.
 
@@ -150,6 +164,59 @@ def migrate(db: duckdb.DuckDBPyConnection) -> None:
             )
             db.execute("DROP TABLE calibration_landmarks")
             db.execute("ALTER TABLE calibration_landmarks_migrated RENAME TO calibration_landmarks")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
+
+    has_settled = db.execute(
+        "SELECT 1 FROM duckdb_columns() WHERE table_name = 'shot_positions' "
+        "AND column_name = 'settled'"
+    ).fetchone()
+    if has_settled is None:
+        db.execute("BEGIN TRANSACTION")
+        try:
+            db.execute(shot_positions_table("shot_positions_migrated"))
+            db.execute(
+                f"""
+                INSERT INTO shot_positions_migrated (
+                    match_id,
+                    game_number,
+                    rally_number,
+                    log_position,
+                    player_id,
+                    position_x,
+                    position_y,
+                    position_certainty,
+                    settled,
+                    settled_certainty
+                )
+                SELECT
+                    match_id,
+                    game_number,
+                    rally_number,
+                    log_position,
+                    player_id,
+                    position_x,
+                    position_y,
+                    position_certainty,
+                    CASE
+                        WHEN position_certainty <> 'unknown'
+                         AND abs(position_y) > {FRONTCOURT_MAX_Y_FT}
+                        THEN FALSE
+                        ELSE NULL
+                    END,
+                    CASE
+                        WHEN position_certainty <> 'unknown'
+                         AND abs(position_y) > {FRONTCOURT_MAX_Y_FT}
+                        THEN position_certainty
+                        ELSE 'unknown'
+                    END
+                FROM shot_positions
+                """
+            )
+            db.execute("DROP TABLE shot_positions")
+            db.execute("ALTER TABLE shot_positions_migrated RENAME TO shot_positions")
         except BaseException:
             db.execute("ROLLBACK")
             raise
@@ -281,18 +348,29 @@ CREATE TABLE IF NOT EXISTS shots (
     CHECK (has_error = (error_player_id_certainty IS NOT NULL)),
     PRIMARY KEY (match_id, game_number, rally_number, log_position)
 )""",
-    f"""
-CREATE TABLE IF NOT EXISTS shot_positions (
-    {_SHOT_KEY},
-    player_id UUID NOT NULL REFERENCES players (id),
-    {_fact("position", "POINT")},
-    PRIMARY KEY (match_id, game_number, rally_number, log_position, player_id)
-)""",
+    shot_positions_table("shot_positions"),
     f"""
 CREATE TABLE IF NOT EXISTS observation_gaps (
     {_SHOT_KEY},
     missing VARCHAR NOT NULL {_one_of("missing", Parity)},
     PRIMARY KEY (match_id, game_number, rally_number, log_position)
+)""",
+    f"""
+CREATE TABLE IF NOT EXISTS player_anchors (
+    match_id UUID NOT NULL,
+    frame INTEGER NOT NULL CHECK (frame >= 0),
+    player_id UUID NOT NULL REFERENCES players (id),
+    kind VARCHAR NOT NULL {_one_of("kind", AnchorKind)},
+    image_x DOUBLE NOT NULL CHECK (image_x BETWEEN 0 AND 1),
+    image_y DOUBLE NOT NULL CHECK (image_y BETWEEN 0 AND 1),
+    PRIMARY KEY (match_id, frame, player_id)
+)""",
+    """
+CREATE TABLE IF NOT EXISTS team_ends (
+    match_id UUID NOT NULL,
+    effective_from_frame INTEGER NOT NULL CHECK (effective_from_frame >= 0),
+    near_team_id UUID NOT NULL REFERENCES teams (id),
+    PRIMARY KEY (match_id, effective_from_frame)
 )""",
 ]
 
@@ -306,4 +384,6 @@ MATCH_CONTENT_TABLES = [
     "play_segments",
     "calibration_landmarks",
     "calibrations",
+    "player_anchors",
+    "team_ends",
 ]

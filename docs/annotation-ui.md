@@ -55,8 +55,8 @@ The workspace tabs are how the operator switches jobs. All three tabs use the sa
 
 | Workspace | Right column | Timeline | Notes |
 |---|---|---|---|
-| **Calibrate** (#10, #51) | The Calibration in effect at the playhead: a mini court and checklist of the 12 Landmarks, each with its error in feet (leave-one-out once 5 are placed; amber over 0.5 ft or off the court), Camera Motion status and clickable unmapped ranges (with one-click re-anchoring at the playhead when tracking is lost), then every Calibration of each Camera View (click to go to where it was clicked, × to delete, **Use here** to put its points in effect from the current Play Segment's start when the camera is back at that angle) | Segments track editable (with amber hatching on unmapped Camera Motion ranges); Issues track shows clickable amber bars for unmapped ranges; Rallies and Shots dimmed | Landmarks are clicked on the Monitor, which calibrates the Camera View of the Play Segment under the playhead (the first click creates its Calibration, from the segment's start); a 4× magnifier follows the pointer while placing or dragging, and the fitted court template, with dashed lines at 9, 12 and 18 ft, follows Camera Motion over the video (or shows an amber unmapped banner when tracking is lost). `Tab` skips to the next Landmark, `X` clears the selected one, and `N` starts a new Calibration from the segment's start, copying the one in effect. `Shift+I` starts a Play Segment (or moves the start of the one under the playhead), `Shift+O` ends it (or moves its end); `1`/`2` set Main or Sideline; `Backspace` removes the segment under the playhead; `Esc` drops one not yet ended. Segment edges can be dragged on the Segments track. An edit that would overlap a neighbour stops at its edge. |
-| **Annotate** (#12, Gold) | Court + Inspector | All tracks | `Enter` marks the Rally Done. |
+| **Calibrate** (#10, #11, #51) | Two tabs: **Landmarks** and **Players**. Under **Landmarks**: the Calibration in effect at the playhead (mini court, 12-Landmark checklist with leave-one-out errors in feet, Camera Motion status and clickable unmapped ranges with one-click re-anchoring), then every Calibration of each Camera View (click to seek, × to delete, **Use here**). Under **Players**: explicit **Track Players** / **Cancel** with progress %, active compute device badge (`MPS` / `CUDA` / `CPU`), and per-segment status (prioritising the Play Segment under the playhead first); 4-Player checklist showing Zone, Settled, certainty, and active selection; 1-click **Swap A**, **Swap B**, and **Swap ends** buttons acting from the playhead forward; interactive Court diagram preview; and clickable lists of anchors and end changes (click to seek, × to delete) | Segments track editable (with amber hatching on unmapped Camera Motion ranges); Issues track shows clickable amber bars for unmapped ranges; Rallies and Shots dimmed | Under **Landmarks**: Landmarks are clicked on the Monitor with a 4× magnifier and lens-corrected court template; `Tab` skips, `V` marks not visible, `C` confirms carried-over clicks, `X` clears, `N` starts a new Calibration. Under **Players**: detected person boxes, foot dots, and Player labels render over the Monitor for 1-click/1-drag anchoring (see [Player positions and anchoring](#player-positions-and-anchoring)). Play Segment keys (`Shift+I`/`Shift+O`, `1`/`2`, `Backspace`, `Esc`, and edge drags) work on both tabs. |
+| **Annotate** (#11, #12, Gold) | Live Court diagram (with tracked Player dots and drag-to-place fixes) + Inspector | All tracks | Monitor header includes a toggleable **Players** overlay (boxes, foot dots, labels) plus quick **Swap A**, **Swap B**, and **Swap ends** controls. Unified 1-click/drag fixes work directly on the Monitor and Court diagram with `⌘Z` / `⇧⌘Z` undo/redo (no letter/digit key conflicts with #12). `Enter` marks the Rally Done (#12). |
 | **Review** (#30, Assisted) | Court + Inspector | All tracks; Shot markers with low-confidence fields get an amber dot | Low-confidence fields get an amber outline and a percentage. `N`/`Shift+N` move between them. `Enter` accepts the Rally. Threshold slider in the status bar. |
 
 Each key's meaning is set by the workspace. The same key never does two things in one workspace.
@@ -104,6 +104,16 @@ A top-down court in the right column. The near end, at the bottom, is the Main V
 - **Previous Shot.** Its positions are drawn as faint ghosts for context.
 - **Landing.** Clicking the court sets the landing, shown as a ✕ in the hitter's Team color with a dashed arc from the hitter.
 - Clicks on the video do nothing until calibration exists. After that they map through the Camera View calibration.
+
+## Player positions and anchoring (#11)
+
+Both `Calibrate → Players` and `Annotate` share one click/drag correction model backed by `player_anchors` and `team_ends` in the Rally Log (ADR 0012):
+
+- **Click inside a detected person box on the Monitor** binds the selected Player to that detection (`kind = identity`), snaps to their detected ankles, seeds `team_ends` if none is set yet, and auto-advances selection through unanchored Players.
+- **Drag any Player's foot dot on the Monitor or Court diagram** (or click empty court when placing an undetected Player) saves a `kind = position` anchor directly at the drop coordinates without snapping back to a bad detection box, and re-attaches tracking from there.
+- **Swap A / Swap B / Swap ends** act from the playhead forward, writing coordinate anchors (partner swaps) or `team_ends` records (end swaps) that survive cache rebuilds.
+- **Live Court display:** Team colours (`--team-a`, `--team-b`) with initials, full opacity for `Observed`, reduced opacity for `Inferred`, hollow dashed dots parked outside the court for `Unknown`, and near/far Team labels driven by `team_ends`.
+- Every anchor and `team_ends` edit autosaves and participates in `⌘Z` / `⇧⌘Z` undo/redo in both `Calibrate` and `Annotate`.
 
 ## Inspector
 
@@ -246,7 +256,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Record a Challenge | `Shift+C` | planned |
 | Mark Rally Done (Review: accept), go to next | `Enter` | planned |
 | Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
-| Undo / redo | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate |
+| Undo / redo | `⌘Z` / `⇧⌘Z` | ✓ in Calibrate and Annotate |
 | Shortcut sheet | `?` | ✓ |
 
 Premiere's `J/K/L` shuttle is deliberately left out: `L` is Lob, and `Space` plus `[ ]` cover shuttling. Premiere's `I`/`O` move to `Shift+I`/`Shift+O` because `O` is Overhead.

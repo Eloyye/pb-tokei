@@ -108,6 +108,21 @@ export type FootageJobOut = Schemas["FootageJobOut"];
 export type FootageJobState = Schemas["FootageJobState"];
 export type FootageJobSummaryOut = Schemas["FootageJobSummaryOut"];
 export type FetchFootageIn = Schemas["FetchFootageIn"];
+export type MatchPlayer = Schemas["MatchPlayerOut"];
+export type AnchorKind = Schemas["AnchorKind"];
+export type Certainty = Schemas["Certainty"];
+export type Zone = Schemas["Zone"];
+export type DeviceKind = Schemas["DeviceKind"];
+export type PlayerAnchor = Schemas["PlayerAnchorIO"];
+export type TeamEnd = Schemas["TeamEndIO"];
+export type TrackPlayersIn = Schemas["TrackPlayersIn"];
+export type PlayerTrackingStatus = Schemas["PlayerTrackingStatus"];
+export type PlayerTrackingSpanOut = Schemas["PlayerTrackingSpanOut"];
+export type PlayerTrackingOut = Schemas["PlayerTrackingOut"];
+export type TrackedPlayerOut = Schemas["TrackedPlayerOut"];
+export type FrameDetectionOut = Schemas["FrameDetectionOut"];
+export type PlayerTrackingFrameOut = Schemas["PlayerTrackingFrameOut"];
+export type PlayerTrackingFramesOut = Schemas["PlayerTrackingFramesOut"];
 /** A Calibration's own fields, without its fit: what is edited and saved. */
 export type Calibration = Pick<
   CalibrationOut,
@@ -232,6 +247,100 @@ export async function getCameraMotionFrames(
       query: { start_frame: startFrame, end_frame: endFrame },
     },
   });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getPlayerAnchors(matchId: string): Promise<PlayerAnchor[]> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/player-anchors", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function replacePlayerAnchors(
+  matchId: string,
+  anchors: PlayerAnchor[],
+): Promise<PlayerAnchor[]> {
+  const { data, error, response } = await api.PUT("/api/matches/{match_id}/player-anchors", {
+    params: { path: { match_id: matchId } },
+    body: anchors,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getTeamEnds(matchId: string): Promise<TeamEnd[]> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/team-ends", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function replaceTeamEnds(matchId: string, teamEnds: TeamEnd[]): Promise<TeamEnd[]> {
+  const { data, error, response } = await api.PUT("/api/matches/{match_id}/team-ends", {
+    params: { path: { match_id: matchId } },
+    body: teamEnds,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getPlayerTracking(matchId: string): Promise<PlayerTrackingOut> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/player-tracking", {
+    params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function trackPlayers(
+  matchId: string,
+  body?: Partial<TrackPlayersIn>,
+): Promise<PlayerTrackingOut> {
+  const payload: TrackPlayersIn = {
+    priority_frame: body?.priority_frame ?? null,
+    device: body?.device ?? "auto",
+    wait: body?.wait ?? false,
+  };
+  const { data, error, response } = await api.POST(
+    "/api/matches/{match_id}/player-tracking/track",
+    {
+      params: { path: { match_id: matchId } },
+      body: payload,
+    },
+  );
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function cancelPlayerTracking(matchId: string): Promise<PlayerTrackingOut> {
+  const { data, error, response } = await api.POST(
+    "/api/matches/{match_id}/player-tracking/cancel",
+    {
+      params: { path: { match_id: matchId } },
+    },
+  );
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function getPlayerTrackingFrames(
+  matchId: string,
+  startFrame: number,
+  endFrame: number,
+): Promise<PlayerTrackingFramesOut> {
+  const { data, error, response } = await api.GET(
+    "/api/matches/{match_id}/player-tracking/frames",
+    {
+      params: {
+        path: { match_id: matchId },
+        query: { start_frame: startFrame, end_frame: endFrame },
+      },
+    },
+  );
   if (data === undefined) throw apiError(response, error);
   return data;
 }

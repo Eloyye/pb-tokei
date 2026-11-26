@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   Calibration,
   CalibrationOut,
@@ -21,9 +22,12 @@ import {
 import { VIEW_LABELS } from "../lib/segments";
 import { Panel, PanelTitle } from "./Panel";
 
+export type CalibrateTab = "landmarks" | "players";
+
 /**
- * Calibrate's right column: the Landmarks of the Calibration in effect at the playhead, each
- * with its error in feet, then every Calibration of each Camera View.
+ * Calibrate's right column: `Landmarks | Players` tab switch. Under `Landmarks`, shows the
+ * Calibration in effect at the playhead and all Calibrations of each Camera View; under
+ * `Players`, renders the Player Tracking panel.
  */
 export function CalibrationPanel({
   focused,
@@ -45,6 +49,9 @@ export function CalibrationPanel({
   onConfirmLandmark,
   onConfirmAll,
   onRetrack,
+  activeTab = "landmarks",
+  onTabChange,
+  playersPanel,
 }: {
   focused: boolean;
   frame: number;
@@ -75,6 +82,11 @@ export function CalibrationPanel({
   onConfirmAll: () => void;
   /** Retries Camera Motion tracking after an error. */
   onRetrack: () => void;
+  /** Active tab in the Calibrate right panel (`Landmarks` or `Players`). */
+  activeTab?: CalibrateTab;
+  onTabChange?: (tab: CalibrateTab) => void;
+  /** Content rendered when the `Players` tab is active. */
+  playersPanel?: ReactNode;
 }) {
   const fit = calibration && currentFit(fits, calibration);
   const counts = landmarkCounts(calibration);
@@ -108,8 +120,35 @@ export function CalibrationPanel({
     isInFramePoint(fit?.resolved_landmarks[selected]),
   );
 
+  const tabs = onTabChange ? (
+    <div role="tablist" aria-label="Calibrate" style={{ display: "flex" }}>
+      {(["landmarks", "players"] as const).map((t) => (
+        <button
+          key={t}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === t}
+          className={`panel-tab ${activeTab === t ? "active" : ""}`}
+          onClick={() => onTabChange(t)}
+        >
+          {t === "landmarks" ? "Landmarks" : "Players"}
+        </button>
+      ))}
+    </div>
+  ) : (
+    <PanelTitle>Calibration</PanelTitle>
+  );
+
+  if (activeTab === "players" && playersPanel) {
+    return (
+      <Panel id="calibration" focused={focused} tabs={tabs}>
+        {playersPanel}
+      </Panel>
+    );
+  }
+
   return (
-    <Panel id="calibration" focused={focused} tabs={<PanelTitle>Calibration</PanelTitle>}>
+    <Panel id="calibration" focused={focused} tabs={tabs}>
       <div className="panel-body calibration-panel">
         {segment ? (
           <section className="cal-current">

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import duckdb
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from test_calibration import MAIN, SIDELINE
 
@@ -1118,7 +1119,8 @@ class _BlockingTrack:
         response = client.put(f"/api/matches/{self.match_id}/calibrations/main", json=[calibration])
         assert response.is_success
 
-        self.service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
+        assert isinstance(client.app, FastAPI)
+        self.service = client.app.state.rally_logs.current.motion
         self.started = threading.Event()
         self.release = threading.Event()
         self.cancels: list[threading.Event] = []
@@ -1146,7 +1148,8 @@ def test_reopening_the_open_rally_log_keeps_its_camera_motion_jobs(
     _open(client, db)
     job.release.set()
 
-    assert client.app.state.rally_logs.current.motion is job.service  # type: ignore[attr-defined]
+    assert isinstance(client.app, FastAPI)
+    assert client.app.state.rally_logs.current.motion is job.service
     assert not job.cancels[0].is_set()
 
 
@@ -1164,7 +1167,8 @@ def test_switching_cancels_camera_motion_jobs_of_the_old_rally_log(
     job.release.set()
 
     assert job.cancels[0].is_set()
-    new_service = client.app.state.rally_logs.current.motion  # type: ignore[attr-defined]
+    assert isinstance(client.app, FastAPI)
+    new_service = client.app.state.rally_logs.current.motion
     assert new_service is not old_service
     assert new_service.cache.cache_dir == default_cache_dir(other.resolve())
     # The old service starts nothing more, even for a request that got it before the switch.

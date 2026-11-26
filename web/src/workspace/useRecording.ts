@@ -4,24 +4,33 @@ import {
   type CalibrationOut,
   type CameraView,
   getCalibrations,
+  getPlayerAnchors,
   getPlaySegments,
+  getTeamEnds,
   isRetryable,
+  type PlayerAnchor,
   type PlaySegment,
   replaceCalibrations,
+  replacePlayerAnchors,
   replacePlaySegments,
+  replaceTeamEnds,
+  type TeamEnd,
   toCalibration,
 } from "../api/client";
 import { commit, type History, redo, startHistory, undo } from "../lib/history";
+import type { PlayerEdit } from "../lib/players";
 import { withRetries } from "../lib/retry";
 import { combineStatus, createSaveQueue, type SaveQueue, type SaveStatus } from "../lib/saveQueue";
 import { reportSaveStatus } from "../lib/unsavedChanges";
 import { type CalibrationEdit, fitKey } from "../lib/calibrations";
 import { followStart, type PendingSegment, type SegmentEdit } from "../lib/segments";
 
-/** A Match's Play Segments and Calibrations: what Calibrate edits, undoes and saves. */
+/** A Match's Play Segments, Calibrations, Player anchors, and Team ends: editable with undo. */
 export interface Recording {
   segments: PlaySegment[];
   calibrations: Calibration[];
+  anchors: PlayerAnchor[];
+  teamEnds: TeamEnd[];
 }
 
 export interface RecordingState {
@@ -45,6 +54,10 @@ export interface RecordingControls {
   ): void;
   /** Applies a Calibration edit from `lib/calibrations` to the current Calibrations. */
   editCalibrations(edit: (calibrations: Calibration[]) => CalibrationEdit): void;
+  /** Applies a Player anchor / `team_ends` edit from `lib/players`. */
+  editPlayers(
+    edit: (anchors: PlayerAnchor[], teamEnds: TeamEnd[]) => PlayerEdit,
+  ): PlayerEdit | null;
   cancelPending(): void;
   /** Shows a hint in the status bar. */
   notify(message: string): void;
@@ -57,6 +70,8 @@ const VIEWS: CameraView[] = ["main", "sideline"];
 interface Queues {
   segments: SaveQueue<PlaySegment[]>;
   calibrations: Record<CameraView, SaveQueue<Calibration[]>>;
+  anchors: SaveQueue<PlayerAnchor[]>;
+  teamEnds: SaveQueue<TeamEnd[]>;
 }
 
 /**
@@ -108,18 +123,31 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         main: queue("main", (list: Calibration[]) => saveCalibrations("main", list)),
         sideline: queue("sideline", (list: Calibration[]) => saveCalibrations("sideline", list)),
       },
+      anchors: queue("anchors", (anchors: PlayerAnchor[]) =>
+        replacePlayerAnchors(matchId, anchors),
+      ),
+      teamEnds: queue("teamEnds", (teamEnds: TeamEnd[]) => replaceTeamEnds(matchId, teamEnds)),
     };
     queuesRef.current = queues;
 
     // The Rally Log answers 503 while another request holds the file; that passes, so retry.
-    withRetries(() => Promise.all([getPlaySegments(matchId), getCalibrations(matchId)]), {
-      retryable: isRetryable,
-    }).then(
-      ([segments, calibrations]) => {
+    withRetries(
+      () =>
+        Promise.all([
+          getPlaySegments(matchId),
+          getCalibrations(matchId),
+          getPlayerAnchors(matchId),
+          getTeamEnds(matchId),
+        ]),
+      { retryable: isRetryable },
+    ).then(
+      ([segments, calibrations, anchors, teamEnds]) => {
         if (cancelled) return;
         const start = startHistory<Recording>({
           segments,
           calibrations: calibrations.map(toCalibration),
+          anchors,
+          teamEnds,
         });
         historyRef.current = start;
         setHistory(start);
@@ -131,7 +159,12 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     );
     return () => {
       cancelled = true;
-      const all = [queues.segments, ...VIEWS.map((view) => queues.calibrations[view])];
+      const all = [
+        queues.segments,
+        ...VIEWS.map((view) => queues.calibrations[view]),
+        queues.anchors,
+        queues.teamEnds,
+      ];
       for (const q of all) q.close();
       // A closing queue still sends its latest value; a switch waits for that too.
       if (all.some((q) => q.status().state !== "saved")) {
@@ -164,6 +197,8 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         queues.calibrations[view].push(list);
       }
     }
+    if (before.anchors !== after.anchors) queues.anchors.push(after.anchors);
+    if (before.teamEnds !== after.teamEnds) queues.teamEnds.push(after.teamEnds);
   }, []);
 
   const setPendingSegment = useCallback((next: PendingSegment | null) => {
@@ -182,6 +217,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
       const { calibrations } = current.present;
       update(
         commit(current, {
+          ...current.present,
           segments: result.segments,
           calibrations: result.startMoved
             ? followStart(calibrations, result.startMoved)
@@ -200,6 +236,30 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
       setMessage(result.message);
       if (result.calibrations === current.present.calibrations) return;
       update(commit(current, { ...current.present, calibrations: result.calibrations }));
+    },
+    [update],
+  );
+
+  const editPlayers = useCallback<RecordingControls["editPlayers"]>(
+    (edit) => {
+      const current = historyRef.current;
+      if (!current) return null;
+      const result = edit(current.present.anchors, current.present.teamEnds);
+      setMessage(result.message);
+      if (
+        result.anchors === current.present.anchors &&
+        result.teamEnds === current.present.teamEnds
+      ) {
+        return result;
+      }
+      update(
+        commit(current, {
+          ...current.present,
+          anchors: result.anchors,
+          teamEnds: result.teamEnds,
+        }),
+      );
+      return result;
     },
     [update],
   );
@@ -229,6 +289,7 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
   const controls: RecordingControls = {
     editSegments,
     editCalibrations,
+    editPlayers,
     cancelPending,
     notify: setMessage,
     undo: undoEdit,
