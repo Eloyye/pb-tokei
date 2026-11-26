@@ -89,6 +89,12 @@ const DOT_INSET_FT = 1.2;
 const DOUBLE_CLICK_MS = 500;
 const SIDES = [-1, 1] as const;
 
+/**
+ * A top-down Court with run-off out to the barriers. The Main View camera's end (negative y)
+ * is at the bottom in vertical orientation and on the right in horizontal orientation.
+ * Shaded bands show Frontcourt (0–9 ft), Midcourt (9–18 ft), and Backcourt (18 ft and beyond).
+ * The 12 ft ticks mark where an Established Team stops being Established.
+ */
 export function CourtDiagram({
   nearTeam,
   farTeam,

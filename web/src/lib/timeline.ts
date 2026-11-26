@@ -1,7 +1,5 @@
 import { type WheelDeltas, wheelPixels, wheelZoomFactor } from "./wheel";
 
-export { ZOOM_STEP } from "./wheel";
-
 /**
  * Timeline view math. A view is the range of frames visible across the Timeline's width,
  * `[start, end)`, bounded by the full view.

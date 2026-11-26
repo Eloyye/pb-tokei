@@ -16,8 +16,8 @@ import {
 import { FIT_COURT } from "../lib/courtView";
 import { inferred, newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { checkMatch, type RuleIssue } from "../lib/ruleChecks";
-import { wheelEvent } from "../lib/testEvents";
 import { ROSTER } from "../lib/testRoster";
+import { wheelEvent } from "../test/wheelEvent";
 import { InspectorPanel, type InspectorTab } from "./Inspector";
 import { RalliesPanel } from "./RalliesPanel";
 import { CourtPanel } from "./SidePanels";
@@ -535,6 +535,70 @@ describe("CourtPanel with a Shot selected", () => {
       rerender(liveCourt(150));
       act(() => vi.runOnlyPendingTimers());
       expect(placePlayer).toHaveBeenCalledExactlyOnceWith(120, { x: 12, y: 12 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    "Player change",
+    "Shot change",
+    "orientation change",
+    "pointer cancel",
+    "unmount",
+  ] as const)("discards a pending surround click after %s", (cause) => {
+    vi.useFakeTimers();
+    try {
+      const onSetLanding = vi.fn<(point: { x: number; y: number }) => void>();
+      const props = {
+        match: MATCH,
+        focused: false,
+        shot: newShot(100),
+        selectedPlayerId: "a1",
+        onSetLanding,
+        navigation: {
+          orientation: "vertical" as const,
+          view: FIT_COURT,
+          setView: () => {},
+          consumeSpaceForPan: () => false,
+          toggleOrientation: () => {},
+        },
+      };
+      const { container, rerender, unmount } = render(<CourtPanel {...props} />);
+      const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+      vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 320, height: 672 }),
+      );
+      fireEvent.pointerDown(svg.querySelector(".surround")!, {
+        pointerId: 1,
+        clientX: 280,
+        clientY: 216,
+      });
+
+      switch (cause) {
+        case "Player change":
+          rerender(<CourtPanel {...props} selectedPlayerId="a2" />);
+          break;
+        case "Shot change":
+          rerender(<CourtPanel {...props} shot={newShot(101)} />);
+          break;
+        case "orientation change":
+          rerender(
+            <CourtPanel
+              {...props}
+              navigation={{ ...props.navigation, orientation: "horizontal" }}
+            />,
+          );
+          break;
+        case "pointer cancel":
+          fireEvent.pointerCancel(svg, { pointerId: 1 });
+          break;
+        case "unmount":
+          unmount();
+          break;
+      }
+      act(() => vi.runOnlyPendingTimers());
+      expect(onSetLanding).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

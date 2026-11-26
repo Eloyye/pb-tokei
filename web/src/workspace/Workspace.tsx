@@ -110,14 +110,8 @@ import {
   type RuleIssue,
 } from "../lib/ruleChecks";
 import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
-import {
-  fitRange,
-  type FrameRange,
-  fullView,
-  reconcileView,
-  ZOOM_STEP,
-  zoomView,
-} from "../lib/timeline";
+import { fitRange, type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
+import { ZOOM_STEP } from "../lib/wheel";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
@@ -173,6 +167,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [calibrateTab, setCalibrateTab] = useState<CalibrateTab>("landmarks");
   const [courtLayout, setCourtLayout] = useState(loadCourtLayout);
   const [courtView, setCourtView] = useState<CourtView>(FIT_COURT);
+  // Keydown records deferred playback ("play") or focused button activation ("control").
+  // A pan changes either to "used", suppressing the release. Keyup or blur returns it to "up".
   const spaceKey = useRef<"up" | "play" | "control" | "used">("up");
   const swapped = !calibrating && courtLayout.swapped;
   const courtSlot: CourtSlot = swapped ? "main" : "side";

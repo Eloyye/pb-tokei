@@ -11,9 +11,9 @@ import {
   toPercent,
   type WheelAxisLock,
   wheelToView,
-  ZOOM_STEP,
   zoomView,
 } from "./timeline";
+import { ZOOM_STEP } from "./wheel";
 
 describe("toPercent and frameAt", () => {
   const view = { start: 100, end: 300 };

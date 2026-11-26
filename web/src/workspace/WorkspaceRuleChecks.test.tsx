@@ -17,9 +17,9 @@ import type {
 } from "../api/client";
 import { frameToSeekTime } from "../lib/frames";
 import { newRally, newShot, numberShots, observed } from "../lib/rallyLog";
-import { wheelEvent } from "../lib/testEvents";
 import { ROSTER } from "../lib/testRoster";
 import { ShortcutSheet } from "../shell/ShortcutSheet";
+import { wheelEvent } from "../test/wheelEvent";
 import { Workspace } from "./Workspace";
 
 const apiMocks = vi.hoisted(() => ({
@@ -299,6 +299,17 @@ describe("Workspace Court layout", () => {
     const input = screen.getByRole("textbox", { name: /go to a frame number/i });
     expect(document.activeElement).toBe(input);
     fireEvent.keyUp(input, { key: " " });
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("lets a focused Court control handle Space without toggling playback", () => {
+    const { container } = renderWorkspace("annotate", []);
+    const play = vi.spyOn(loadVideoMetadata(container), "play").mockResolvedValue();
+    const fit = screen.getByRole("button", { name: "Fit" });
+    fit.focus();
+
+    expect(fireEvent.keyDown(fit, { key: " " })).toBe(true);
+    expect(fireEvent.keyUp(fit, { key: " " })).toBe(true);
     expect(play).not.toHaveBeenCalled();
   });
 

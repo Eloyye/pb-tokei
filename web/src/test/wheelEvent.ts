@@ -1,3 +1,4 @@
+/** A wheel event with the fields a browser sends to the gesture handlers. */
 export function wheelEvent({ timeStamp, ...init }: WheelEventInit & { timeStamp?: number }) {
   const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init });
   // happy-dom's WheelEvent omits the MouseEvent fields.

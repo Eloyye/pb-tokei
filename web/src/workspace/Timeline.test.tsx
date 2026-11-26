@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlaySegment } from "../api/client";
 import { NO_SELECTION } from "../lib/annotate";
 import { newRally, newShot, numberShots } from "../lib/rallyLog";
-import { wheelEvent } from "../lib/testEvents";
 import { ROSTER } from "../lib/testRoster";
+import { wheelEvent } from "../test/wheelEvent";
 import { Timeline, type TimelineRallies } from "./Timeline";
 
 afterEach(cleanup);
