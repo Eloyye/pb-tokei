@@ -68,6 +68,7 @@ from .model import (
     check_play_segments,
     check_player_anchors,
     check_team_ends,
+    check_video_frames,
 )
 from .schema import MATCH_CONTENT_TABLES, STATEMENTS, migrate
 
@@ -399,8 +400,7 @@ class RallyLog:
         self, match_id: MatchId, source_video: SourceVideo, *, frames: int | None = None
     ) -> None:
         """Records the downloaded broadcast video against an existing Match."""
-        if frames is not None and frames <= 0:
-            raise ValueError("Source video frame count must be positive")
+        check_video_frames(frames)
         self._require_match(match_id)
         self._db.execute(
             """
@@ -418,9 +418,12 @@ class RallyLog:
         *,
         expected_source: SourceVideo | None = None,
     ) -> None:
-        """Caches the converted frame count, skipping a probe for any superseded source."""
-        if frames is not None and frames <= 0:
-            raise ValueError("Source video frame count must be positive")
+        """Sets the converted frame count, or clears it with None.
+
+        A count requires a recorded source video. When `expected_source` is supplied, a
+        changed or missing source leaves the row untouched so an old probe cannot overwrite it.
+        """
+        check_video_frames(frames)
         self._require_match(match_id)
         if expected_source is not None:
             self._db.execute(

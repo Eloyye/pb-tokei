@@ -70,7 +70,7 @@ function trackOperatorTime(
   let persisted = initialTime;
   let current: Session | null = null;
   const sessions = new Set<Session>();
-  const pending = new Set<Session>();
+  let pending = new Set<Session>();
   let draining: Promise<void> | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -113,7 +113,8 @@ function trackOperatorTime(
   }
 
   async function sendPending() {
-    for (const session of pending) {
+    while (pending.size > 0) {
+      const session = pending.values().next().value!;
       pending.delete(session);
       const sentMs = session.clock.committedMs;
       if (sentMs <= session.flushedMs) continue;
@@ -151,11 +152,14 @@ function trackOperatorTime(
           publish();
           return;
         }
-        if (closed) {
-          if (!final) pending.add(session);
+        if (final) {
+          sessions.delete(session);
           continue;
         }
-        pending.add(session);
+        // An uncertain write may already be in the aggregate. Acknowledge it before
+        // sending a different session so the display counts its seconds only once.
+        pending = new Set([session, ...pending]);
+        if (closed) continue;
         retryTimer = setTimeout(() => {
           retryTimer = undefined;
           void drain();
@@ -187,9 +191,25 @@ function trackOperatorTime(
     return flushCurrent();
   }
 
+  function startSession(workspace: Workspace): Session {
+    if (current) {
+      void pause();
+      if (current.clock.committedMs === current.flushedMs) sessions.delete(current);
+    }
+    const session = { id: crypto.randomUUID(), workspace, clock: idleOperatorClock, flushedMs: 0 };
+    current = session;
+    sessions.add(session);
+    return session;
+  }
+
   function onInput() {
     if (!current || document.hidden || !document.hasFocus() || !ownsCache()) return;
-    current.clock = recordOperatorInput(current.clock, Date.now());
+    const now = Date.now();
+    const { lastInputMs, lastCommittedWallAt, startedAt } = current.clock;
+    const previous = lastInputMs ?? lastCommittedWallAt ?? startedAt;
+    // A wall-clock rollback starts a new session so each snapshot fits its UTC window.
+    const session = previous !== null && now < previous ? startSession(current.workspace) : current;
+    session.clock = recordOperatorInput(session.clock, now);
     clearTimeout(idleTimer);
     idleTimer = setTimeout(pause, IDLE_TIMEOUT_MS);
     publish();
@@ -219,12 +239,7 @@ function trackOperatorTime(
   return {
     setWorkspace(workspace: Workspace) {
       if (refused || current?.workspace === workspace) return;
-      if (current) {
-        void pause();
-        if (current.clock.committedMs === current.flushedMs) sessions.delete(current);
-      }
-      current = { id: crypto.randomUUID(), workspace, clock: idleOperatorClock, flushedMs: 0 };
-      sessions.add(current);
+      startSession(workspace);
       publish();
     },
     syncPersisted(time: OperatorTime) {

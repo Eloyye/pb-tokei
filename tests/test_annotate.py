@@ -222,6 +222,8 @@ def test_operator_session_put_is_monotonic_and_bound_to_the_named_log(
         ("active_seconds", -1),
         ("active_seconds", float("nan")),
         ("active_seconds", float("inf")),
+        ("active_seconds", 31),
+        ("active_seconds", 1e308),
         ("ended_at", "2025-12-31T00:00:00Z"),
         ("started_at", "2026-01-01T00:00:00"),
         ("workspace", "home"),

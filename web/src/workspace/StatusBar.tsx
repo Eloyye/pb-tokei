@@ -42,6 +42,7 @@ export function StatusBar({
   const { time, idle } = useOperatorTime(match, workspace);
   const ratio = operatorRatio(time.active_seconds, match.broadcast_seconds);
   const budget = match.annotation_mode === "assisted" || workspace === "review";
+  const budgetLabel = formatRatio(ASSISTED_RATIO_BUDGET);
   const length =
     match.broadcast_seconds === null
       ? "broadcast length unavailable"
@@ -64,10 +65,10 @@ export function StatusBar({
       </span>
       <span
         className={`mono ${ratioClassName(ratio, budget)}`}
-        title={`Operator minutes ÷ broadcast minutes (${length})${budget ? " · Assisted budget 0.25" : ""}`}
+        title={`Operator minutes ÷ broadcast minutes (${length})${budget ? ` · Assisted budget ${budgetLabel}` : ""}`}
       >
         Ratio {formatRatio(ratio)}
-        {budget && ratio !== null && ` / ${formatRatio(ASSISTED_RATIO_BUDGET)}`}
+        {budget && ratio !== null && ` / ${budgetLabel}`}
       </span>
       <span>
         <button type="button" onClick={openHelp}>

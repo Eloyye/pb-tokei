@@ -27,10 +27,12 @@ const save = vi.mocked(upsertOperatorSession);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function totals(annotate = 0, calibrate = 0, review = 0): OperatorTime {
@@ -214,6 +216,56 @@ describe("useOperatorTime", () => {
       expect(tabSaveStatus().state).toBe("saved");
     },
   );
+
+  it("acknowledges an uncertain write before sending the next workspace's time", async () => {
+    const first = deferred<OperatorTime>();
+    save
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(totals(10, 4))
+      .mockResolvedValueOnce(totals(10, 4, 2));
+    const { result, rerender } = renderClock("calibrate");
+    input();
+    await advance(4000);
+    input();
+    rerender({ currentMatch: match, workspace: "review" });
+    input();
+    await advance(2000);
+    input();
+    input("blur");
+    await act(async () => first.reject(new TypeError("Response lost")));
+    await advance(1000);
+
+    expect(save.mock.calls.map(([, , body]) => body.workspace)).toEqual([
+      "calibrate",
+      "calibrate",
+      "review",
+    ]);
+    expect(result.current).toEqual({ time: totals(10, 4, 2), idle: true });
+  });
+
+  it("records a new session if the wall clock moves backward", async () => {
+    save.mockResolvedValueOnce(totals(14)).mockResolvedValueOnce(totals(16));
+    const { result } = renderClock();
+    input();
+    await advance(4000);
+    input();
+
+    vi.setSystemTime(Date.now() - 60_000);
+    input();
+    await advance(2000);
+    input();
+    input("blur");
+    await advance(0);
+
+    expect(save).toHaveBeenCalledTimes(2);
+    const [, firstId, first] = save.mock.calls[0]!;
+    const [, secondId, second] = save.mock.calls[1]!;
+    expect(first.active_seconds).toBe(4);
+    expect(second.active_seconds).toBe(2);
+    expect(secondId).not.toBe(firstId);
+    expect(Date.parse(second.ended_at) - Date.parse(second.started_at)).toBe(2000);
+    expect(result.current).toEqual({ time: totals(16), idle: true });
+  });
 
   it.each([409, 422])("stops silently after a refused write (%s)", async (status) => {
     save.mockRejectedValueOnce(new ApiError(status, "Refused"));

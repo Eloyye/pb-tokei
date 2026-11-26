@@ -474,6 +474,11 @@ class SourceVideo:
             raise ValueError("SourceVideo path cannot be empty")
 
 
+def check_video_frames(frames: int | None) -> None:
+    if frames is not None and frames <= 0:
+        raise ValueError("Source video frame count must be positive")
+
+
 class AnnotationMode(StrEnum):
     GOLD = "gold"
     ASSISTED = "assisted"
@@ -500,10 +505,15 @@ class OperatorSession:
             raise ValueError("Operator session active time must be finite and nonnegative")
         if self.started_at.utcoffset() is None or self.ended_at.utcoffset() is None:
             raise ValueError("Operator session timestamps require a time zone")
-        start = self.started_at.astimezone(UTC)
-        end = self.ended_at.astimezone(UTC)
+        try:
+            start = self.started_at.astimezone(UTC)
+            end = self.ended_at.astimezone(UTC)
+        except OverflowError:
+            raise ValueError("Operator session timestamps must be representable in UTC") from None
         if end < start:
             raise ValueError("Operator session cannot end before it starts")
+        if self.active_seconds > (end - start).total_seconds():
+            raise ValueError("Operator session active time cannot exceed its elapsed time")
         object.__setattr__(self, "started_at", start)
         object.__setattr__(self, "ended_at", end)
 
@@ -648,11 +658,9 @@ class Match:
     def __post_init__(self) -> None:
         if self.team_a_id == self.team_b_id:
             raise ValueError("a Match needs two different Teams")
-        if self.source_video_frames is not None:
-            if self.source_video_frames <= 0:
-                raise ValueError("Source video frame count must be positive")
-            if self.source_video is None:
-                raise ValueError("Source video frames require a recorded source video")
+        check_video_frames(self.source_video_frames)
+        if self.source_video_frames is not None and self.source_video is None:
+            raise ValueError("Source video frames require a recorded source video")
         check_play_segments(self.play_segments)
         check_calibrations(self.calibrations)
         check_player_anchors(self.player_anchors)

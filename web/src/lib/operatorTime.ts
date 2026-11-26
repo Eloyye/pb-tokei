@@ -4,6 +4,7 @@ import { WORKSPACES, WORKSPACE_LABELS, type Workspace } from "./workspaces";
 
 export const IDLE_TIMEOUT_MS = 120_000;
 export const FLUSH_INTERVAL_MS = 15_000;
+/** ADR 0004, shared with `rally_log/model.py`. */
 export const ASSISTED_RATIO_BUDGET = 0.25;
 
 export interface OperatorClock {
@@ -50,7 +51,7 @@ export function operatorSessionSnapshot(
     workspace,
     active_seconds: clock.committedMs / 1000,
     started_at: new Date(clock.startedAt).toISOString(),
-    ended_at: new Date(Math.max(clock.startedAt, clock.lastCommittedWallAt)).toISOString(),
+    ended_at: new Date(clock.lastCommittedWallAt).toISOString(),
   };
 }
 
@@ -62,6 +63,7 @@ export function formatRatio(ratio: number | null): string {
   return ratio === null ? "—" : ratio.toFixed(2);
 }
 
+/** The live equivalent of MatchSummary.operator_time_ratio. */
 export function operatorRatio(activeSeconds: number, broadcastSeconds: number | null) {
   return broadcastSeconds === null ? null : activeSeconds / broadcastSeconds;
 }

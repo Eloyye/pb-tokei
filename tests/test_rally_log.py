@@ -406,7 +406,9 @@ def test_operator_sessions_are_monotonic_and_survive_saving_match_content(log: R
     start = datetime(2026, 1, 1, tzinfo=UTC)
     end = start + timedelta(seconds=8)
     session = OperatorSession(new_id(), OperatorWorkspace.CALIBRATE, start, end, 6)
-    review = OperatorSession(new_id(), OperatorWorkspace.REVIEW, end, end, 4.5)
+    review = OperatorSession(
+        new_id(), OperatorWorkspace.REVIEW, end, end + timedelta(seconds=5), 4.5
+    )
 
     assert log.upsert_operator_session(match.id, session).total_seconds == 6
     newer = replace(session, ended_at=end + timedelta(seconds=5), active_seconds=9.5)

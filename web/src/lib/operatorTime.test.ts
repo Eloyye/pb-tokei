@@ -45,8 +45,7 @@ describe("operator clock", () => {
     expect(tentativeOperatorMs(wake, 1000)).toBe(0);
     const active = recordOperatorInput(backwards, 2000);
     expect(active.committedMs).toBe(IDLE_TIMEOUT_MS + 1000);
-    const snapshot = operatorSessionSnapshot(active, "review");
-    expect(snapshot?.ended_at).toBe(snapshot?.started_at);
+    expect(active.lastInputMs).toBe(2000);
   });
 
   it("formats time and ratios", () => {

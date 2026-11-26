@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, isRetryable, listMatches } from "../api/client";
 import {
+  ASSISTED_RATIO_BUDGET,
   formatActiveTime,
   formatRatio,
   operatorTimeTitle,
@@ -117,8 +118,9 @@ export function MatchList() {
             })}
           </div>
           <p className="ratio-note">
-            Ratio = operator minutes ÷ broadcast minutes. Assisted Annotation has a 0.25 budget (ADR
-            0004). Gold Annotation has no time budget.
+            Ratio = operator minutes ÷ broadcast minutes. Assisted Annotation has a{" "}
+            {formatRatio(ASSISTED_RATIO_BUDGET)} budget (ADR 0004). Gold Annotation has no time
+            budget.
           </p>
         </>
       )}
