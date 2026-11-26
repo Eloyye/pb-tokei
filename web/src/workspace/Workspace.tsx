@@ -34,6 +34,7 @@ import {
   deleteEntry,
   deleteGame,
   deleteRally,
+  deselectSelection,
   insertUnseenRally,
   markRallyDone,
   markRallyEnd,
@@ -50,6 +51,7 @@ import {
   SHOT_FIELDS,
   type ShotField,
   type Stash,
+  selectedEntry,
   selectedRally,
   selectedShot,
   selectRally,
@@ -66,6 +68,8 @@ import {
   syncShotPositions,
   toggleFlag,
   toggleGap,
+  toggleRally,
+  toggleShot,
 } from "../lib/annotate";
 import { type CourtView, FIT_COURT } from "../lib/courtView";
 import {
@@ -215,6 +219,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const [form, setForm] = useState<InspectorForm>(null);
   const stashRef = useRef<Stash>(new Map());
   const lastJumpedIssueIdRef = useRef<string | null>(null);
+  const shotDeselectHintShownRef = useRef(false);
 
   // Live non-blocking rule checks (#13) across all Games in Annotate and Review.
   const ruleIssues = useMemo(
@@ -444,6 +449,41 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       controls.seek(entry.contact_frame.value);
   };
 
+  /** Applies a deselection step, choosing the Inspector tab, form reset, and status hint. */
+  const applyDeselect = (next: Selection) => {
+    if (next.rally === current.rally && next.entry === current.entry) return;
+    setRallySelection(next);
+    if (next.rally === null) {
+      setForm(null);
+      recording.notify("Rally deselected");
+      return;
+    }
+    setInspectorTab("rally");
+    if (!isShot(selectedEntry(games, current))) {
+      recording.notify("Observation Gap deselected");
+      return;
+    }
+    if (!shotDeselectHintShownRef.current) {
+      shotDeselectHintShownRef.current = true;
+      recording.notify("Shot deselected: Court shows live tracking (Esc)");
+    } else {
+      recording.notify("Shot deselected");
+    }
+  };
+
+  /** Selects a Rally, or deselects it when clicked again. */
+  const selectOrToggleRally = (gi: number, ri: number) => {
+    const next = toggleRally(games, current, gi, ri);
+    if (next.rally === null) applyDeselect(next);
+    else goToRally(next);
+  };
+
+  /** `Esc`: closes an open popup or inline form first, then steps selection Shot → Rally → none. */
+  const handleEscape = () => {
+    if (gotoOpen) return setGotoOpen(false);
+    if (form !== null) return setForm(null);
+    applyDeselect(deselectSelection(current));
+  };
   /** Navigates straight to a rule issue's Game, Rally, Shot, Inspector tab, and field cursor. */
   const jumpToIssue = (issue: RuleIssue) => {
     const index = ruleIssues.findIndex((i) => i.id === issue.id);
@@ -633,7 +673,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         }));
       }
       case "escape":
-        return setForm(null);
+        return handleEscape();
     }
   };
 
@@ -843,6 +883,21 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         runAnnotate(annotateAction);
         return;
       }
+    }
+    // Review does not run `annotateKeyAction`, so handle unmodified `Esc` here to match Annotate's
+    // form-close and Shot → Rally deselection.
+    if (
+      reviewing &&
+      recordingState.recording &&
+      event.key === "Escape" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      event.preventDefault();
+      if (!event.repeat) handleEscape();
+      return;
     }
     if (calibrating && totalFrames > 0) {
       const segmentAction = segmentKeyAction(event);
@@ -1176,6 +1231,9 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 onMoveShotPlayer={(playerId, point) =>
                   annotateEdit((c) => moveShotPosition(c, playerId, point))
                 }
+                onDeselectShot={() => {
+                  if (current.entry !== null) applyDeselect({ ...current, entry: null });
+                }}
               />
               <InspectorPanel
                 focused={focused === "inspector"}
@@ -1220,7 +1278,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           selection={current}
           roster={roster}
           issues={showRuleChecks ? ruleIssues : undefined}
-          onSelectRally={(gi, ri) => goToRally(selectRally(games, gi, ri))}
+          onSelectRally={selectOrToggleRally}
           onSelectGame={(gi) => setRallySelection({ game: gi, rally: null, entry: null })}
           onAddUnseen={() => runAnnotate({ type: "unseenRally" })}
           onAddGame={() => runAnnotate({ type: "nextGame" })}
@@ -1266,13 +1324,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   roster,
                   issues: ruleIssues,
                   onSelectRally: (gi, ri, mode) => {
-                    const next = selectRally(games, gi, ri);
                     if (mode === "edge-drag") {
-                      setRallySelection(next);
+                      setRallySelection(selectRally(games, gi, ri));
                       setInspectorTab("rally");
                       setForm(null);
                     } else {
-                      goToRally(next);
+                      selectOrToggleRally(gi, ri);
                     }
                   },
                   onMoveRallyEdge: (gi, ri, edge, to) =>
@@ -1289,8 +1346,13 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                       ),
                     ),
                   onSelectEntry: (gi, ri, ei) => {
-                    setInspectorTab("shot");
-                    goToEntry({ game: gi, rally: ri, entry: ei });
+                    const next = toggleShot(current, gi, ri, ei);
+                    if (next.entry === null) {
+                      applyDeselect(next);
+                    } else {
+                      setInspectorTab("shot");
+                      goToEntry(next);
+                    }
                   },
                   onMoveContact: (gi, ri, ei, to) =>
                     annotateEdit((c) => moveContact(c, ei, to), {

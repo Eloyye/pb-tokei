@@ -118,6 +118,48 @@ export function selectRally(games: readonly Game[], game: number, rally: number)
   return { game, rally, entry: first < 0 ? null : first };
 }
 
+/**
+ * Toggles a Rally: clicking the selected Rally clears it (and any Shot) while keeping the active
+ * Game; clicking another Rally selects it and its first Shot.
+ */
+export function toggleRally(
+  games: readonly Game[],
+  selection: Selection,
+  game: number,
+  rally: number,
+): Selection {
+  if (selection.game === game && selection.rally === rally) {
+    return { game, rally: null, entry: null };
+  }
+  return selectRally(games, game, rally);
+}
+
+/**
+ * Toggles a Shot (or Observation Gap): clicking the selected one deselects it while keeping the
+ * Rally selected; clicking another selects it.
+ */
+export function toggleShot(
+  selection: Selection,
+  game: number,
+  rally: number,
+  entry: number,
+): Selection {
+  if (selection.game === game && selection.rally === rally && selection.entry === entry) {
+    return { game, rally, entry: null };
+  }
+  return { game, rally, entry };
+}
+
+/**
+ * `Esc` (with no inline form open): steps back one selection level — Shot (or Observation Gap) →
+ * Rally → nothing — keeping the active Game.
+ */
+export function deselectSelection(selection: Selection): Selection {
+  if (selection.entry !== null) return { ...selection, entry: null };
+  if (selection.rally !== null) return { ...selection, rally: null, entry: null };
+  return selection;
+}
+
 function unchanged(ctx: AnnotateContext, message: string): AnnotateEdit {
   return { games: ctx.games, selection: ctx.selection, message };
 }

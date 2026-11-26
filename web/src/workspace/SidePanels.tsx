@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo } from "react";
 import type { MatchDetail, PlayerTrackingFrameOut, Shot, TeamEnd } from "../api/client";
 import type { Point } from "../lib/calibrations";
+import { formatTimecode } from "../lib/frames";
 import type { CourtSlot } from "../lib/layout";
 import { nearTeamKeyFor, playerInitialsMap } from "../lib/players";
 import { teamKey, type Roster } from "../lib/rallyLog";
@@ -35,6 +36,7 @@ export function CourtPanel({
   previousShot,
   onSetLanding,
   onMoveShotPlayer,
+  onDeselectShot,
   slot = "side",
   navigation,
   swapButton,
@@ -54,6 +56,8 @@ export function CourtPanel({
   previousShot?: Shot;
   onSetLanding?: (courtPoint: Point) => void;
   onMoveShotPlayer?: (playerId: string, courtPoint: Point) => void;
+  /** Deselects the current Shot so the diagram returns to live Player Tracking. */
+  onDeselectShot?: () => void;
   slot?: CourtSlot;
   navigation?: CourtNavigation;
   swapButton?: ReactNode;
@@ -122,11 +126,39 @@ export function CourtPanel({
       tabs={<PanelTitle>Court</PanelTitle>}
       tools={
         <>
-          <span title="Near end is the Main View camera's end">
-            {shot ? "Shot at contact" : "Live"}
+          <span className={`court-mode ${shot ? "" : "live"}`} title="Near end = Main View camera">
+            {shot ? (
+              <>
+                Shot {shot.shot_number.value ?? "?"} ·{" "}
+                {shot.contact_frame.value === null ? (
+                  "contact Unknown"
+                ) : (
+                  <>
+                    contact <span className="mono">{formatTimecode(shot.contact_frame.value)}</span>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                Live · <span className="mono">{formatTimecode(frame)}</span>
+              </>
+            )}
           </span>
-          {navigation && <CourtViewControls navigation={navigation} />}
-          {swapButton}
+          {shot && onDeselectShot && (
+            <button
+              type="button"
+              className="icon-button court-live-button"
+              data-court-control
+              title="Deselect Shot to show live Player Tracking (Esc)"
+              onClick={onDeselectShot}
+            >
+              Live
+            </button>
+          )}
+          <span className="court-panel-actions">
+            {navigation && <CourtViewControls navigation={navigation} />}
+            {swapButton}
+          </span>
         </>
       }
     >

@@ -99,7 +99,7 @@ const GROUPS: [string, [string[], string][]][] = [
       [["Drag dot"], "Fix this Shot's position (no Calibration needed)"],
       [["Tab", "⇧Tab"], "Move the field cursor"],
       [["C"], "Cycle the field's certainty: Observed → Inferred → Unknown"],
-      [["Esc"], "Close a form"],
+      [["Esc"], "Close a form, or deselect the Shot then the Rally"],
       [["⌘Z", "⇧⌘Z"], "Undo / redo"],
     ],
   ],

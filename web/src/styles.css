@@ -1191,10 +1191,29 @@ fieldset.transport-group {
 
 /* --- Court -------------------------------------------------------------------------------- */
 
-.court-view-tools {
+.court-view-tools,
+.court-panel-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+}
+
+[data-panel="court"].area-side .panel-head {
+  height: auto;
+  min-height: 28px;
+}
+
+[data-panel="court"].area-side .panel-tab {
+  align-self: flex-start;
+  height: 27px;
+}
+
+[data-panel="court"].area-side .panel-tools {
+  min-width: 0;
+  min-height: 27px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 0;
 }
 
 .court-wrap {
@@ -1231,6 +1250,28 @@ fieldset.transport-group {
 .court .traj {
   vector-effect: non-scaling-stroke;
   pointer-events: none;
+}
+
+.court-mode {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.court-mode.live {
+  color: var(--text);
+}
+
+.court-live-button {
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--line-2);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.court-live-button:hover {
+  border-color: var(--dim);
 }
 
 .court .surround {

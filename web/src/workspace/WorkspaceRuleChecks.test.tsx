@@ -433,7 +433,7 @@ describe("Workspace live rule checks and F8 navigation", () => {
     expect(screen.getByText(/Issue 1\/2 · G1 R1 · Shot 2 must be a Bounce/)).toBeTruthy();
 
     // Clicking 'Shot issues in this Rally' from the Rally tab jumps back to Shot 2.
-    fireEvent.click(container.querySelectorAll(".r-row")[0]!);
+    expect(container.querySelectorAll(".r-row")[0]!.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("tab", { name: "Rally" }));
     const shotIssueBtn = screen.getByRole("button", { name: /Shot 2:.*two-bounce rule/ });
     fireEvent.click(shotIssueBtn);
