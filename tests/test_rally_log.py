@@ -32,6 +32,7 @@ from pb_tokei.rally_log import (
     PlaySegment,
     Rally,
     RallyLog,
+    RallyStatus,
     RefereeCall,
     Ruling,
     Score,
@@ -118,6 +119,8 @@ def small_match() -> Match:
         winner_id=inferred(RECEIVERS.id),
         winner_source=WinnerSource.REFEREE_CALL,
         entries=(serve, ret, ObservationGap(Parity.ODD), after_gap),
+        scoreboard_winner_id=observed(RECEIVERS.id),
+        status=RallyStatus.DONE,
     )
     challenged_rally = Rally(
         number=2,
@@ -134,6 +137,7 @@ def small_match() -> Match:
         winner_id=observed(RECEIVERS.id),
         winner_source=WinnerSource.CHALLENGE,
         entries=(ObservationGap(Parity.EVEN),),
+        status=RallyStatus.IN_PROGRESS,
     )
     unseen_rally = Rally(number=3)
     return Match(
@@ -729,3 +733,157 @@ def test_get_match_roster_returns_teams_and_sorted_players(log: RallyLog) -> Non
     assert [p.name for p in roster.team_b_players] == ["Partner Four", "Returner Three"]
     assert roster.team_id_for(P1.id) == SERVERS.id
     assert roster.other_team_id(SERVERS.id) == RECEIVERS.id
+
+
+# --- Games, Rallies and Shots (#12) ---------------------------------------------------------
+
+
+def test_games_can_be_replaced_without_touching_segments_calibrations_or_players(
+    log: RallyLog,
+) -> None:
+    match = small_match()
+    log.save_match(match)
+    assert log.get_games(match.id) == match.games
+
+    new_games = (
+        Game(1, (Rally(1, start_frame=10, end_frame=40, status=RallyStatus.DONE),)),
+        Game(2, (Rally(1), Rally(2, start_frame=500))),
+    )
+    log.replace_games(match.id, new_games)
+
+    reloaded = log.load_match(match.id)
+    assert reloaded.games == new_games
+    assert reloaded.play_segments == match.play_segments
+    assert reloaded.calibrations == match.calibrations
+    assert reloaded.player_anchors == match.player_anchors
+    assert reloaded.team_ends == match.team_ends
+
+
+def test_rally_status_and_scoreboard_winner_round_trip(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    rallies = log.get_games(match.id)[0].rallies
+    assert rallies[0].status is RallyStatus.DONE
+    assert rallies[0].scoreboard_winner_id == observed(RECEIVERS.id)
+    assert rallies[1].status is RallyStatus.IN_PROGRESS
+    assert rallies[2].status is RallyStatus.EMPTY
+    assert rallies[2].scoreboard_winner_id == UNKNOWN
+
+
+def test_match_summary_counts_done_and_total_rallies(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    summary = log.get_match_summary(match.id)
+    assert (summary.done_rallies, summary.total_rallies) == (1, 3)
+
+    log.replace_games(match.id, ())
+    summary = log.get_match_summary(match.id)
+    assert (summary.done_rallies, summary.total_rallies) == (0, 0)
+
+
+def test_getting_or_replacing_games_of_a_missing_match_fails(log: RallyLog) -> None:
+    missing = MatchId(new_id())
+    with pytest.raises(MatchNotFound):
+        log.get_games(missing)
+    with pytest.raises(MatchNotFound):
+        log.replace_games(missing, ())
+
+
+@pytest.mark.parametrize(
+    ("games", "message"),
+    [
+        ((Game(0),), "Game number"),
+        ((Game(1), Game(1)), "two Games"),
+        ((Game(1, (Rally(0),)),), "Rally number"),
+        ((Game(1, (Rally(1), Rally(1))),), "two Rallies"),
+        ((Game(1, (Rally(1, start_frame=-1),)),), "before frame 0"),
+        ((Game(1, (Rally(1, end_frame=20),)),), "no start frame"),
+        ((Game(1, (Rally(1, start_frame=30, end_frame=20),)),), "before it starts"),
+        (
+            (Game(1, (Rally(1, entries=(Shot(contact_frame=observed(-3)),)),)),),
+            "before frame 0",
+        ),
+    ],
+)
+def test_replacing_games_checks_numbers_and_frames(
+    log: RallyLog, games: tuple[Game, ...], message: str
+) -> None:
+    match = small_match()
+    log.save_match(match)
+    with pytest.raises(ValueError, match=message):
+        log.replace_games(match.id, games)
+    assert log.get_games(match.id) == match.games
+
+
+def test_open_ended_and_unseen_rallies_are_valid(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    games = (Game(1, (Rally(1, start_frame=0), Rally(2))),)
+    log.replace_games(match.id, games)
+    assert log.get_games(match.id) == games
+
+
+def test_replacing_games_checks_every_team_and_player_is_in_the_match(log: RallyLog) -> None:
+    match = small_match()
+    log.save_match(match)
+    outsider = Player(PlayerId(new_id()), "Outsider", Handedness.RIGHT)
+    log.save_player(outsider)
+    other_team = Team(TeamId(new_id()), (P1.id, outsider.id))
+    log.save_team(other_team)
+
+    bad_rallies = [
+        Rally(1, serving_team_id=observed(other_team.id)),
+        Rally(1, winner_id=inferred(other_team.id)),
+        Rally(1, scoreboard_winner_id=observed(other_team.id)),
+        Rally(1, server_id=observed(outsider.id)),
+        Rally(1, returner_id=observed(outsider.id)),
+        Rally(1, challenge=Challenge(challenger_id=observed(outsider.id))),
+        Rally(1, entries=(Shot(hitter_id=observed(outsider.id)),)),
+        Rally(1, entries=(Shot(error=Error(player_id=observed(outsider.id))),)),
+        Rally(1, entries=(Shot(positions={outsider.id: PlayerPosition()}),)),
+    ]
+    for rally in bad_rallies:
+        with pytest.raises(ValueError, match="not in Match"):
+            log.replace_games(match.id, (Game(1, (rally,)),))
+    with pytest.raises(ValueError, match="not in Match"):
+        log.save_match(replace(match, games=(Game(1, (bad_rallies[0],)),)))
+
+
+def test_opening_an_older_database_migrates_rally_status_and_scoreboard(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_rallies.duckdb"
+    match = small_match()
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+
+    with duckdb.connect(str(path)) as conn:
+        # Legacy rallies without status / scoreboard_winner_id.
+        conn.execute(
+            "CREATE TABLE legacy AS SELECT * EXCLUDE "
+            "(status, scoreboard_winner_id, scoreboard_winner_id_certainty) FROM rallies"
+        )
+        conn.execute("DROP TABLE rallies")
+        conn.execute("ALTER TABLE legacy RENAME TO rallies")
+        # A Rally with only a known Referee Call, and an empty one.
+        conn.execute(
+            "INSERT INTO rallies (match_id, game_number, number, score_certainty, "
+            "serving_team_id_certainty, server_id_certainty, returner_id_certainty, "
+            "referee_call, referee_call_certainty, has_challenge, winner_id_certainty) "
+            "VALUES (?, 1, 4, 'unknown', 'unknown', 'unknown', 'unknown', 'point', 'observed', "
+            "FALSE, 'unknown')",
+            [match.id],
+        )
+
+    with RallyLog.open(path) as log:
+        rallies = log.get_games(match.id)[0].rallies
+        assert [r.status for r in rallies] == [
+            RallyStatus.IN_PROGRESS,  # Shots and known facts
+            RallyStatus.IN_PROGRESS,  # an Observation Gap and a Challenge
+            RallyStatus.EMPTY,  # nothing recorded
+            RallyStatus.IN_PROGRESS,  # only a Referee Call
+        ]
+        assert all(r.scoreboard_winner_id == UNKNOWN for r in rallies)
+
+    # Opening again leaves the migrated table alone.
+    with RallyLog.open(path) as log:
+        assert len(log.get_games(match.id)[0].rallies) == 4

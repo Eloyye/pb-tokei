@@ -31,6 +31,8 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
     franchise_b: null,
     video_status: "none",
     footage_job: null,
+    done_rallies: 0,
+    total_rallies: 0,
     ...overrides,
   };
 }

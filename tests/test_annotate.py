@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -110,6 +111,8 @@ def test_lists_matches_with_roster_and_video_status(
             "franchise_b": None,
             "video_status": "none",
             "footage_job": None,
+            "done_rallies": 0,
+            "total_rallies": 0,
         },
         {
             "id": str(ready),
@@ -120,6 +123,8 @@ def test_lists_matches_with_roster_and_video_status(
             "franchise_b": None,
             "video_status": "ready",
             "footage_job": None,
+            "done_rallies": 0,
+            "total_rallies": 0,
         },
     ]
 
@@ -1245,3 +1250,152 @@ def test_annotate_checks_the_bundle_and_serves(
         assert "uv run pb-tokei dev update" in error
     else:
         assert error == ""
+
+
+# --- Games, Rallies and Shots (#12) ---------------------------------------------------------
+
+
+def unknown() -> dict[str, object]:
+    return {"value": None, "certainty": "unknown"}
+
+
+def fact(value: object, certainty: str = "observed") -> dict[str, object]:
+    return {"value": value, "certainty": certainty}
+
+
+def a_game(db: Path, match_id: MatchId) -> dict[str, Any]:
+    """One Game: a framed Rally with a Shot, a gap and a Challenge, and an Unseen Rally."""
+    with RallyLog.open(db) as log:
+        roster = log.get_match_roster(match_id)
+    p1, p2 = (str(p.id) for p in roster.team_a_players)
+    p3, _p4 = (str(p.id) for p in roster.team_b_players)
+    team_a, team_b = str(roster.team_a_id), str(roster.team_b_id)
+    shot = {
+        "type": "shot",
+        "shot_number": fact(1),
+        "hitter_id": fact(p1),
+        "contact_frame": fact(105),
+        "contact_zone": fact("backcourt"),
+        "shot_class": fact("hard"),
+        "contact_kind": unknown(),
+        "erne": fact(False),
+        "atp": fact(False),
+        "landing": fact({"x": 2.5, "y": 17.0}),
+        "error": {"kind": fact("body_hit"), "player_id": fact(p3, "inferred")},
+        "positions": {
+            p1: {"position": fact({"x": -5.0, "y": -21.0}), "settled": fact(False)},
+            p2: {"position": unknown(), "settled": unknown()},
+        },
+    }
+    framed = {
+        "number": 1,
+        "start_frame": 100,
+        "end_frame": 160,
+        "status": "done",
+        "score": fact({"serving": 0, "receiving": 0, "server_number": 2}, "inferred"),
+        "serving_team_id": fact(team_a),
+        "server_id": fact(p1),
+        "returner_id": fact(p3, "inferred"),
+        "referee_call": fact("side_out"),
+        "challenge": {
+            "challenger_id": fact(p3),
+            "original_call": fact("Out"),
+            "ruling": fact("upheld"),
+        },
+        "winner_id": fact(team_b),
+        "winner_source": "challenge",
+        "scoreboard_winner_id": fact(team_b),
+        "entries": [shot, {"type": "gap", "missing": "odd"}],
+    }
+    unseen = {
+        "number": 2,
+        "start_frame": None,
+        "end_frame": None,
+        "status": "empty",
+        "score": unknown(),
+        "serving_team_id": unknown(),
+        "server_id": unknown(),
+        "returner_id": unknown(),
+        "referee_call": unknown(),
+        "challenge": None,
+        "winner_id": unknown(),
+        "winner_source": None,
+        "scoreboard_winner_id": unknown(),
+        "entries": [],
+    }
+    return {"number": 1, "rallies": [framed, unseen]}
+
+
+def test_games_are_replaced_and_read_back(client: TestClient, db: Path) -> None:
+    match_id = add_match(db)
+    assert client.get(f"/api/matches/{match_id}/games").json() == []
+    client.put(
+        f"/api/matches/{match_id}/play-segments",
+        json=[{"start_frame": 0, "end_frame": 500, "camera_view": "main"}],
+    )
+
+    games = [a_game(db, match_id), {"number": 2, "rallies": []}]
+    response = client.put(f"/api/matches/{match_id}/games", json=games)
+
+    assert response.status_code == 200
+    assert response.json() == games
+    assert client.get(f"/api/matches/{match_id}/games").json() == games
+    # Other Match content is left alone.
+    assert len(client.get(f"/api/matches/{match_id}/play-segments").json()) == 1
+    listed = client.get("/api/matches").json()[0]
+    assert (listed["done_rallies"], listed["total_rallies"]) == (1, 2)
+    detail = client.get(f"/api/matches/{match_id}").json()
+    assert (detail["done_rallies"], detail["total_rallies"]) == (1, 2)
+
+
+def test_invalid_games_are_refused(client: TestClient, db: Path) -> None:
+    match_id = add_match(db)
+    url = f"/api/matches/{match_id}/games"
+    game = a_game(db, match_id)
+    rally = game["rallies"][0]
+
+    # A fact whose value disagrees with its certainty.
+    bad_fact = json.loads(json.dumps(game))
+    bad_fact["rallies"][0]["server_id"] = {"value": None, "certainty": "observed"}
+    assert client.put(url, json=[bad_fact]).status_code == 422
+    bad_fact["rallies"][0]["server_id"] = {"value": str(uuid4()), "certainty": "unknown"}
+    assert client.put(url, json=[bad_fact]).status_code == 422
+
+    # A Player who isn't in the Match.
+    stranger = json.loads(json.dumps(game))
+    stranger["rallies"][0]["server_id"] = fact(str(uuid4()))
+    response = client.put(url, json=[stranger])
+    assert response.status_code == 422
+    assert "not in Match" in response.json()["detail"]
+
+    # An unknown entry type, an end before the start, and duplicate Rally numbers.
+    bad_entry = json.loads(json.dumps(game))
+    bad_entry["rallies"][0]["entries"] = [{"type": "replay"}]
+    assert client.put(url, json=[bad_entry]).status_code == 422
+    backwards = json.loads(json.dumps(game))
+    backwards["rallies"][0]["end_frame"] = 50
+    assert client.put(url, json=[backwards]).status_code == 422
+    duplicate = {"number": 1, "rallies": [rally, rally]}
+    assert client.put(url, json=[duplicate]).status_code == 422
+
+    assert client.get(url).json() == []
+
+
+def test_games_of_a_missing_match_are_404(client: TestClient, db: Path) -> None:
+    add_match(db)
+    missing = uuid4()
+    assert client.get(f"/api/matches/{missing}/games").status_code == 404
+    assert client.put(f"/api/matches/{missing}/games", json=[]).status_code == 404
+
+
+def test_game_frames_outside_the_video_are_refused(
+    client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    match_id = add_match(db)
+    set_video(db, match_id, footage(tmp_path, converted=True))
+    monkeypatch.setattr("pb_tokei.annotate.app.video_frame_count", lambda _path: 150)
+
+    response = client.put(f"/api/matches/{match_id}/games", json=[a_game(db, match_id)])
+
+    assert response.status_code == 422
+    assert "outside the video" in response.json()["detail"]
