@@ -951,6 +951,11 @@ export interface components {
       device: components["schemas"]["DeviceKind"] | null;
       /** Error */
       error: string | null;
+      /**
+       * Opposite End Flip Y Ft
+       * @default 2
+       */
+      opposite_end_flip_y_ft: number;
       /** Progress */
       progress: number;
       /** Spans */

@@ -864,6 +864,19 @@ def test_player_tracking_http_api_round_trip_priority_and_security(tmp_path: Pat
     assert too_wide.status_code == 422
 
 
+def test_partial_layer1_decode_raises_and_is_not_cached(tmp_path: Path) -> None:
+    """A truncated video decode raises PlayerTrackingError and is never cached as complete."""
+    video = tmp_path / "short.60fps.mp4"
+    _write_dummy_video(video, n_frames=8)
+    seg = PlaySegment(0, 20, CameraView.MAIN)
+    cache = PlayerTrackingCache(tmp_path / "cache", detector_model="fake-d", pose_model="fake-p")
+    backend = _FakeVisionBackend(detector_model="fake-d", pose_model="fake-p")
+
+    with pytest.raises(PlayerTrackingError, match="failed to decode|ended early"):
+        cache.get_or_extract_layer1(video, seg, backend)
+    assert not cache.has_layer1(video, seg)
+
+
 def test_player_tracking_cancel_stops_background_job(tmp_path: Path) -> None:
     db, match_id, _roster, _conv = _setup_api_match(tmp_path)
     started = threading.Event()
@@ -872,7 +885,7 @@ def test_player_tracking_cancel_stops_background_job(tmp_path: Path) -> None:
     class _SlowBackend(_FakeVisionBackend):
         def detect_batch(self, frames_bgr: Sequence[np.ndarray]) -> list[tuple[RawDetection, ...]]:
             started.set()
-            release.wait(timeout=3.0)
+            release.wait(timeout=5.0)
             return super().detect_batch(frames_bgr)
 
     static = tmp_path / "static"
@@ -881,19 +894,103 @@ def test_player_tracking_cancel_stops_background_job(tmp_path: Path) -> None:
     app = create_app(db, static_dir=static, player_backend_factory=lambda _pref: _SlowBackend())
     client = TestClient(app, base_url=LOCAL, headers={"Origin": LOCAL})
 
+    # Start background job and block inside the first segment's detect_batch.
     res = client.post(f"/api/matches/{match_id}/player-tracking/track", json={}).json()
     assert res["status"] == "tracking"
     assert started.wait(timeout=2.0)
 
-    release.set()
+    # Post /cancel FIRST, and only unblock detect_batch once the job's cancel flag is set.
+    service = app.state.rally_logs.current.players
+    job = service._jobs[match_id]
+
+    def release_after_cancel() -> None:
+        if job.cancel.wait(timeout=2.0):
+            release.set()
+
+    unblocker = threading.Thread(target=release_after_cancel, daemon=True)
+    unblocker.start()
     cancelled = client.post(f"/api/matches/{match_id}/player-tracking/cancel").json()
-    assert cancelled["status"] in ("idle", "ready")
+    unblocker.join(timeout=2.0)
+
+    assert cancelled["status"] == "idle"
+    assert cancelled["status"] != "ready"
+    assert cancelled["tracked_segments"] < cancelled["total_segments"]
+    assert cancelled["error"] is None
+
+    # Regression for cancelled-job reuse: re-triggering while a cancelled job is still winding
+    # down waits for the cancelled job to exit and then runs a fresh job to completion.
+    started.clear()
+    release.clear()
+    res2 = client.post(f"/api/matches/{match_id}/player-tracking/track", json={}).json()
+    assert res2["status"] == "tracking"
+    assert started.wait(timeout=2.0)
+
+    # Mark the running job cancelled without waiting, then immediately fire a new /track request.
+    running_job = service._jobs[match_id]
+    running_job.cancel.set()
+
+    retracked: dict[str, object] = {}
+
+    def trigger_fresh() -> None:
+        retracked["body"] = client.post(
+            f"/api/matches/{match_id}/player-tracking/track",
+            json={"wait": True},
+        ).json()
+
+    retrigger_thread = threading.Thread(target=trigger_fresh, daemon=True)
+    retrigger_thread.start()
+    # Unblock both the winding-down cancelled job and the fresh job.
+    release.set()
+    retrigger_thread.join(timeout=5.0)
+    body = retracked.get("body")
+    assert isinstance(body, dict)
+    assert body["status"] == "ready"
+    assert body["tracked_segments"] == body["total_segments"] == 2
+    assert body["error"] is None
+
+
+def test_player_tracking_service_error_status_and_http_404s(tmp_path: Path) -> None:
+    db, match_id, _roster, _conv = _setup_api_match(tmp_path)
+
+    class _FailingBackend(_FakeVisionBackend):
+        def detect_batch(self, frames_bgr: Sequence[np.ndarray]) -> list[tuple[RawDetection, ...]]:
+            raise PlayerTrackingError("Simulated GPU out-of-memory")
+
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("<!doctype html>")
+    app = create_app(db, static_dir=static, player_backend_factory=lambda _pref: _FailingBackend())
+    client = TestClient(app, base_url=LOCAL, headers={"Origin": LOCAL})
+
+    failed = client.post(
+        f"/api/matches/{match_id}/player-tracking/track", json={"wait": True}
+    ).json()
+    assert failed["status"] == "error"
+    assert "Simulated GPU out-of-memory" in (failed["error"] or "")
+    assert failed["tracked_segments"] == 0
+
+    # Unknown match_id returns 404 across all Player Tracking endpoints.
+    missing = uuid4()
+    assert client.get(f"/api/matches/{missing}/player-anchors").status_code == 404
+    assert client.put(f"/api/matches/{missing}/player-anchors", json=[]).status_code == 404
+    assert client.get(f"/api/matches/{missing}/team-ends").status_code == 404
+    assert client.put(f"/api/matches/{missing}/team-ends", json=[]).status_code == 404
+    assert client.get(f"/api/matches/{missing}/player-tracking").status_code == 404
+    assert client.post(f"/api/matches/{missing}/player-tracking/track", json={}).status_code == 404
+    assert client.post(f"/api/matches/{missing}/player-tracking/cancel").status_code == 404
+    assert (
+        client.get(
+            f"/api/matches/{missing}/player-tracking/frames",
+            params={"start_frame": 0, "end_frame": 10},
+        ).status_code
+        == 404
+    )
 
 
 def test_cli_track_command_runs_engine_and_handles_errors(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    db, match_id, _roster, _conv = _setup_api_match(tmp_path)
+    db, match_id, _roster, conv = _setup_api_match(tmp_path)
     fake_backend = _FakeVisionBackend(device=DeviceKind.CPU)
 
     code = main(
@@ -913,6 +1010,43 @@ def test_cli_track_command_runs_engine_and_handles_errors(
     )
     assert bad_code == 1
     assert "Match not found" in capsys.readouterr().err
+
+    # Backend raising PlayerTrackingError returns exit code 1.
+    class _FailingBackend(_FakeVisionBackend):
+        def detect_batch(self, frames_bgr: Sequence[np.ndarray]) -> list[tuple[RawDetection, ...]]:
+            raise PlayerTrackingError("Model download failed")
+
+    # Clear Layer 1 cache so the failing backend actually runs.
+    cache_dir = db.parent / ".pb-tokei-cache" / "player_tracking"
+    for p in cache_dir.glob("l1_*.npz"):
+        p.unlink()
+    err_code = main(
+        ["track", str(match_id), "--db", str(db), "--device", "cpu"],
+        player_backend=_FailingBackend(device=DeviceKind.CPU),
+    )
+    assert err_code == 1
+    assert "Model download failed" in capsys.readouterr().err
+
+    # Match with no Play Segments returns exit code 1.
+    with RallyLog.open(db) as log:
+        log.replace_play_segments(match_id, ())
+    no_seg_code = main(
+        ["track", str(match_id), "--db", str(db), "--device", "cpu"],
+        player_backend=fake_backend,
+    )
+    assert no_seg_code == 1
+    assert "Play Segments" in capsys.readouterr().err
+
+    # Match with missing video file returns exit code 1.
+    with RallyLog.open(db) as log:
+        log.replace_play_segments(match_id, (PlaySegment(0, 16, CameraView.MAIN),))
+    conv.unlink()
+    missing_vid_code = main(
+        ["track", str(match_id), "--db", str(db), "--device", "cpu"],
+        player_backend=fake_backend,
+    )
+    assert missing_vid_code == 1
+    assert "video" in capsys.readouterr().err.lower()
 
 
 def test_settled_inferred_certainty_during_brief_occlusion() -> None:

@@ -26,7 +26,12 @@ export interface PlayerEdit {
   nextSelected?: string | null;
 }
 
-const OPPOSITE_END_FLIP_Y_FT = 2.0;
+/**
+ * Minimum `|y|` (ft) for an anchor on the opposite side of the net to flip `team_ends`.
+ * Must match `OPPOSITE_END_FLIP_Y_FT` in `src/pb_tokei/player_tracking.py`; overridden by
+ * `PlayerTrackingOut.opposite_end_flip_y_ft` once tracking status loads.
+ */
+export const DEFAULT_OPPOSITE_END_FLIP_Y_FT = 2.0;
 
 /** Effective `TeamEnd` at `frame`: latest starting at or before `frame`, or else the earliest. */
 export function teamEndAt(teamEnds: readonly TeamEnd[], frame: number): TeamEnd | undefined {
@@ -142,6 +147,7 @@ export function setPlayerAnchor(
   kind: AnchorKind,
   point: Point,
   courtY?: number | null,
+  oppositeEndFlipYFt = DEFAULT_OPPOSITE_END_FLIP_Y_FT,
 ): PlayerEdit {
   const player = match.players.find((p) => p.id === playerId);
   if (!player) return { anchors, teamEnds, message: "Select a Player first" };
@@ -165,7 +171,7 @@ export function setPlayerAnchor(
     const impliedNear = courtY < 0 ? player.team_id : otherTeamId;
     if (teamEnds.length === 0 && Math.abs(courtY) >= 0.5) {
       nextTeamEnds = [{ effective_from_frame: 0, near_team_id: impliedNear }];
-    } else if (Math.abs(courtY) >= OPPOSITE_END_FLIP_Y_FT) {
+    } else if (Math.abs(courtY) >= oppositeEndFlipYFt) {
       const active = teamEndAt(teamEnds, frame);
       if (!active || active.near_team_id !== impliedNear) {
         nextTeamEnds = [

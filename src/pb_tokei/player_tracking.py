@@ -41,6 +41,7 @@ from scipy.optimize import linear_sum_assignment
 
 from pb_tokei.calibration import CourtMapping, Homography
 from pb_tokei.camera_motion import DEFAULT_CACHE_DIR_NAME, CameraMotion
+from pb_tokei.convert import TARGET_FPS
 from pb_tokei.player_vision import (
     APPEARANCE_DIM,
     BOTTOM_EDGE_CROP_MARGIN,
@@ -78,9 +79,11 @@ from pb_tokei.rally_log import (
 METHOD_VERSION = 1
 """Bump whenever Layer 1 or Layer 2 algorithms change so cached Player Tracking rebuilds."""
 
-VIDEO_FPS = 60.0
-DEFAULT_DETECTION_STRIDE = 4
-"""Default detection stride on 60 fps footage (4 -> 15 fps, interpolated in between)."""
+VIDEO_FPS = float(TARGET_FPS)
+"""Converted footage frame rate (shared with `pb_tokei.convert.TARGET_FPS`)."""
+
+DEFAULT_DETECTION_STRIDE = max(1, round(VIDEO_FPS / 15.0))
+"""Default detection stride (~15 fps on converted 60 fps footage, interpolated in between)."""
 
 # Playing ROI and court-entry filter bounds (feet from net centre).
 # `PLAYING_ROI_MAX_Y_FT` extends beyond the 22 ft baseline to 38 ft so Players standing deep
@@ -92,13 +95,13 @@ COURT_ENTRY_MAX_X_FT = 10.5
 COURT_ENTRY_MAX_Y_FT = 24.0
 
 # Occlusion and Settled velocity constants (named and ready to tune against the Gold Set, #23).
-MAX_OCCLUSION_GAP_FRAMES = 30
-"""Maximum mid-track occlusion gap (0.5 s at 60 fps) linearly interpolated as Inferred."""
+MAX_OCCLUSION_GAP_FRAMES = round(0.5 * VIDEO_FPS)
+"""Maximum mid-track occlusion gap (0.5 s) linearly interpolated as Inferred."""
 
-SETTLED_WINDOW_FRAMES = 15
-"""Trailing window (~0.25 s at 60 fps) over which net-ward approach velocity is measured."""
+SETTLED_WINDOW_FRAMES = round(0.25 * VIDEO_FPS)
+"""Trailing window (0.25 s) over which net-ward approach velocity is measured."""
 
-SETTLED_MIN_SPAN_FRAMES = 4
+SETTLED_MIN_SPAN_FRAMES = DEFAULT_DETECTION_STRIDE
 """Minimum trailing history span required to compute a track velocity for Settled."""
 
 SETTLED_MAX_APPROACH_SPEED_FT_S = 1.5
@@ -114,6 +117,13 @@ LIVE_CUT_MAX_DIST_FT = 6.5
 MANUAL_REATTACH_DIST_FT = 4.5
 """Maximum court distance (ft) for a manual `position` anchor to re-attach to a tracklet."""
 
+OPPOSITE_END_FLIP_Y_FT = 2.0
+"""Minimum |y| (ft) for an anchor on the opposite side of the net to flip `team_ends`.
+
+Exposed in `PlayerTrackingOut.opposite_end_flip_y_ft` and must match
+`DEFAULT_OPPOSITE_END_FLIP_Y_FT` in `web/src/lib/players.ts`.
+"""
+
 _MAX_TRACK_LINK_GAP_FRAMES = MAX_OCCLUSION_GAP_FRAMES
 _MAX_HUMAN_SPEED_FT_S = 22.0
 _MIN_COURT_GATE_FT = 3.0
@@ -121,7 +131,6 @@ _MAX_ASSOC_COST = 1.15
 _RELINK_MAX_APPEARANCE_DIST = 0.65
 _SAME_PERSON_COURT_DIST_FT = 1.8
 _NET_CROSS_MARGIN_FT = 1.5
-_OPPOSITE_END_FLIP_Y_FT = 2.0
 _DETECTOR_BATCH_SIZE = 16
 _ANCHOR_BOX_MARGIN = 0.04
 _CERT_UNKNOWN = 0
@@ -671,6 +680,13 @@ def extract_segment_detections(
         cap.release()
 
     actual_samples = tuple(f for f in samples if f in detections_by_frame)
+    if len(actual_samples) != len(samples):
+        missing_frame = next(f for f in samples if f not in detections_by_frame)
+        raise PlayerTrackingError(
+            f"Video ended early or failed to decode frame {missing_frame} in Play Segment "
+            f"{segment.start_frame}-{segment.end_frame} "
+            f"(decoded {len(actual_samples)}/{len(samples)} sampled frames): {video_path}"
+        )
     return SegmentDetections(
         start_frame=segment.start_frame,
         end_frame=segment.end_frame,
@@ -765,7 +781,10 @@ class PlayerTrackingCache:
         except OSError, ValueError, KeyError, UnicodeDecodeError, json.JSONDecodeError:
             return None
 
-        if len(offsets) != len(sample_frames) + 1:
+        expected_samples = sample_frames_for_segment(
+            segment.start_frame, segment.end_frame, self._stride
+        )
+        if sample_frames != expected_samples or len(offsets) != len(sample_frames) + 1:
             return None
         dets_by_frame: dict[int, tuple[RawDetection, ...]] = {}
         for idx, frame_num in enumerate(sample_frames):
@@ -1796,7 +1815,7 @@ def _resolve_effective_team_ends(
     # Check if an anchor clearly places a Player on the opposite end from the active TeamEnd.
     explicit_frames = {te.effective_from_frame for te in explicit_team_ends}
     for ba in all_anchors:
-        if ba.court_pt is None or abs(ba.court_pt.y) < _OPPOSITE_END_FLIP_Y_FT:
+        if ba.court_pt is None or abs(ba.court_pt.y) < OPPOSITE_END_FLIP_Y_FT:
             continue
         frame = ba.anchor.frame
         if frame in explicit_frames:

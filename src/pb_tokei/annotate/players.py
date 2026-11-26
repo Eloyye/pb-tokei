@@ -16,6 +16,7 @@ from pb_tokei.calibration import CourtMapping
 from pb_tokei.camera_motion import CameraMotionCache
 from pb_tokei.player_tracking import (
     DEFAULT_DETECTION_STRIDE,
+    OPPOSITE_END_FLIP_Y_FT,
     PlayerTrackingCache,
     PlayerTrackingCancelledError,
     _prioritise_segments,
@@ -133,6 +134,7 @@ class PlayerTrackingOut(BaseModel):
     tracked_segments: int
     total_segments: int
     spans: list[PlayerTrackingSpanOut]
+    opposite_end_flip_y_ft: float = OPPOSITE_END_FLIP_Y_FT
 
 
 class TrackedPlayerOut(BaseModel):
@@ -379,15 +381,27 @@ class PlayerTrackingService:
         if not missing:
             return self.status(match_id, video_path, ordered)
 
-        reused: _PlayerJobState | None = None
-        started: _PlayerJobState | None = None
-        with self._lock:
-            existing = self._jobs.get(match_id)
-            if existing is not None and existing.running:
-                reused = existing
-            elif not self._closed:
-                started = _PlayerJobState(running=True)
-                self._jobs[match_id] = started
+        while True:
+            reused: _PlayerJobState | None = None
+            wait_cancelled: _PlayerJobState | None = None
+            started: _PlayerJobState | None = None
+            with self._lock:
+                existing = self._jobs.get(match_id)
+                if existing is not None and existing.running:
+                    if not existing.cancel.is_set():
+                        reused = existing
+                    else:
+                        wait_cancelled = existing
+                elif not self._closed:
+                    started = _PlayerJobState(running=True)
+                    self._jobs[match_id] = started
+
+            if wait_cancelled is not None:
+                # Never attach to a cancelled job still winding down; wait outside the lock so a
+                # fresh tracking run starts once it finishes unwinding.
+                wait_cancelled.done.wait()
+                continue
+            break
 
         if reused is not None:
             if wait:

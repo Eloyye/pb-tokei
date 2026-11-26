@@ -142,6 +142,7 @@ describe("PlayersPanel", () => {
       progress: 0,
       tracked_segments: 0,
       total_segments: 1,
+      opposite_end_flip_y_ft: 2.0,
       spans: [
         {
           start_frame: 26,
@@ -250,6 +251,48 @@ describe("PlayerOverlay", () => {
     fireEvent.pointerMove(layer, { pointerId: 2, clientX: 400, clientY: 400 });
     fireEvent.pointerUp(layer, { pointerId: 2, clientX: 400, clientY: 400 });
     expect(onMove).toHaveBeenCalledWith("p-a1", { x: 0.4, y: 0.8 });
+  });
+
+  it("calls onBackgroundClick (play/pause) instead of saving an anchor in Annotate before tracking loads", () => {
+    const onAssign =
+      vi.fn<(playerId: string, click: { x: number; y: number }, detection: unknown) => void>();
+    const onMove = vi.fn<(playerId: string, pt: { x: number; y: number }) => void>();
+    const onSelect = vi.fn<(playerId: string) => void>();
+    const onBackgroundClick = vi.fn<() => void>();
+
+    const { container } = render(
+      <PlayerOverlay
+        videoRef={makeVideoRef()}
+        players={MATCH.players}
+        frameData={undefined}
+        selectedPlayerId="p-a1"
+        editable
+        clickEmptyPlaces={false}
+        onSelectPlayer={onSelect}
+        onAssignDetection={onAssign}
+        onMovePlayer={onMove}
+        onBackgroundClick={onBackgroundClick}
+      />,
+    );
+
+    const layer = container.querySelector<HTMLElement>(".player-layer")!;
+    layer.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: 1000,
+        height: 500,
+        right: 1000,
+        bottom: 500,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    fireEvent.pointerDown(layer, { pointerId: 1, clientX: 500, clientY: 250 });
+    expect(onBackgroundClick).toHaveBeenCalledTimes(1);
+    expect(onMove).not.toHaveBeenCalled();
+    expect(onAssign).not.toHaveBeenCalled();
   });
 });
 

@@ -40,11 +40,19 @@ export function usePlayerTracking(
   trackedMotionSpans: number,
   frame: number,
 ): PlayerTrackingState {
-  const [status, setStatus] = useState<PlayerTrackingOut | null>(null);
+  const [statusState, setStatusState] = useState<{
+    matchId: string;
+    value: PlayerTrackingOut;
+  } | null>(null);
+  const status = statusState?.matchId === matchId ? statusState.value : null;
   const [windows, setWindows] = useState<Map<string, PlayerTrackingFramesOut>>(() => new Map());
   const windowsRef = useRef<Map<string, PlayerTrackingFramesOut>>(new Map());
   const inFlight = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
+  const matchIdRef = useRef(matchId);
+  useEffect(() => {
+    matchIdRef.current = matchId;
+  }, [matchId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -62,7 +70,9 @@ export function usePlayerTracking(
     let cancelled = false;
     getPlayerTracking(matchId)
       .then((next) => {
-        if (!cancelled) setStatus(next);
+        if (!cancelled && matchIdRef.current === matchId) {
+          setStatusState({ matchId, value: next });
+        }
       })
       .catch(() => {});
     return () => {
@@ -81,11 +91,11 @@ export function usePlayerTracking(
       timer = setTimeout(async () => {
         try {
           const next = await getPlayerTracking(matchId);
-          if (cancelled) return;
-          setStatus(next);
+          if (cancelled || matchIdRef.current !== matchId) return;
+          setStatusState({ matchId, value: next });
           if (next.status === "tracking") poll();
         } catch {
-          if (!cancelled) poll();
+          if (!cancelled && matchIdRef.current === matchId) poll();
         }
       }, POLL_MS);
     };
@@ -166,9 +176,15 @@ export function usePlayerTracking(
 
   const startTracking = useCallback(
     (priorityFrame?: number) => {
-      trackPlayers(matchId, priorityFrame === undefined ? {} : { priority_frame: priorityFrame })
+      const requestedMatch = matchId;
+      trackPlayers(
+        requestedMatch,
+        priorityFrame === undefined ? {} : { priority_frame: priorityFrame },
+      )
         .then((next) => {
-          if (mountedRef.current) setStatus(next);
+          if (mountedRef.current && matchIdRef.current === requestedMatch) {
+            setStatusState({ matchId: requestedMatch, value: next });
+          }
         })
         .catch(() => {});
     },
@@ -176,9 +192,12 @@ export function usePlayerTracking(
   );
 
   const cancelTracking = useCallback(() => {
-    cancelPlayerTracking(matchId)
+    const requestedMatch = matchId;
+    cancelPlayerTracking(requestedMatch)
       .then((next) => {
-        if (mountedRef.current) setStatus(next);
+        if (mountedRef.current && matchIdRef.current === requestedMatch) {
+          setStatusState({ matchId: requestedMatch, value: next });
+        }
       })
       .catch(() => {});
   }, [matchId]);

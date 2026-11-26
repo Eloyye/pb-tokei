@@ -91,9 +91,16 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const calibrating = workspace === "calibrate";
   const annotating = workspace === "annotate";
   const [calibrateTab, setCalibrateTab] = useState<CalibrateTab>("landmarks");
-  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(
+  const [calibrateSelectedPlayerId, setCalibrateSelectedPlayerId] = useState<string | null>(
     () => match.players[0]?.id ?? null,
   );
+  // In Annotate, no Player is selected until the operator explicitly clicks one in CourtPanel or
+  // the Monitor overlay, so clicking the video toggles play/pause instead of saving an anchor.
+  const [annotateSelectedPlayerId, setAnnotateSelectedPlayerId] = useState<string | null>(null);
+  const selectedPlayerId = calibrating ? calibrateSelectedPlayerId : annotateSelectedPlayerId;
+  const setSelectedPlayerId = calibrating
+    ? setCalibrateSelectedPlayerId
+    : setAnnotateSelectedPlayerId;
   const [showPlayerOverlay, setShowPlayerOverlay] = useState(true);
 
   const segments = recordingState.recording?.segments ?? null;
@@ -141,6 +148,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       ? cameraMotion.frameLens
       : null;
 
+  const oppositeEndFlipYFt = playerTracking.status?.opposite_end_flip_y_ft;
+
   const assignPlayerDetection = (playerId: string, point: Point, detection: FrameDetectionOut) => {
     const courtY =
       detection.court_y ??
@@ -151,16 +160,41 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       )?.y ??
       null;
     const result = recording.editPlayers((curAnchors, curEnds) =>
-      setPlayerAnchor(curAnchors, curEnds, match, frame, playerId, "identity", point, courtY),
+      setPlayerAnchor(
+        curAnchors,
+        curEnds,
+        match,
+        frame,
+        playerId,
+        "identity",
+        point,
+        courtY,
+        oppositeEndFlipYFt,
+      ),
     );
-    if (result?.nextSelected) setSelectedPlayerId(result.nextSelected);
+    if (calibrating) {
+      if (result?.nextSelected) setCalibrateSelectedPlayerId(result.nextSelected);
+    } else {
+      setAnnotateSelectedPlayerId(null);
+    }
   };
 
   const movePlayerOnMonitor = (playerId: string, point: Point) => {
     const courtY = imagePointToCourt(point, activeCourtToImage, activeLens)?.y ?? null;
     recording.editPlayers((curAnchors, curEnds) =>
-      setPlayerAnchor(curAnchors, curEnds, match, frame, playerId, "position", point, courtY),
+      setPlayerAnchor(
+        curAnchors,
+        curEnds,
+        match,
+        frame,
+        playerId,
+        "position",
+        point,
+        courtY,
+        oppositeEndFlipYFt,
+      ),
     );
+    if (!calibrating) setAnnotateSelectedPlayerId(null);
   };
 
   const movePlayerOnCourt = (playerId: string, courtPoint: Point) => {
@@ -183,8 +217,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         "position",
         imagePt,
         courtPoint.y,
+        oppositeEndFlipYFt,
       ),
     );
+    if (!calibrating) setAnnotateSelectedPlayerId(null);
   };
 
   const placeSelectedOnCourt = (courtPoint: Point) => {

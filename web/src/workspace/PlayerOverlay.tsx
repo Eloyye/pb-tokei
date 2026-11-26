@@ -47,9 +47,12 @@ export function PlayerOverlay({
   const detections = frameData?.detections ?? [];
   const trackedPlayers = frameData?.players ?? [];
   const selectedTracked = trackedPlayers.find((p) => p.player_id === selectedPlayerId);
-  const selectedUndetected = !selectedTracked || selectedTracked.position_certainty === "unknown";
+  // In Annotate (`clickEmptyPlaces === false`), only treat an empty-court click as placement when
+  // tracking has loaded and the explicitly selected Player is Unknown on this frame; otherwise a
+  // click on the picture plays/pauses the video instead of writing an accidental anchor.
+  const selectedKnownUnknown = selectedTracked?.position_certainty === "unknown";
   const allowEmptyPlacement =
-    editable && selectedPlayerId !== null && (clickEmptyPlaces || selectedUndetected);
+    editable && selectedPlayerId !== null && (clickEmptyPlaces || selectedKnownUnknown);
 
   return (
     <div
