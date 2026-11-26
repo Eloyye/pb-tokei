@@ -10,13 +10,16 @@ import type { Point } from "../lib/calibrations";
  * area, out to the barriers, so Players standing well behind a baseline are drawn where they are;
  * the Team names sit in strips beyond it.
  */
+/** SVG units to the foot, for lengths; `X` and `Y` turn court positions into SVG positions. */
+const UNITS_PER_FT = 10;
+
 /** Feet from the net to SVG `y`: the far end is up. */
 function Y(feet: number): number {
-  return -feet * 10;
+  return -feet * UNITS_PER_FT;
 }
 
 function X(feet: number): number {
-  return feet * 10;
+  return feet * UNITS_PER_FT;
 }
 
 export interface CourtPlayerDot {
@@ -62,10 +65,15 @@ const AREA_HALF_L_FT = 32;
 /** SVG units above and below the playing area for the Team names. */
 const LABEL_STRIP = 16;
 
+/** How far in from the playing area's edge a pinned dot is drawn: a little over its radius. */
+const DOT_INSET_FT = 1.2;
+
+const AREA_W = 2 * AREA_HALF_W_FT * UNITS_PER_FT;
+const AREA_H = 2 * AREA_HALF_L_FT * UNITS_PER_FT;
 const VIEW_X = X(-AREA_HALF_W_FT);
 const VIEW_Y = Y(AREA_HALF_L_FT) - LABEL_STRIP;
-const VIEW_W = X(2 * AREA_HALF_W_FT);
-const VIEW_H = X(2 * AREA_HALF_L_FT) + 2 * LABEL_STRIP;
+const VIEW_W = AREA_W;
+const VIEW_H = AREA_H + 2 * LABEL_STRIP;
 
 /**
  * Keeps a point inside the playing area (a dot's radius in from the edge). A Player tracked
@@ -73,8 +81,8 @@ const VIEW_H = X(2 * AREA_HALF_L_FT) + 2 * LABEL_STRIP;
  * their title still gives the real position.
  */
 function inView(point: Point): Point {
-  const maxX = AREA_HALF_W_FT - 1.2;
-  const maxY = AREA_HALF_L_FT - 1.2;
+  const maxX = AREA_HALF_W_FT - DOT_INSET_FT;
+  const maxY = AREA_HALF_L_FT - DOT_INSET_FT;
   return {
     x: Math.max(-maxX, Math.min(maxX, point.x)),
     y: Math.max(-maxY, Math.min(maxY, point.y)),
@@ -139,8 +147,8 @@ export function CourtDiagram({
     const svgX = VIEW_X + (event.clientX - offsetX) / scale;
     const svgY = VIEW_Y + (event.clientY - offsetY) / scale;
     return {
-      x: Math.max(-AREA_HALF_W_FT, Math.min(AREA_HALF_W_FT, svgX / 10)),
-      y: Math.max(-AREA_HALF_L_FT, Math.min(AREA_HALF_L_FT, -svgY / 10)),
+      x: Math.max(-AREA_HALF_W_FT, Math.min(AREA_HALF_W_FT, svgX / UNITS_PER_FT)),
+      y: Math.max(-AREA_HALF_L_FT, Math.min(AREA_HALF_L_FT, -svgY / UNITS_PER_FT)),
     };
   };
 
@@ -172,13 +180,7 @@ export function CourtDiagram({
       }}
       onPointerCancel={() => setDrag(null)}
     >
-      <rect
-        className="surround"
-        x={VIEW_X}
-        y={Y(AREA_HALF_L_FT)}
-        width={VIEW_W}
-        height={X(2 * AREA_HALF_L_FT)}
-      />
+      <rect className="surround" x={VIEW_X} y={Y(AREA_HALF_L_FT)} width={AREA_W} height={AREA_H} />
       {sides.map((s) => (
         <g key={s}>
           <rect
@@ -227,10 +229,22 @@ export function CourtDiagram({
       <line className="line" x1={0} y1={-220} x2={0} y2={-70} />
       <line className="line" x1={0} y1={70} x2={0} y2={220} />
       <line className="net" x1={-110} y1={0} x2={110} y2={0} />
-      <text className={`label ${nearClass}`} x={0} y={Y(-AREA_HALF_L_FT) + 11} textAnchor="middle">
+      <text
+        className={`label ${nearClass}`}
+        x={0}
+        y={Y(-AREA_HALF_L_FT) + LABEL_STRIP / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
         {nearTeam}
       </text>
-      <text className={`label ${farClass}`} x={0} y={Y(AREA_HALF_L_FT) - 5} textAnchor="middle">
+      <text
+        className={`label ${farClass}`}
+        x={0}
+        y={Y(AREA_HALF_L_FT) - LABEL_STRIP / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
         {farTeam}
       </text>
       {ghosts.map((g) => (

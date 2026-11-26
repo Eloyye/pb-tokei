@@ -340,6 +340,32 @@ describe("CourtPanel with a Shot selected", () => {
     expect(onSetLanding).toHaveBeenCalledWith({ x: 0, y: -0 });
   });
 
+  it("maps a click on the diagram to court feet, clamped to the playing area", () => {
+    const { games } = annotated();
+    const ret = games[0]!.rallies[0]!.entries[1];
+    if (ret?.type !== "shot") throw new Error("expected a Shot");
+    const onSetLanding = vi.fn<(point: { x: number; y: number }) => void>();
+    const { container } = render(
+      <CourtPanel
+        match={MATCH}
+        focused={false}
+        roster={ROSTER}
+        shot={ret}
+        onSetLanding={onSetLanding}
+      />,
+    );
+    const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+    // Twice as wide as the 320 × 672 diagram at 1 px per unit, so it is letterboxed 160 px in.
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 0, width: 640, height: 672 }),
+    );
+    fireEvent.pointerDown(svg, { pointerId: 1, clientX: 400, clientY: 456 });
+    expect(onSetLanding).toHaveBeenLastCalledWith({ x: 8, y: -12 });
+    // Inside the far Team name's strip, beyond the playing area: clamped to its edge.
+    fireEvent.pointerDown(svg, { pointerId: 2, clientX: 320, clientY: 5 });
+    expect(onSetLanding).toHaveBeenLastCalledWith({ x: 0, y: 32 });
+  });
+
   it("draws a Player standing well behind the baseline where they are", () => {
     const { games } = annotated();
     const serve = games[0]!.rallies[0]!.entries[0];
