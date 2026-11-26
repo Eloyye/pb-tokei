@@ -115,6 +115,7 @@ import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
 import { useCameraMotion } from "./useCameraMotion";
 import { usePlayerTracking } from "./usePlayerTracking";
+import { useActionQueue } from "./useActionQueue";
 import { useRecording } from "./useRecording";
 
 const MESSAGES: Record<WorkspaceName, string> = {
@@ -395,13 +396,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     );
   };
 
-  // While `M` waits for Player Tracking, later Annotate keys queue (with the frame they were
-  // pressed at) so they act on the new Shot, in order.
-  const busyRef = useRef(false);
-  const queuedRef = useRef<{ action: AnnotateAction; frame: number }[]>([]);
-  const [queueTick, setQueueTick] = useState(0);
-
-  const addShotAt = (at: number) => {
+  /** Adds a Shot at `at`; returns a promise while it waits for Player Tracking. */
+  const addShotAt = (at: number): Promise<void> | undefined => {
     const cached = playerTracking.cachedAt(at);
     const add = (tracking: Parameters<typeof positionsFromTracking>[1]) => {
       const result = annotateEdit((c) => addShot(c, positionsFromTracking(roster, tracking)), {
@@ -409,13 +405,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       });
       if (result && result.games !== games) focusField("shot", "hitter_id");
     };
-    if (cached !== undefined) return add(cached ?? undefined);
-    busyRef.current = true;
-    void playerTracking.trackingAt(at).then((tracking) => {
-      busyRef.current = false;
-      add(tracking);
-      setQueueTick((t) => t + 1);
-    });
+    if (cached !== undefined) {
+      add(cached ?? undefined);
+      return undefined;
+    }
+    return playerTracking.trackingAt(at).then(add);
   };
 
   const syncFromTracking = async () => {
@@ -443,11 +437,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     togglePlay();
   };
 
-  const runAnnotate = (action: AnnotateAction, at = frame) => {
-    if (busyRef.current || queuedRef.current.length > 0) {
-      queuedRef.current.push({ action, frame: at });
-      return;
-    }
+  /** One Annotate action, at the frame its key was pressed on. */
+  const executeAnnotate = ({ action, frame: at }: { action: AnnotateAction; frame: number }) => {
     switch (action.type) {
       case "rallyStart":
         focusField("rally", "frames");
@@ -539,14 +530,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     }
   };
 
-  const drainQueue = useEffectEvent((tick: number) => {
-    if (busyRef.current || tick < 0) return;
-    const next = queuedRef.current.shift();
-    if (!next) return;
-    runAnnotate(next.action, next.frame);
-    setQueueTick((t) => t + 1);
-  });
-  useEffect(() => drainQueue(queueTick), [queueTick]);
+  // While `M` waits for Player Tracking, later Annotate keys queue (with the frame they were
+  // pressed at) so they act on the new Shot, in order.
+  const queueAnnotate = useActionQueue(executeAnnotate);
+  const runAnnotate = (action: AnnotateAction, at = frame) => queueAnnotate({ action, frame: at });
 
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,

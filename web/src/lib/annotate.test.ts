@@ -22,6 +22,7 @@ import {
   selectedShot,
   setError,
   setLanding,
+  setRallyDetails,
   setRefereeCall,
   startNextGame,
   swapHitterToPartner,
@@ -300,11 +301,35 @@ describe("Shot entry", () => {
     const cycled = setError(ctx(base.games, base.selection), "body_hit");
     expect(selectedShot(cycled.games, cycled.selection)!.error!.player_id).toEqual(observed("b1"));
     // The Error decides the winner: A, the Team that wasn't hit.
-    expect(selectedRally(base.games, base.selection)!.winner_id).toEqual(observed("A"));
+    expect(selectedRally(base.games, base.selection)!.winner_id).toEqual(inferred("A"));
 
     const cleared = setError(ctx(base.games, base.selection), null);
     expect(selectedShot(cleared.games, cleared.selection)!.error).toBeNull();
     expect(selectedRally(cleared.games, cleared.selection)!.winner_id).toEqual(UNKNOWN);
+  });
+
+  it("a winner from an Error goes with its Shot, but one entered by hand survives clearing it", () => {
+    const base = run([
+      [100, markRallyStart],
+      [120, (c) => addShot(c, snapshot)],
+      [120, (c) => setError(c, "net")],
+    ]);
+    expect(selectedRally(base.games, base.selection)!.winner_id).toEqual(inferred("B"));
+    const deleted = deleteEntry(ctx(base.games, base.selection));
+    expect(selectedRally(deleted.games, deleted.selection)!.winner_id).toEqual(UNKNOWN);
+
+    const rally = selectedRally(base.games, base.selection)!;
+    const byHand = setRallyDetails(ctx(base.games, base.selection), {
+      score: rally.score,
+      serving_team_id: rally.serving_team_id,
+      server_id: rally.server_id,
+      returner_id: rally.returner_id,
+      scoreboard_winner_id: rally.scoreboard_winner_id,
+      manual_winner: "A",
+    });
+    const cleared = setError(ctx(byHand.games, byHand.selection), null);
+    expect(selectedRally(cleared.games, cleared.selection)!.winner_id).toEqual(observed("A"));
+    expect(selectedRally(cleared.games, cleared.selection)!.winner_source).toBe("play");
   });
 
   it("Kitchen Fault defaults to the hitter and repeats cycle to the partner", () => {

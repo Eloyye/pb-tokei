@@ -1399,3 +1399,41 @@ def test_game_frames_outside_the_video_are_refused(
 
     assert response.status_code == 422
     assert "outside the video" in response.json()["detail"]
+
+
+def test_game_frames_up_to_the_last_one_are_accepted(
+    client: TestClient, db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    match_id = add_match(db)
+    set_video(db, match_id, footage(tmp_path, converted=True))
+    # The game's last frame is 160: 161 frames is just enough.
+    monkeypatch.setattr("pb_tokei.annotate.app.video_frame_count", lambda _path: 161)
+    assert (
+        client.put(f"/api/matches/{match_id}/games", json=[a_game(db, match_id)]).status_code == 200
+    )
+    monkeypatch.setattr("pb_tokei.annotate.app.video_frame_count", lambda _path: 160)
+    assert (
+        client.put(f"/api/matches/{match_id}/games", json=[a_game(db, match_id)]).status_code == 422
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda rally: rally.update(start_frame=2**31, end_frame=2**31),
+        lambda rally: rally.update(number=2**31),
+        lambda rally: rally["entries"][0].update(contact_frame=fact(2**31)),
+        lambda rally: rally.update(
+            score=fact({"serving": 2**31, "receiving": 0, "server_number": 1})
+        ),
+    ],
+)
+def test_numbers_too_large_to_store_are_refused_not_a_server_error(
+    client: TestClient, db: Path, change: Any
+) -> None:
+    match_id = add_match(db)
+    game = a_game(db, match_id)
+    change(game["rallies"][0])
+    response = client.put(f"/api/matches/{match_id}/games", json=[game])
+    assert response.status_code == 422
+    assert client.get(f"/api/matches/{match_id}/games").json() == []

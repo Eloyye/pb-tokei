@@ -30,6 +30,7 @@ import {
   observed,
   otherTeam,
   partnerOf,
+  playerName,
   renumberGames,
   renumberRallies,
   type Roster,
@@ -40,7 +41,7 @@ import {
   UNKNOWN,
   withAllPositions,
 } from "./rallyLog";
-import { normalizeGame } from "./sideout";
+import { manualWinner, normalizeGame } from "./sideout";
 
 /**
  * Rally and Shot entry in the Annotate workspace (#12): every key's edit to the Match's Games as
@@ -122,10 +123,6 @@ function unchanged(ctx: AnnotateContext, message: string): AnnotateEdit {
 
 function rallyLabel(game: Game, rally: Rally): string {
   return `G${game.number} R${rally.number}`;
-}
-
-function playerName(roster: Roster, id: string | null): string {
-  return roster.players.find((p) => p.id === id)?.name ?? "Unknown";
 }
 
 /** Replaces one Game, normalising it (Shot numbers, winners, cascade after `fromIndex`). */
@@ -458,17 +455,12 @@ export function nextShotSelection(
 
 /** `Shift+P` / `Shift+2` / `Shift+X`: records the Referee Call (again clears it). */
 export function setRefereeCall(ctx: AnnotateContext, call: RefereeCall): AnnotateEdit {
-  const labels: Record<RefereeCall, string> = {
-    point: "Point",
-    second_server: "Second server",
-    side_out: "Side out",
-  };
   const rally = selectedRally(ctx.games, ctx.selection);
   const clearing =
     rally?.referee_call.value === call && rally.referee_call.certainty === "observed";
   const edit = editRally(ctx, (r) => ({ ...r, referee_call: clearing ? UNKNOWN : observed(call) }));
   if (!edit.message)
-    edit.message = clearing ? "Referee Call cleared" : `Referee Call: ${labels[call]}`;
+    edit.message = clearing ? "Referee Call cleared" : `Referee Call: ${REFEREE_CALL_LABELS[call]}`;
   return edit;
 }
 
@@ -485,7 +477,7 @@ export interface RallyDetails {
 
 export function setRallyDetails(ctx: AnnotateContext, details: RallyDetails): AnnotateEdit {
   const edit = editRally(ctx, (r) => {
-    const winnerFromPlay = r.winner_source === "play" || r.winner_source === null;
+    const enteredByHand = manualWinner(r) !== null;
     return {
       ...r,
       score: details.score,
@@ -495,7 +487,7 @@ export function setRallyDetails(ctx: AnnotateContext, details: RallyDetails): An
       scoreboard_winner_id: details.scoreboard_winner_id,
       ...(details.manual_winner !== null
         ? { winner_id: observed(details.manual_winner), winner_source: "play" as const }
-        : winnerFromPlay
+        : enteredByHand
           ? { winner_id: UNKNOWN, winner_source: null }
           : {}),
     };
@@ -598,6 +590,12 @@ export function addShot(
   }`;
   return edit;
 }
+
+export const REFEREE_CALL_LABELS: Record<RefereeCall, string> = {
+  point: "Point",
+  second_server: "Second server",
+  side_out: "Side out",
+};
 
 export const SHOT_CLASS_LABELS: Record<ShotClass, string> = {
   soft: "Soft",
@@ -717,17 +715,12 @@ function distance(a: CourtPoint, b: CourtPoint): number {
 export function setError(ctx: AnnotateContext, kind: ErrorKind | null): AnnotateEdit {
   const { roster } = ctx;
   if (kind === null) {
-    const index = ctx.selection.entry;
-    const shot = selectedShot(ctx.games, ctx.selection);
-    if (!shot || index === null) return unchanged(ctx, "Select a Shot first (M adds one)");
-    const edit = editRally(ctx, (r) => {
-      const entries = [...r.entries];
-      entries[index] = { ...shot, error: null };
-      // A winner seen in play came from this Error; without it, it's no longer known.
-      const fromPlay = r.winner_source === "play";
-      return { ...r, entries, ...(fromPlay ? { winner_id: UNKNOWN, winner_source: null } : {}) };
-    });
-    return { ...edit, message: edit.message || "Error cleared" };
+    // A winner worked out from this Error is recomputed without it; one entered by hand stays.
+    return editShot(
+      ctx,
+      (s) => ({ ...s, error: null }),
+      () => "Error cleared",
+    );
   }
   return editShot(
     ctx,

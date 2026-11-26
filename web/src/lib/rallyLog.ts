@@ -68,6 +68,11 @@ export function partnerOf(roster: Roster, playerId: string): string | null {
   return teamPlayers(roster, team).find((p) => p.id !== playerId)?.id ?? null;
 }
 
+/** A Player's name, or "Unknown". */
+export function playerName(roster: Roster, playerId: string | null): string {
+  return roster.players.find((p) => p.id === playerId)?.name ?? "Unknown";
+}
+
 /** The first Player (in name order) of a Team. */
 export function firstPlayer(roster: Roster, teamId: string): string | null {
   return teamPlayers(roster, teamId)[0]?.id ?? null;

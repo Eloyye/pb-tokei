@@ -29,7 +29,8 @@ export interface PlayerTrackingState {
   trackingAt: (frame: number) => Promise<PlayerTrackingFrameOut | undefined>;
   /**
    * Player Tracking at a frame without waiting: the loaded frame, `null` when Tracking can't know
-   * anything there (never run and nothing anchored), or `undefined` when it must be fetched.
+   * anything there (no video, or never run and nothing anchored), or `undefined` when it must be
+   * fetched (including before the status has loaded).
    */
   cachedAt: (frame: number) => PlayerTrackingFrameOut | null | undefined;
 }
@@ -223,8 +224,10 @@ export function usePlayerTracking(
     return undefined;
   }, []);
 
+  // Until the status loads, whether anything is tracked isn't known: fetch rather than guess.
   const nothingTracked =
-    !enabled || (trackedSegments === 0 && anchors.length === 0 && teamEnds.length === 0);
+    !enabled ||
+    (status !== null && trackedSegments === 0 && anchors.length === 0 && teamEnds.length === 0);
   const cachedAt = useCallback(
     (at: number) => loadedAt(at) ?? (nothingTracked ? null : undefined),
     [loadedAt, nothingTracked],

@@ -140,36 +140,8 @@ CREATE TABLE IF NOT EXISTS {name} (
 )"""
 
 
-# The `rallies` columns before `scoreboard_winner_id` and `status` were added (ADR 0013).
-_RALLY_COLUMNS_BEFORE_STATUS = [
-    "match_id",
-    "game_number",
-    "number",
-    "start_frame",
-    "end_frame",
-    "score_serving",
-    "score_receiving",
-    "score_server_number",
-    "score_certainty",
-    "serving_team_id",
-    "serving_team_id_certainty",
-    "server_id",
-    "server_id_certainty",
-    "returner_id",
-    "returner_id_certainty",
-    "referee_call",
-    "referee_call_certainty",
-    "has_challenge",
-    "challenger_id",
-    "challenger_id_certainty",
-    "challenge_original_call",
-    "challenge_original_call_certainty",
-    "challenge_ruling",
-    "challenge_ruling_certainty",
-    "winner_id",
-    "winner_id_certainty",
-    "winner_source",
-]
+# The `rallies` columns added for Rally and Shot entry (ADR 0013), in table order.
+_RALLY_STATUS_COLUMNS = ["scoreboard_winner_id", "scoreboard_winner_id_certainty", "status"]
 
 
 def _migrate_rally_status(db: duckdb.DuckDBPyConnection) -> None:
@@ -178,15 +150,18 @@ def _migrate_rally_status(db: duckdb.DuckDBPyConnection) -> None:
     A Rally that already holds Shots, Observation Gaps or any known fact is In progress; any
     other is Empty.
     """
-    columns = {
+    columns = [
         name
         for (name,) in db.execute(
-            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'rallies'"
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'rallies' "
+            "ORDER BY column_index"
         ).fetchall()
-    }
+    ]
     if "status" in columns and "scoreboard_winner_id" in columns:
         return
-    old = ", ".join(f"r.{c}" for c in _RALLY_COLUMNS_BEFORE_STATUS)
+    # Copy every column the old table has, by name, so the copy can't drift out of line.
+    kept = [c for c in columns if c not in _RALLY_STATUS_COLUMNS]
+    old = ", ".join(f"r.{c}" for c in kept)
     has_scoreboard = "scoreboard_winner_id" in columns
     scoreboard = (
         "r.scoreboard_winner_id, r.scoreboard_winner_id_certainty"
@@ -222,8 +197,10 @@ def _migrate_rally_status(db: duckdb.DuckDBPyConnection) -> None:
     db.execute("BEGIN TRANSACTION")
     try:
         db.execute(rallies_table("rallies_migrated"))
+        target = ", ".join([*kept, *_RALLY_STATUS_COLUMNS])
         db.execute(
-            f"INSERT INTO rallies_migrated SELECT {old}, {scoreboard}, {status} FROM rallies r"
+            f"INSERT INTO rallies_migrated ({target}) "
+            f"SELECT {old}, {scoreboard}, {status} FROM rallies r"
         )
         db.execute("DROP TABLE rallies")
         db.execute("ALTER TABLE rallies_migrated RENAME TO rallies")

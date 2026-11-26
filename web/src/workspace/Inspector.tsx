@@ -8,6 +8,7 @@ import {
   cycleSettled,
   ERROR_LABELS,
   RALLY_FIELDS,
+  REFEREE_CALL_LABELS,
   type RallyDetails,
   type RallyField,
   type Selection,
@@ -33,11 +34,13 @@ import {
   teamStatuses,
 } from "../lib/derived";
 import { formatTimecode } from "../lib/frames";
+import { manualWinner } from "../lib/sideout";
 import {
   type Fact,
   formatScore,
   observed,
   parseScore,
+  playerName,
   type Roster,
   teamKey,
   teamPlayers,
@@ -56,8 +59,6 @@ const WINNER_SOURCE_LABELS: Record<WinnerSource, string> = {
   next_serve: "next Serve",
   play: "seen in play",
 };
-
-const REFEREE_LABELS = { point: "Point", second_server: "Second server", side_out: "Side out" };
 
 const CALL_PRESETS = ["Out", "In", "Kitchen fault", "Fault on serve"];
 
@@ -233,10 +234,6 @@ export function InspectorPanel({
       </div>
     </Panel>
   );
-}
-
-function playerName(roster: Roster, id: string | null): string {
-  return roster.players.find((p) => p.id === id)?.name ?? "Unknown";
 }
 
 function playerLabel(roster: Roster, id: string): ReactNode {
@@ -645,7 +642,7 @@ function RallyTab({
           />
         }
       >
-        <FactValue fact={rally.referee_call} format={(v) => REFEREE_LABELS[v]} />
+        <FactValue fact={rally.referee_call} format={(v) => REFEREE_CALL_LABELS[v]} />
       </Row>
       <Row label="Challenge" {...row("challenge")} keys={<Keys keys={["⇧C"]} />}>
         {rally.challenge ? (
@@ -766,7 +763,7 @@ function DetailsForm({
   const [server, setServer] = useState(rally.server_id.value ?? "");
   const [returner, setReturner] = useState(rally.returner_id.value ?? "");
   const [scoreboard, setScoreboard] = useState(rally.scoreboard_winner_id.value ?? "");
-  const manualNow = rally.winner_source === "play" ? (rally.winner_id.value ?? "") : "";
+  const manualNow = manualWinner(rally) ?? "";
   const [manual, setManual] = useState(manualNow);
   const parsed = score.trim() === "" ? null : parseScore(score);
   const invalid = score.trim() !== "" && parsed === null;

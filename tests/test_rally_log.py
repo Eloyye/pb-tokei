@@ -887,3 +887,15 @@ def test_opening_an_older_database_migrates_rally_status_and_scoreboard(tmp_path
     # Opening again leaves the migrated table alone.
     with RallyLog.open(path) as log:
         assert len(log.get_games(match.id)[0].rallies) == 4
+
+    # The migrated table has exactly the columns, in the order, of a new Rally Log's.
+    def rally_columns(db_path: Path) -> list[tuple[str, str]]:
+        with duckdb.connect(str(db_path)) as conn:
+            return conn.execute(
+                "SELECT column_name, data_type FROM duckdb_columns() "
+                "WHERE table_name = 'rallies' ORDER BY column_index"
+            ).fetchall()
+
+    fresh = tmp_path / "fresh.duckdb"
+    RallyLog.open(fresh).close()
+    assert rally_columns(path) == rally_columns(fresh)

@@ -353,10 +353,20 @@ class Game:
     rallies: tuple[Rally, ...] = ()
 
 
+MAX_STORED_INT = 2**31 - 1
+"""The largest number the Rally Log's INTEGER columns hold (frames, numbers, scores)."""
+
+
 def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
     """Raises ValueError unless the Games fit the Match: unique positive Game and Rally numbers,
-    frame bounds in order, and every Team and Player one of the Match's."""
+    frame bounds in order, every number small enough to store, and every Team and Player one of
+    the Match's."""
     teams = {roster.team_a_id, roster.team_b_id}
+
+    def storable(value: int | None, what: str) -> None:
+        if value is not None and value > MAX_STORED_INT:
+            raise ValueError(f"{what} is too large to store: {value}")
+
     players = roster.player_ids
     game_numbers: set[int] = set()
 
@@ -371,6 +381,7 @@ def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
     for game in games:
         if game.number < 1:
             raise ValueError(f"Game number must be 1 or more: {game.number}")
+        storable(game.number, "Game number")
         if game.number in game_numbers:
             raise ValueError(f"two Games numbered {game.number}")
         game_numbers.add(game.number)
@@ -379,6 +390,13 @@ def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
             where = f"Game {game.number} Rally {rally.number}"
             if rally.number < 1:
                 raise ValueError(f"Rally number must be 1 or more: {where}")
+            storable(rally.number, f"{where} number")
+            storable(rally.start_frame, f"{where} start frame")
+            storable(rally.end_frame, f"{where} end frame")
+            score = rally.score.value
+            if score is not None:
+                storable(score.serving, f"{where} serving score")
+                storable(score.receiving, f"{where} receiving score")
             if rally.number in rally_numbers:
                 raise ValueError(f"two Rallies numbered {rally.number} in Game {game.number}")
             rally_numbers.add(rally.number)
@@ -403,6 +421,8 @@ def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
                 frame = shot.contact_frame.value
                 if frame is not None and frame < 0:
                     raise ValueError(f"{where} has a Shot before frame 0: {frame}")
+                storable(frame, f"{where} Shot contact frame")
+                storable(shot.shot_number.value, f"{where} Shot Number")
                 player(shot.hitter_id, f"{where} hitter")
                 if shot.error is not None:
                     player(shot.error.player_id, f"{where} Error")

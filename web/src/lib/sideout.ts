@@ -226,8 +226,19 @@ function nextServeWinner(roster: Roster, rally: Rally, next: Rally | undefined):
 }
 
 /**
+ * A winner the operator entered by hand as seen in play (Rally details): Observed, from `play`.
+ * A winner worked out from an Error is stored Inferred instead, so it is recomputed every time and
+ * goes away with its Error.
+ */
+export function manualWinner(rally: Rally): string | null {
+  return rally.winner_source === "play" && rally.winner_id.certainty === "observed"
+    ? rally.winner_id.value
+    : null;
+}
+
+/**
  * Who won a Rally and how we know, highest priority first: Challenge, Referee Call, scoreboard,
- * next Serve, then play (an Error, or a winner the operator set by hand).
+ * next Serve, then play (a winner the operator set by hand, else one inferred from an Error).
  */
 export function resolveWinner(
   roster: Roster,
@@ -235,12 +246,11 @@ export function resolveWinner(
   next: Rally | undefined,
 ): { winner_id: Fact<string>; winner_source: WinnerSource | null } {
   const fromError = playWinnerFromError(roster, rally);
-  const manual =
-    rally.winner_source === "play" && known(rally.winner_id) ? rally.winner_id.value : null;
+  const manual = manualWinner(rally);
   const fromCall = refereeCallWinner(roster, rally);
   const ruling = rally.challenge?.ruling.value ?? null;
   if (ruling !== null) {
-    const base = fromCall ?? fromError ?? manual;
+    const base = fromCall ?? manual ?? fromError;
     if (base !== null) {
       return {
         winner_id: observed(ruling === "upheld" ? base : otherTeam(roster, base)),
@@ -254,8 +264,9 @@ export function resolveWinner(
   }
   const fromNext = nextServeWinner(roster, rally, next);
   if (fromNext !== null) return { winner_id: inferred(fromNext), winner_source: "next_serve" };
-  if (fromError !== null) return { winner_id: observed(fromError), winner_source: "play" };
+  // Within play, a winner the operator entered outranks one worked out from an Error.
   if (manual !== null) return { winner_id: observed(manual), winner_source: "play" };
+  if (fromError !== null) return { winner_id: inferred(fromError), winner_source: "play" };
   return { winner_id: UNKNOWN, winner_source: null };
 }
 

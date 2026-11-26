@@ -167,11 +167,17 @@ describe("winner resolution", () => {
       error: { kind: observed("out" as const), player_id: observed("a2") },
     };
     const errored = rally(1, { entries: [shot] });
-    expect(resolveWinner(ROSTER, errored, undefined)).toEqual({
-      winner_id: observed("B"),
-      winner_source: "play",
-    });
+    const fromError = resolveWinner(ROSTER, errored, undefined);
+    // Inferred from the Error, so it is recomputed rather than kept as if typed by hand.
+    expect(fromError).toEqual({ winner_id: inferred("B"), winner_source: "play" });
     const manual = rally(1, { winner_id: observed("A"), winner_source: "play" });
     expect(resolveWinner(ROSTER, manual, undefined).winner_id).toEqual(observed("A"));
+
+    // The Error's Shot is gone: its winner goes too.
+    const withoutError = { ...errored, ...fromError, entries: [] };
+    expect(resolveWinner(ROSTER, withoutError, undefined)).toEqual({
+      winner_id: UNKNOWN,
+      winner_source: null,
+    });
   });
 });

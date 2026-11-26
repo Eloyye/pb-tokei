@@ -145,7 +145,7 @@ Each row has three parts: label, value, then key hints on the right. A key hint 
 - Score called, Serving Team, Server, Returner (pre-filled from side-out logic; `Shift+S` opens an inline form for them, the scoreboard reading and a winner seen in play)
 - Referee Call (`Shift+P` / `Shift+2` / `Shift+X`; the same key again clears it)
 - Challenge (`Shift+C` opens an inline form: challenger, original call from presets or free text, ruling, and Clear Challenge)
-- Winner, with its source: Challenge, Referee Call, scoreboard, next Serve, or seen in play
+- Winner, with its source: Challenge, Referee Call, scoreboard, next Serve, or seen in play. Seen in play is either a winner entered by hand in the Rally details form (Observed) or one Inferred from the last Shot's Error, which is recomputed and goes away with the Error
 - Scoreboard reading (stored apart from the winner, ADR 0013)
 - Status
 - Shot issues in this Rally (#13)
