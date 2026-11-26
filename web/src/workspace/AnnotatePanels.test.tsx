@@ -329,4 +329,18 @@ describe("CourtPanel with a Shot selected", () => {
     fireEvent.pointerDown(svg, { pointerId: 1, clientX: 140, clientY: 250 });
     expect(onSetLanding).toHaveBeenCalledWith({ x: 0, y: -0 });
   });
+
+  it("pins a Player standing beyond the drawn area to its edge, keeping the real position", () => {
+    const { games } = annotated();
+    const serve = games[0]!.rallies[0]!.entries[0];
+    if (serve?.type !== "shot") throw new Error("expected a Shot");
+    const behind = { ...serve, positions: { ...serve.positions, a1: at(8, -28) } };
+    const { container } = render(
+      <CourtPanel match={MATCH} focused={false} roster={ROSTER} shot={behind} />,
+    );
+    const dot = container.querySelector<SVGGElement>('[data-player-id="a1"]')!;
+    // 28 ft back is drawn at the bottom edge (23.8 ft, a dot's radius in), not off the diagram.
+    expect(dot.getAttribute("transform")).toBe("translate(80, 238)");
+    expect(dot.querySelector("title")!.textContent).toContain("(8.0, -28.0 ft");
+  });
 });

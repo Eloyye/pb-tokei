@@ -1192,6 +1192,8 @@ fieldset.transport-group {
 .court-player circle {
   stroke: #121212;
   stroke-width: 1.8;
+  /* Hollow (Unknown) dots too: the whole dot takes the pointer, not just its outline. */
+  pointer-events: all;
 }
 
 .court-player text {

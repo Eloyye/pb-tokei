@@ -59,6 +59,20 @@ const VIEW_Y = -250;
 const VIEW_W = 280;
 const VIEW_H = 500;
 
+/**
+ * Keeps a point inside the drawn area (a dot's radius in from the edge). A Player standing
+ * further back than the diagram shows, such as a returner well behind the baseline, is drawn at
+ * its edge rather than off it; their title still gives the real position.
+ */
+function inView(point: Point): Point {
+  const maxX = (VIEW_X + VIEW_W) / 10 - 1.2;
+  const maxY = (VIEW_Y + VIEW_H) / 10 - 1.2;
+  return {
+    x: Math.max(-maxX, Math.min(maxX, point.x)),
+    y: Math.max(-maxY, Math.min(maxY, point.y)),
+  };
+}
+
 export function CourtDiagram({
   nearTeam,
   farTeam,
@@ -209,8 +223,8 @@ export function CourtDiagram({
         <circle
           key={`ghost-${g.id}`}
           className="ghost"
-          cx={X(g.x)}
-          cy={Y(g.y)}
+          cx={X(inView(g).x)}
+          cy={Y(inView(g).y)}
           r={9}
           style={{ fill: `var(--team-${g.team})` }}
         />
@@ -236,8 +250,9 @@ export function CourtDiagram({
         const unknown = !activeDrag && (p.certainty === "unknown" || p.x === null || p.y === null);
         const inferred = !activeDrag && p.certainty === "inferred";
         const slot = UNKNOWN_SLOTS[idx % UNKNOWN_SLOTS.length]!;
-        const cx = activeDrag ? activeDrag.at.x : unknown ? slot.x : p.x!;
-        const cy = activeDrag ? activeDrag.at.y : unknown ? slot.y : p.y!;
+        const shown = activeDrag ? activeDrag.at : unknown ? slot : inView({ x: p.x!, y: p.y! });
+        const cx = shown.x;
+        const cy = shown.y;
         const isSelected = Boolean(p.selected || p.id === selectedPlayerId);
         const classes = [
           "court-player",
@@ -269,7 +284,7 @@ export function CourtDiagram({
               {p.name}
               {unknown
                 ? " (Unknown — drag onto court to place)"
-                : ` (${cx.toFixed(1)}, ${cy.toFixed(1)} ft, ${p.certainty})`}
+                : ` (${(activeDrag ? cx : p.x!).toFixed(1)}, ${(activeDrag ? cy : p.y!).toFixed(1)} ft, ${p.certainty})`}
             </title>
             <circle r={11} />
             <text y={3.5} textAnchor="middle">
