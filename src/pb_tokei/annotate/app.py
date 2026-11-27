@@ -52,6 +52,8 @@ from pb_tokei.annotate.players import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.events.report import MatchReport, build_report
+from pb_tokei.events.stats import compute_stats
 from pb_tokei.footage import (
     CommandRunner,
     FootageDownloadError,
@@ -67,6 +69,7 @@ from pb_tokei.rally_log import (
     Calibration,
     CameraView,
     Landmark,
+    Match,
     MatchId,
     MatchNotFound,
     MatchRoster,
@@ -838,6 +841,25 @@ def create_app(
             source_url=None if summary.source_video is None else summary.source_video.url,
             original_present=video.original_present,
         )
+
+    @app.get(
+        "/api/matches/{match_id}/report",
+        operation_id="getMatchReport",
+        response_model_exclude_unset=True,
+    )
+    def get_match_report(match_id: UUID, response: Response, rally_log: OpenLog) -> MatchReport:
+        mid = MatchId(match_id)
+
+        def load(log: RallyLog) -> tuple[Match, MatchRoster, str]:
+            with log.transaction():
+                roster = log.get_match_roster(mid)
+                match = log.load_match(mid)
+                tournament = log.get_tournament(match.tournament_id).name
+            return match, roster, tournament
+
+        match, roster, tournament = rally_log.run(load)
+        response.headers["Cache-Control"] = "no-store"
+        return build_report(match, roster, tournament, compute_stats(((match, roster),)))
 
     @app.put(
         "/api/matches/{match_id}/operator-sessions/{session_id}",

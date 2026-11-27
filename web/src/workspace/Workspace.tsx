@@ -134,7 +134,7 @@ import {
 } from "../lib/segments";
 import { fitRange, type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
 import { ZOOM_STEP } from "../lib/wheel";
-import type { Workspace as WorkspaceName } from "../lib/workspaces";
+import type { OperatorWorkspace as WorkspaceName } from "../lib/workspaces";
 import { usePlayer } from "../player/usePlayer";
 import { Monitor } from "./Monitor";
 import type { PanelId } from "./Panel";

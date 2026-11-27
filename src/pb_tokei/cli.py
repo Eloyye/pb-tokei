@@ -154,6 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser", action="store_true", help="Don't open the app in a browser."
     )
 
+    demo = subparsers.add_parser("demo-match", help="Write a synthetic Match for the report.")
+    demo.add_argument(
+        "--db",
+        type=Path,
+        default=Path("demo-match.duckdb"),
+        help="Path to the demo Rally Log (default: ./demo-match.duckdb).",
+    )
+
     track = subparsers.add_parser(
         "track",
         help="Track all four Players across calibrated Play Segments and cache results.",
@@ -215,6 +223,8 @@ def main(
         return args.handler(args)
     if args.command == "annotate":
         return _run_annotate(args)
+    if args.command == "demo-match":
+        return _run_demo_match(args)
     if args.command == "track":
         return _run_track(args, parser=parser, backend=player_backend)
     if args.command == "dev":
@@ -519,6 +529,22 @@ def _match_line(summary: MatchSummary) -> str:
         )
     )
     return "  ".join(parts)
+
+
+def _run_demo_match(args: argparse.Namespace) -> int:
+    from pb_tokei.demo_match import write_demo_match
+
+    db_path = _resolve_cli_db(args.db, allow_create=True)
+    if db_path is None:
+        return 1
+    try:
+        with RallyLog.open(db_path) as log:
+            match_id = write_demo_match(log)
+    except (ValueError, duckdb.Error, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(match_id)
+    return 0
 
 
 def _run_annotate(args: argparse.Namespace) -> int:

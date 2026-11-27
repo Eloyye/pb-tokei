@@ -352,6 +352,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/report": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Match Report */
+    get: operations["getMatchReport"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/team-ends": {
     parameters: {
       query?: never;
@@ -1053,6 +1070,12 @@ export interface components {
        */
       team_id: string;
     };
+    /** MatchReport */
+    MatchReport: {
+      header: components["schemas"]["ReportHeader"];
+      /** Stats */
+      stats: components["schemas"]["ReportStat"][];
+    };
     /** MatchTeams */
     MatchTeams: {
       /** Team A */
@@ -1286,6 +1309,172 @@ export interface components {
      * @enum {string}
      */
     RefereeCall: "point" | "second_server" | "side_out";
+    ReportBreakdowns: {
+      [key: string]: {
+        [key: string]: components["schemas"]["ReportValues"];
+      };
+    };
+    /** ReportCategory */
+    ReportCategory: {
+      /** Count */
+      count: number;
+      /** Estimate */
+      estimate?: number | null;
+      /** High */
+      high?: number | null;
+      /** Id */
+      id: string;
+      /** Label */
+      label: string;
+      /** Low */
+      low?: number | null;
+    };
+    /** ReportCount */
+    ReportCount: {
+      /** Count */
+      count: number;
+      /** Left Out */
+      left_out: number;
+    };
+    /**
+     * ReportDimension
+     * @enum {string}
+     */
+    ReportDimension: "shot_type" | "rally_role" | "end_shot_number" | "shot_number";
+    /** ReportGame */
+    ReportGame: {
+      /** Number */
+      number: number;
+      /** Score */
+      score: [number, number] | null;
+    };
+    /**
+     * ReportGroup
+     * @enum {string}
+     */
+    ReportGroup:
+      | "Serve & Return"
+      | "Third Shot / Opening"
+      | "Arrival"
+      | "Dinks"
+      | "Speedups"
+      | "Shares & Initiative"
+      | "Other";
+    /** ReportHeader */
+    ReportHeader: {
+      /** Games */
+      games: components["schemas"]["ReportGame"][];
+      rallies: components["schemas"]["ReportRallies"];
+      /** Teams */
+      teams: [components["schemas"]["ReportTeam"], components["schemas"]["ReportTeam"]];
+      /** Tournament */
+      tournament: string;
+      /** Uncredited */
+      uncredited: number;
+    };
+    /**
+     * ReportKind
+     * @enum {string}
+     */
+    ReportKind: "rate" | "per100" | "count" | "mix";
+    /** ReportMix */
+    ReportMix: {
+      /** Categories */
+      categories: components["schemas"]["ReportCategory"][];
+      /** Left Out */
+      left_out: number;
+      /** Of */
+      of: number;
+    };
+    /** ReportPlayer */
+    ReportPlayer: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+    };
+    /** ReportRallies */
+    ReportRallies: {
+      /** Counted */
+      counted: number;
+      /** Done */
+      done: number;
+      /** Empty */
+      empty: number;
+      /** In Progress */
+      in_progress: number;
+    };
+    /** ReportRate */
+    ReportRate: {
+      /** Count */
+      count: number;
+      /** Estimate */
+      estimate: number | null;
+      /** High */
+      high: number | null;
+      /** Left Out */
+      left_out: number;
+      /** Low */
+      low: number | null;
+      /** Of */
+      of: number;
+    };
+    /**
+     * ReportSplit
+     * @enum {string}
+     */
+    ReportSplit: "rally_phase" | "shot_number" | "opening" | "court_half";
+    /** ReportStat */
+    ReportStat: {
+      applies_to: components["schemas"]["ReportSubject"];
+      breakdowns: components["schemas"]["ReportBreakdowns"];
+      group: components["schemas"]["ReportGroup"];
+      /** Id */
+      id: string;
+      kind: components["schemas"]["ReportKind"];
+      /** Label */
+      label: string;
+      /** Rows */
+      rows: components["schemas"]["ReportSubRow"][];
+      /** Splits By */
+      splits_by: components["schemas"]["ReportSplit"][];
+      sub_rows: components["schemas"]["ReportDimension"] | null;
+      values: components["schemas"]["ReportValues"];
+    };
+    /** ReportSubRow */
+    ReportSubRow: {
+      breakdowns: components["schemas"]["ReportBreakdowns"];
+      /** Id */
+      id: string;
+      /** Label */
+      label: string;
+      values: components["schemas"]["ReportValues"];
+    };
+    /**
+     * ReportSubject
+     * @enum {string}
+     */
+    ReportSubject: "team" | "player" | "both";
+    /** ReportTeam */
+    ReportTeam: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Players */
+      players: [components["schemas"]["ReportPlayer"], components["schemas"]["ReportPlayer"]];
+    };
+    ReportValue:
+      | components["schemas"]["ReportRate"]
+      | components["schemas"]["ReportCount"]
+      | components["schemas"]["ReportMix"];
+    ReportValues: {
+      [key: string]: components["schemas"]["ReportValue"];
+    };
     /** RosterOut */
     RosterOut: {
       /** Franchise Matches */
@@ -2172,6 +2361,37 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["PlayerTrackingOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  getMatchReport: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MatchReport"];
         };
       };
       /** @description Validation Error */

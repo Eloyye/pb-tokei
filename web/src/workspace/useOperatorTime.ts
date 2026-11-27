@@ -22,14 +22,14 @@ import {
 } from "../lib/operatorTime";
 import { backoffMs } from "../lib/saveQueue";
 import { registerOperatorTimeFlush } from "../lib/unsavedChanges";
-import type { Workspace } from "../lib/workspaces";
+import type { OperatorWorkspace } from "../lib/workspaces";
 
 const INPUT_EVENTS = ["keydown", "pointerdown", "wheel", "input", "change"];
 const MATCH_LIST = ["matches"] as const;
 
 interface Session {
   id: string;
-  workspace: Workspace;
+  workspace: OperatorWorkspace;
   clock: OperatorClock;
   flushedMs: number;
 }
@@ -191,7 +191,7 @@ function trackOperatorTime(
     return flushCurrent();
   }
 
-  function startSession(workspace: Workspace): Session {
+  function startSession(workspace: OperatorWorkspace): Session {
     if (current) {
       void pause();
       if (current.clock.committedMs === current.flushedMs) sessions.delete(current);
@@ -237,7 +237,7 @@ function trackOperatorTime(
   const unregister = registerOperatorTimeFlush(flushNow);
 
   return {
-    setWorkspace(workspace: Workspace) {
+    setWorkspace(workspace: OperatorWorkspace) {
       if (refused || current?.workspace === workspace) return;
       startSession(workspace);
       publish();
@@ -269,7 +269,7 @@ function trackOperatorTime(
 
 export function useOperatorTime(
   match: Pick<MatchDetail, "id" | "video_status" | "operator_time">,
-  workspace: Workspace,
+  workspace: OperatorWorkspace,
 ): OperatorTimeReading {
   const queryClient = useQueryClient();
   const { id, video_status, operator_time } = match;

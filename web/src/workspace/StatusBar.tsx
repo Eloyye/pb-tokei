@@ -9,7 +9,7 @@ import {
 } from "../lib/operatorTime";
 import type { IssueCounts } from "../lib/ruleChecks";
 import type { SaveStatus } from "../lib/saveQueue";
-import type { Workspace } from "../lib/workspaces";
+import type { OperatorWorkspace } from "../lib/workspaces";
 import { useOpenHelp } from "../shell/help";
 import { useOperatorTime } from "./useOperatorTime";
 
@@ -43,7 +43,7 @@ export function StatusBar({
     | "broadcast_seconds"
     | "assisted_ratio_budget"
   >;
-  workspace: Workspace;
+  workspace: OperatorWorkspace;
   issueCounts?: IssueCounts;
   onNextIssue?: () => void;
   calibrationFitRetry?: { message: string; onRetry: () => void };

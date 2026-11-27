@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 
+from pb_tokei.demo_match import demo_games
 from pb_tokei.events import (
     CourtHalf,
     ExchangeOutcome,
@@ -685,36 +686,7 @@ def test_aggregation_pools_matching_teams_and_keeps_a_players_partners_distinct(
 
 
 def test_full_match_computes_every_stat_and_shot_type() -> None:
-    drive_and_speedup = rally(
-        *START,
-        hit(A2, HARD, BACK),
-        hit(B1),
-        hit(A1, positions=BACK),
-        hit(B2),
-        hit(A2, HARD),
-        hit(B1, HARD),
-        hit(A1, OVERHEAD, error=fault(ErrorKind.BODY_HIT, B2)),
-    )
-    lobs_and_reset = rally(
-        *START,
-        hit(A2, LOB, BACK),
-        hit(B1, OVERHEAD),
-        hit(A1, positions=BACK),
-        hit(B2, LOB),
-        hit(A2),
-        winner=TEAM_A,
-    )
-    popups = rally(*START, hit(A2), hit(B1), hit(A1, OVERHEAD), winner=TEAM_A)
-    challenge = rally(
-        replace(SERVE, error=fault(ErrorKind.OUT, A1)),
-        winner=TEAM_A,
-        challenge=Challenge(observed(A1.id), ruling=observed(Ruling.OVERTURNED)),
-    )
-    never_arrived = rally(*START, hit(A2, positions=BACK), hit(B1, positions=BACK), winner=TEAM_B)
-    kitchen = rally(*START, hit(A2, error=fault(ErrorKind.KITCHEN_FAULT, A2)))
-    fixture = match(
-        (drive_and_speedup, challenge), (lobs_and_reset, never_arrived), (popups, kitchen)
-    )
+    fixture = replace(match(), games=demo_games(ROSTER))
     rows = compute_stats(((fixture, ROSTER),))
     assert {r.stat for r in rows} == set(Stat)
     assert {

@@ -18,8 +18,9 @@ Works today:
 - **Matches**: set up a Match, with its Tournament, Teams and MLP Franchises, in the annotation app or from a Roster File.
 - **Annotation app**: list Matches and open each in a Premiere-style workspace with frame-by-frame playback, a zoomable Timeline and keyboard controls.
 - **Calibrate**: mark Play Segments and their Camera View, fit the court from up to 12 Landmarks, and follow Camera Motion through each Play Segment.
+- **Report** shows Team and Player stats for a Match, with 90% Wilson intervals and Shot breakdowns.
 
-Rally and Shot entry, stats and dashboards are next. Progress by milestone:
+Progress by milestone:
 
 | Milestone | What it delivers | Status |
 |---|---|---|
@@ -107,6 +108,17 @@ Click the Rally Log's name in the header to switch Rally Log without restarting:
 The server has one Rally Log open at a time ([ADR 0008](docs/adr/0008-one-rally-log-per-annotation-server.md)). Other tabs still on the old Rally Log can't save to it any more. Their header shows **Rally Log switched elsewhere: reload**.
 
 Press `?` in the app for every key that works. The full layout and keymap, including planned keys, are in [docs/annotation-ui.md](docs/annotation-ui.md).
+
+### Match report
+
+Open **Report** from Home or a Match to see Team and Player stats for the whole Match. **Break down by** selects a Shot breakdown and keeps it in the URL. The report reflects the saved Rally Log each time it opens.
+
+To try it with a synthetic Match, run these commands and select **Report** on Home.
+
+```bash
+uv run pb-tokei demo-match
+uv run pb-tokei annotate --db demo-match.duckdb
+```
 
 ## Project layout
 

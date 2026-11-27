@@ -19,7 +19,7 @@ import type {
 import { unproject } from "../lib/calibrations";
 import { inferred, newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { ROSTER } from "../lib/testRoster";
-import type { Workspace as WorkspaceName } from "../lib/workspaces";
+import type { OperatorWorkspace as WorkspaceName } from "../lib/workspaces";
 import { ShortcutSheet } from "../shell/ShortcutSheet";
 import { Workspace } from "./Workspace";
 

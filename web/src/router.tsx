@@ -9,6 +9,7 @@ import { isWorkspace } from "./lib/workspaces";
 import { MatchList } from "./routes/MatchList";
 import { MatchPage } from "./routes/MatchPage";
 import { NewMatchPage } from "./routes/NewMatchPage";
+import { asReportSplit, type ReportSplit } from "./routes/reportOptions";
 import { AppShell } from "./shell/AppShell";
 
 const rootRoute = createRootRoute({
@@ -44,6 +45,10 @@ const matchRoute = createRoute({
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/matches/$matchId/$workspace",
+  validateSearch: (search): { by?: ReportSplit } => {
+    const by = asReportSplit(search.by);
+    return by ? { by } : {};
+  },
   beforeLoad: ({ params }) => {
     if (!isWorkspace(params.workspace)) throw notFound();
   },
