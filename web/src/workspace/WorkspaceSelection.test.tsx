@@ -991,12 +991,12 @@ function openContextMenu(target: Element, name: string) {
   return within(screen.getByRole("menu", { name }));
 }
 
-function expectMenuItems(menu: ReturnType<typeof within>, items: [string, string?][]) {
+function expectMenuItems(menu: ReturnType<typeof within>, items: [string, string?, string?][]) {
   expect(menu.getAllByRole("menuitem")).toHaveLength(items.length);
-  for (const [name, shortcut] of items) {
+  for (const [name, shortcut, shortcutLabel = shortcut] of items) {
     const option = menu.getByRole("menuitem", { name });
     expect(option.getAttribute("aria-keyshortcuts")).toBe(shortcut ?? null);
-    expect(option.querySelector("kbd")?.textContent).toBe(shortcut?.replace("Meta+", "⌘"));
+    expect(option.querySelector("kbd")?.textContent).toBe(shortcutLabel);
   }
 }
 
@@ -1120,7 +1120,7 @@ describe("Workspace context menus", () => {
         ["Delete Play Segment", "Backspace"],
         ["Play Segment start at playhead", "Shift+I"],
         ["Play Segment end at playhead", "Shift+O"],
-        ["Split Play Segment at playhead", "Meta+K"],
+        ["Split Play Segment at playhead", "Meta+K Control+K", "⌘K / Ctrl+K"],
       ]);
       expect(segment.getAttribute("aria-pressed")).toBe("true");
       for (const option of segmentMenu.getAllByRole("menuitem")) {

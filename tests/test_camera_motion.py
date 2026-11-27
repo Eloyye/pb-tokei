@@ -696,8 +696,14 @@ def test_camera_motion_cache_hits_and_invalidates_on_edits_or_version_bump(
     span_shorter = calibration_spans([PlaySegment(0, 10, CameraView.SIDELINE)], [cal])[0]
 
     base = assess(cal).homography
-    assert base is not None
+    moved_base = assess(cal_moved).homography
+    assert base is not None and moved_base is not None
+    assert not np.allclose(base.court_to_image, moved_base.court_to_image)
     k_base = span_cache_key(video, span, base, method_version=METHOD_VERSION)
+    assert span_cache_key(video, span, moved_base, method_version=METHOD_VERSION) == k_base
+    assert span_cache_key(video, span_reframed, base) != span_cache_key(
+        video, span_reframed, moved_base
+    )
     assert span_cache_key(video, span_moved, base, method_version=METHOD_VERSION) != k_base
     assert span_cache_key(video, span_reframed, base, method_version=METHOD_VERSION) != k_base
     assert span_cache_key(video, span_shorter, base, method_version=METHOD_VERSION) != k_base

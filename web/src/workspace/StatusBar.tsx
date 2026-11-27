@@ -30,6 +30,7 @@ export function StatusBar({
   workspace,
   issueCounts,
   onNextIssue,
+  calibrationFitRetry,
 }: {
   message: string;
   saveStatus: SaveStatus;
@@ -45,6 +46,7 @@ export function StatusBar({
   workspace: Workspace;
   issueCounts?: IssueCounts;
   onNextIssue?: () => void;
+  calibrationFitRetry?: { message: string; onRetry: () => void };
 }) {
   const openHelp = useOpenHelp();
   const failed = saveStatus.state === "retrying" || saveStatus.state === "refused";
@@ -71,6 +73,17 @@ export function StatusBar({
         {failed && "error" in saveStatus && `: ${saveStatus.error}`}
       </output>
       <span className="message">{message}</span>
+      {calibrationFitRetry && (
+        <span>
+          <button
+            type="button"
+            title={calibrationFitRetry.message}
+            onClick={calibrationFitRetry.onRetry}
+          >
+            Retry Calibration fits
+          </button>
+        </span>
+      )}
       <span
         className={`mono active-time${idle ? " idle" : ""}`}
         title={`${operatorTimeTitle(time)}${idle ? " (paused — idle)" : ""}`}

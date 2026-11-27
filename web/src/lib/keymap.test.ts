@@ -151,10 +151,11 @@ describe("isPanelSwapKey", () => {
 });
 
 describe("segmentKeyAction", () => {
-  it("splits a Play Segment only with Command+K", () => {
+  it("splits a Play Segment with Command+K or Ctrl+K", () => {
     expect(segmentKeyAction(press("k", { metaKey: true }))).toEqual({ type: "split" });
+    expect(segmentKeyAction(press("k", { ctrlKey: true }))).toEqual({ type: "split" });
     expect(segmentKeyAction(press("k"))).toBeNull();
-    expect(segmentKeyAction(press("k", { ctrlKey: true }))).toBeNull();
+    expect(segmentKeyAction(press("k", { ctrlKey: true, metaKey: true }))).toBeNull();
     expect(segmentKeyAction(press("K", { metaKey: true, shiftKey: true }))).toBeNull();
   });
 

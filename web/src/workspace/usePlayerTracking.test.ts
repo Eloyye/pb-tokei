@@ -160,8 +160,6 @@ describe("usePlayerTracking", () => {
     expect(result.current.cachedAt(10)).toBeUndefined();
     expect(await result.current.trackingAt(10)).toBeUndefined();
     expect(getPlayerTrackingFrames).toHaveBeenCalledTimes(2);
-    stale.resolve(makeFramesWindow(350, 350));
-    expect(await requested).toBeUndefined();
 
     const pending: PlayerTrackingOut = {
       ...IDLE_STATUS,
@@ -173,6 +171,12 @@ describe("usePlayerTracking", () => {
     await waitFor(() => expect(result.current.status).toEqual(pending));
     expect(result.current.cachedAt(10)).toBeNull();
     expect(trackPlayers).not.toHaveBeenCalled();
+
+    rerender({ segments: SEGMENTS, saveStatus: { state: "saving" } });
+    rerender({ segments: SEGMENTS, saveStatus: SAVED });
+    await waitFor(() => expect(result.current.status).toEqual(READY_STATUS));
+    stale.resolve(makeFramesWindow(350, 350));
+    expect(await requested).toBeUndefined();
   });
 
   it("loads status without auto-triggering tracking, then polls after explicit startTracking until ready", async () => {

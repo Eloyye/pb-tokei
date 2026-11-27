@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   type Calibration,
   type CameraMotionFramesOut,
@@ -58,7 +58,6 @@ export function useCameraMotion(
   const [windows, setWindows] = useState<Map<string, CameraMotionFramesOut>>(() => new Map());
   const [failedWindowKey, setFailedWindowKey] = useState<string | null>(null);
   const windowsRef = useRef<Map<string, CameraMotionFramesOut>>(new Map());
-  const inFlight = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
 
   const saved = saveStatus.state === "saved";
@@ -69,10 +68,12 @@ export function useCameraMotion(
         : null,
     [matchId, enabled, saved, segments, calibrations],
   );
-  const scopeRef = useRef<string | null>(scope);
-  useEffect(() => {
-    scopeRef.current = scope;
-  }, [scope]);
+  // An undo can restore the same cache key. Give each active set of inputs its own requests.
+  const pendingWindows = useMemo(() => (scope === null ? null : new Set<string>()), [scope]);
+  const pendingWindowsRef = useRef(pendingWindows);
+  useLayoutEffect(() => {
+    pendingWindowsRef.current = pendingWindows;
+  }, [pendingWindows]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -169,13 +170,15 @@ export function useCameraMotion(
       : null;
 
   useEffect(() => {
-    if (windowStart === null || windowEnd === null || !windowKey || !scope) return;
-    if (windowsRef.current.has(windowKey) || inFlight.current.has(windowKey)) return;
-    inFlight.current.add(windowKey);
+    if (windowStart === null || windowEnd === null || !windowKey || !scope || !pendingWindows) {
+      return;
+    }
+    if (windowsRef.current.has(windowKey) || pendingWindows.has(windowKey)) return;
+    pendingWindows.add(windowKey);
 
     getCameraMotionFrames(matchId, windowStart, windowEnd)
       .then((data) => {
-        if (!mountedRef.current || scopeRef.current !== scope) return;
+        if (!mountedRef.current || pendingWindowsRef.current !== pendingWindows) return;
         const prefix = `${scope}:`;
         setFailedWindowKey((prev) => (prev === windowKey ? null : prev));
         setWindows((prev) => {
@@ -190,21 +193,25 @@ export function useCameraMotion(
       })
       .catch(() => {
         // Leave uncached so a later seek or refresh can retry, without falling back to a static fit.
-        if (mountedRef.current && scopeRef.current === scope) setFailedWindowKey(windowKey);
+        if (mountedRef.current && pendingWindowsRef.current === pendingWindows) {
+          setFailedWindowKey(windowKey);
+        }
       })
       .finally(() => {
-        inFlight.current.delete(windowKey);
+        pendingWindows.delete(windowKey);
       });
-  }, [matchId, scope, windowStart, windowEnd, windowKey]);
+  }, [matchId, scope, windowStart, windowEnd, windowKey, pendingWindows]);
 
   const retrack = useCallback(() => {
-    if (scope === null) return;
+    if (scope === null || pendingWindowsRef.current !== pendingWindows) return;
     trackCameraMotion(matchId)
       .then((next) => {
-        if (mountedRef.current && scopeRef.current === scope) setMotionState({ scope, data: next });
+        if (mountedRef.current && pendingWindowsRef.current === pendingWindows) {
+          setMotionState({ scope, data: next });
+        }
       })
       .catch(() => {});
-  }, [matchId, scope]);
+  }, [matchId, scope, pendingWindows]);
 
   const loadedWindow = windowKey ? windows.get(windowKey) : undefined;
   const unmappedFromSummary = Boolean(motion && unmappedRangeAt(motion.unmapped_ranges, frame));

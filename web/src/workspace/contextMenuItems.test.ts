@@ -31,19 +31,21 @@ it.each(targets)("matches the displayed $kind shortcuts to the keymap", (target)
     for (const { command, shortcut } of items) {
       if (command.kind !== "annotate" && command.kind !== "segment") continue;
       expect(shortcut).toBeDefined();
-      const keys = shortcut!.split("+");
-      const key = keys.at(-1)!;
-      const code = /^[A-Z]$/.test(key) ? `Key${key}` : /^\d$/.test(key) ? `Digit${key}` : key;
-      const event = {
-        key,
-        code,
-        shiftKey: keys.includes("Shift"),
-        altKey: false,
-        ctrlKey: false,
-        metaKey: keys.includes("Meta"),
-      };
-      const parseKey = command.kind === "annotate" ? annotateKeyAction : segmentKeyAction;
-      expect(parseKey(event)).toEqual(command.action);
+      for (const alias of shortcut!.split(" ")) {
+        const keys = alias.split("+");
+        const key = keys.at(-1)!;
+        const code = /^[A-Z]$/.test(key) ? `Key${key}` : /^\d$/.test(key) ? `Digit${key}` : key;
+        const event = {
+          key,
+          code,
+          shiftKey: keys.includes("Shift"),
+          altKey: false,
+          ctrlKey: keys.includes("Control"),
+          metaKey: keys.includes("Meta"),
+        };
+        const parseKey = command.kind === "annotate" ? annotateKeyAction : segmentKeyAction;
+        expect(parseKey(event)).toEqual(command.action);
+      }
     }
   }
 });

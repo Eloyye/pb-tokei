@@ -22,6 +22,7 @@ export type MenuCommand =
 export interface MenuItem {
   label: string;
   command: MenuCommand;
+  /** Space-separated ARIA key shortcuts. */
   shortcut?: string;
   disabledReason?: string;
 }
@@ -140,7 +141,7 @@ export function contextMenuItems(
         ),
         segment(
           "Split Play Segment at playhead",
-          "Meta+K",
+          "Meta+K Control+K",
           { type: "split" },
           segmentSplitBlocker(target.segment, frame),
         ),

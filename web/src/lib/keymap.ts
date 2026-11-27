@@ -95,13 +95,18 @@ export type SegmentAction =
   | { type: "cancel" };
 
 /**
- * Calibrate's Play Segment keys: `Shift+I`/`Shift+O` set a segment's bounds, `⌘K` splits at the
- * playhead, `1`/`2` set its Camera View, `Backspace` removes it and `Esc` drops a pending segment.
+ * Calibrate's Play Segment keys. `Shift+I`/`Shift+O` set a segment's bounds, `⌘K` or `Ctrl+K`
+ * splits at the playhead, `1`/`2` set its Camera View, and `Backspace` removes it. `Esc` drops a
+ * pending segment.
  */
 export function segmentKeyAction(event: KeyInput): SegmentAction | null {
-  if (event.ctrlKey || event.altKey) return null;
+  if (event.altKey) return null;
   const key = event.key.toLowerCase();
-  if (event.metaKey) return !event.shiftKey && key === "k" ? { type: "split" } : null;
+  if (event.metaKey || event.ctrlKey) {
+    return !event.shiftKey && event.metaKey !== event.ctrlKey && key === "k"
+      ? { type: "split" }
+      : null;
+  }
   if (event.shiftKey) {
     if (key === "i") return { type: "markIn" };
     if (key === "o") return { type: "markOut" };

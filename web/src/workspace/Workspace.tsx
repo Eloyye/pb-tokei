@@ -1610,6 +1610,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       <StatusBar
         message={edgeDragHint || recordingState.message || defaultMessage}
         saveStatus={recordingState.saveStatus}
+        calibrationFitRetry={
+          recordingState.fitRefreshError === null
+            ? undefined
+            : { message: recordingState.fitRefreshError, onRetry: recording.retryCalibrationFits }
+        }
         match={match}
         workspace={workspace}
         issueCounts={showRuleChecks ? issueCounts : undefined}

@@ -62,7 +62,7 @@ The workspace tabs are how the operator switches jobs. All three tabs use the sa
 
 Each key's meaning is set by the workspace. The same key never does two things in one workspace.
 
-In Calibrate, **Split Play Segment at playhead** (`⌘K`) ends the first Play Segment on the previous frame and starts the second on the playhead frame. Both keep the original Camera View. The edit autosaves and `⌘Z` undoes it in one step. Calibrate automatically rebuilds missing Camera Motion. Select **Track Players** in the Players tab to track the halves listed as pending. A split works from the frame after the start through the last frame. If the command is unavailable, the status bar explains why.
+In Calibrate, **Split Play Segment at playhead** (`⌘K` or `Ctrl+K`) ends the first Play Segment on the previous frame and starts the second on the playhead frame. Both keep the original Camera View. The edit autosaves and `⌘Z` undoes it in one step. Calibrate automatically rebuilds missing Camera Motion. Select **Track Players** in the Players tab to track the halves listed as pending. If a Calibration fit fails to reload, select **Retry Calibration fits** in the status bar. A split works from the frame after the start through the last frame. If the command is unavailable, the status bar explains why.
 
 Annotate and Review share the saved panel swap. In the small slot, the Monitor shows timecode in its header and keeps its playback controls. In Annotate it also keeps **Players**, **Swap A**, **Swap B**, and **Swap ends**. Click it to bring the focus outline to the Monitor.
 
@@ -304,7 +304,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Fit the whole playing area | **Fit** or double-click the Court surround | ✓ |
 | Move a Rally's start or end (start only when open-ended) | Drag a clip edge on the Rallies track | ✓ in Annotate and Review |
 | Move a Play Segment's start or end | Drag a clip edge on the Segments track | ✓ in all workspaces |
-| Split Play Segment at playhead | `⌘K` or the Play Segment clip menu | ✓ in Calibrate, after the Play Segment's first frame |
+| Split Play Segment at playhead | `⌘K`, `Ctrl+K`, or the Play Segment clip menu | ✓ in Calibrate, after the Play Segment's first frame |
 | Move field cursor | `Tab` / `Shift+Tab` | ✓ (in Calibrate, `Tab` skips to the next Landmark) |
 | Rally start / end at playhead (starts a new open-ended Rally when none is selected or past its end) | `Shift+I` / `Shift+O` | ✓ (in Calibrate: Play Segment start / end) |
 | Rally details form (score, Serving Team, Server, Returner, scoreboard, winner in play) | `Shift+S` | ✓ |

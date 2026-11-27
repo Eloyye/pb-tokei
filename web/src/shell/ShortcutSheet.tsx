@@ -51,7 +51,7 @@ const GROUPS: [string, [string[], string][]][] = [
     [
       [["⇧I"], "Start a segment, or move the start of the segment under the playhead"],
       [["⇧O"], "End a pending segment, or move the end of the segment under the playhead"],
-      [["⌘K"], "Split Play Segment at playhead after its first frame"],
+      [["⌘K", "Ctrl+K"], "Split Play Segment at playhead after its first frame"],
       [["1", "2"], "Main View / Sideline View"],
       [["⌫"], "Remove the segment under the playhead"],
       [["Esc"], "Clear Play Segment selection and drop any pending segment"],
