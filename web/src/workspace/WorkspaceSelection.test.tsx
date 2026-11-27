@@ -564,6 +564,9 @@ describe("Workspace Shot and Rally deselection", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText("Cancel Player placement in Annotate")).toBeTruthy();
+    expect(
+      screen.getByText("Split Rally at playhead (when strictly inside the selected Rally)"),
+    ).toBeTruthy();
   });
 });
 
@@ -1003,6 +1006,7 @@ function expectMenuItems(menu: ReturnType<typeof within>, items: [string, string
 const rallyActions: [string, string?][] = [
   ["Rally start at playhead", "Shift+I"],
   ["Rally end at playhead", "Shift+O"],
+  ["Split Rally at playhead", "⌘K"],
   ["Insert Unseen Rally after", "Shift+U"],
   ["Delete Rally", "Shift+Backspace"],
   ["Mark Done", "Enter"],
@@ -1259,4 +1263,69 @@ describe("Workspace context menus", () => {
       ]),
     );
   });
+
+  it("splits a Rally via ⌘K and context menu, autosaves, shows reasons when unavailable, and undoes in one step", async () => {
+    const games = sampleGames();
+    const { container } = renderAnnotateWorkspace(games);
+    const rallyList = container.querySelector<HTMLElement>(".rally-list")!;
+    const rallyRow = await within(rallyList).findByRole("button", { name: /R1/ });
+
+    // With no Rally selected, ⌘K is a no-op with a status-bar reason.
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByText("Select a Rally first")).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    // Right-click Rally 1 while playhead is at frame 0 (before start 100): Split Rally is disabled with reason.
+    const menuAtZero = openContextMenu(rallyRow, "Rally actions");
+    const splitDisabled = menuAtZero.getByRole("menuitem", { name: "Split Rally at playhead" });
+    expect(splitDisabled.getAttribute("aria-disabled")).toBe("true");
+    expect(splitDisabled.title).toBe("Move the playhead past this Rally’s start (frame 100)");
+    fireEvent.keyDown(splitDisabled, { key: "Escape" });
+
+    // Select Rally 1 (seeks to Shot 1 at frame 120) and step +60 frames to Shot 2 at frame 180.
+    fireEvent.click(rallyRow);
+    fireEvent.click(rallyRow); // click once to deselect, then once to select & seek to 120
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+
+    // Split with ⌘K at frame 180: R1 is 100–179 (Shot 120), R2 is 180–300 (Shot 180).
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByText("Split Rally: G1 R1 (100–179) and G1 R2 (180–300)")).toBeTruthy();
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalledTimes(1));
+    const afterSplit = apiMocks.replaceGames.mock.lastCall![1];
+    expect(afterSplit[0]!.rallies.map((r) => [r.number, r.start_frame, r.end_frame])).toEqual([
+      [1, 100, 179],
+      [2, 180, 300],
+    ]);
+
+    // One undo step restores the original Rally exactly.
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, games));
+    expect(within(rallyList).getAllByRole("button", { name: /R\d/ })).toHaveLength(1);
+
+    // Split from the Rally clip context menu at frame 180 produces the same result and undoes cleanly.
+    const clip = await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    const menuInside = openContextMenu(clip, "Rally actions");
+    const splitEnabled = menuInside.getByRole("menuitem", { name: "Split Rally at playhead" });
+    expect(splitEnabled.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(splitEnabled);
+    expect(screen.getByText("Split Rally: G1 R1 (100–179) and G1 R2 (180–300)")).toBeTruthy();
+    await waitFor(() =>
+      expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, afterSplit),
+    );
+  });
+
+  it.each(["calibrate", "review"] as const)(
+    "ignores ⌘K outside Annotate (%s)",
+    async (workspace) => {
+      const { container } = renderWorkspace(workspace);
+      const rallyList = container.querySelector<HTMLElement>(".rally-list")!;
+      const rallyRow = await within(rallyList).findByRole("button", { name: /R1/ });
+      // Select R1 (seeks to frame 120, strictly inside 100–300) and press ⌘K.
+      fireEvent.click(rallyRow);
+      const event = new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true });
+      window.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+    },
+  );
 });

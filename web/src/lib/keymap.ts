@@ -167,6 +167,7 @@ export function calibrationKeyAction(event: KeyInput): CalibrationAction | null 
 export type AnnotateAction =
   | { type: "rallyStart" }
   | { type: "rallyEnd" }
+  | { type: "splitRally" }
   | { type: "refereeCall"; call: "point" | "second_server" | "side_out" }
   | { type: "rallyForm" }
   | { type: "challengeForm" }
@@ -206,7 +207,12 @@ const ERROR_KEYS = {
  * else, including playback keys.
  */
 export function annotateKeyAction(event: KeyInput): AnnotateAction | null {
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  if (event.altKey) return null;
+  if (event.metaKey || event.ctrlKey) {
+    if (event.shiftKey) return null;
+    if (event.key.toLowerCase() === "k") return { type: "splitRally" };
+    return null;
+  }
   const code = event.code ?? "";
   const key = event.key;
   if (event.shiftKey) {

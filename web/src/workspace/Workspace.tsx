@@ -67,6 +67,7 @@ import {
   setRallyEdge,
   setRefereeCall,
   setShotClass,
+  splitRally,
   startNextGame,
   swapHitterToPartner,
   swapShotTeammates,
@@ -740,6 +741,20 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       case "rallyEnd":
         focusField("rally", "frames");
         return edit(markRallyEnd);
+      case "splitRally": {
+        if (totalFrames === 0) return recording.notify("Load the video first");
+        let changed = false;
+        const result = edit((c) => {
+          const next = splitRally(c);
+          changed = next.games !== c.games;
+          return next;
+        });
+        if (changed) {
+          setForm(null);
+          focusField("rally", "frames");
+        }
+        return result;
+      }
       case "refereeCall":
         focusField("rally", "referee_call");
         return edit((c) => setRefereeCall(c, action.call));
@@ -1617,6 +1632,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
             workspace,
             hasVideo: totalFrames > 0,
             frame,
+            games,
             rally: currentRally,
             entry: selectedEntry(games, current),
           })}

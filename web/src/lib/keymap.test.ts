@@ -253,6 +253,16 @@ describe("annotateKeyAction", () => {
     expect(annotateKeyAction(press("Tab"))).toEqual({ type: "cursor", direction: 1 });
   });
 
+  it("maps Cmd+K and Ctrl+K to Split Rally, leaving plain and Shift/Alt K alone", () => {
+    expect(annotateKeyAction(press("k", { metaKey: true }))).toEqual({ type: "splitRally" });
+    expect(annotateKeyAction(press("K", { metaKey: true }))).toEqual({ type: "splitRally" });
+    expect(annotateKeyAction(press("k", { ctrlKey: true }))).toEqual({ type: "splitRally" });
+    expect(annotateKeyAction(press("k"))).toBeNull();
+    expect(annotateKeyAction(shift("KeyK", "K"))).toBeNull();
+    expect(annotateKeyAction(press("k", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(annotateKeyAction(press("k", { metaKey: true, altKey: true }))).toBeNull();
+  });
+
   it("leaves playback keys and browser shortcuts alone", () => {
     expect(annotateKeyAction(press(" "))).toBeNull();
     expect(annotateKeyAction(press("ArrowLeft"))).toBeNull();

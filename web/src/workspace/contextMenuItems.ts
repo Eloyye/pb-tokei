@@ -1,6 +1,6 @@
 import type { MouseEvent } from "react";
-import type { PlaySegment, Rally, RallyEntry } from "../api/client";
-import { rallyStartTarget } from "../lib/annotate";
+import type { Game, PlaySegment, Rally, RallyEntry } from "../api/client";
+import { rallyStartTarget, splitRallyReason } from "../lib/annotate";
 import type { AnnotateAction, SegmentAction } from "../lib/keymap";
 import type { Workspace } from "../lib/workspaces";
 
@@ -39,12 +39,14 @@ export function contextMenuItems(
     workspace,
     hasVideo,
     frame,
+    games,
     rally,
     entry,
   }: {
     workspace: Workspace;
     hasVideo: boolean;
     frame: number;
+    games?: readonly Game[];
     rally: Rally | undefined;
     entry: RallyEntry | undefined;
   },
@@ -92,6 +94,19 @@ export function contextMenuItems(
           noVideo ?? (rally && rallyStartTarget(rally, frame).disabledReason),
         ),
         annotate("Rally end at playhead", "Shift+O", { type: "rallyEnd" }, noVideo ?? unframed),
+        annotate(
+          "Split Rally at playhead",
+          "⌘K",
+          { type: "splitRally" },
+          noVideo ??
+            splitRallyReason(
+              games ?? (rally ? [{ number: 1, rallies: [rally] }] : []),
+              games
+                ? { game: target.game, rally: target.rally, entry: null }
+                : { game: 0, rally: rally ? 0 : null, entry: null },
+              frame,
+            ),
+        ),
         annotate("Insert Unseen Rally after", "Shift+U", { type: "unseenRally" }),
         annotate("Delete Rally", "Shift+Backspace", { type: "deleteRally" }),
         annotate("Mark Done", "Enter", { type: "done" }),

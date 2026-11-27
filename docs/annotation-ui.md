@@ -198,7 +198,7 @@ Rallies are grouped by Game. Each row shows:
 
 The panel header shows Done out of total, with **+ Unseen** (`Shift+U`) and **+ Game** (`Shift+Enter`). Clicking a row, or `PgUp`/`PgDn`, moves to that Rally, selects its first Shot and fits the timeline to it. Clicking the selected Rally's row again deselects the Rally and any Shot. Clicking a Game's header makes it the active Game; an empty Game can be deleted from its header.
 
-Right-click a row to select its Rally and open the same menu as a Rally clip without moving the playhead. The menu includes Rally start and end, Insert Unseen Rally after, Delete Rally, Mark Done, Fit Rally, and Rally details. Hover a disabled action to see why it is unavailable.
+Right-click a row to select its Rally and open the same menu as a Rally clip without moving the playhead. The menu includes Rally start and end, Split Rally at playhead, Insert Unseen Rally after, Delete Rally, Mark Done, Fit Rally, and Rally details. Hover a disabled action to see why it is unavailable.
 
 Status rules (stored on `rallies.status`, ADR 0013):
 
@@ -210,6 +210,7 @@ Lifecycle:
 
 - `Shift+I` with no Rally selected, or with the playhead past the selected Rally's end, starts a new open-ended Rally at the playhead (creating Game 1 if there is none), pre-filled from side-out logic. Otherwise it moves the selected Rally's start (an Unseen Rally gets framed this way). Rallies in a Game never overlap and are kept in frame order, numbered 1..N; Unseen Rallies stay where they were inserted.
 - Shots can be added to an open-ended Rally. `Shift+O` ends it at the playhead, or moves the end of a framed Rally (with a warning if that cuts off its last Shot).
+- `⌘K` (Annotate only, when the playhead is strictly inside the selected Rally: `start < T ≤ end`) splits the selected Rally into `[start, T−1]` and `[T, end]` (an open-ended Rally keeps its second part open-ended). Shots go by contact frame (`≥ T` moves to the second Rally, while an Observation Gap at the split stays with the first); start-of-Rally facts stay with the first Rally, end-of-Rally facts move to the second, and the second Rally's start facts and non-Observed Shot hitters and Contact Kinds are recomputed without changing Observed facts. Both Rallies become In progress, later Rallies in the Game recompute non-Observed facts, and `⌘Z` undoes the split in one step.
 - `Shift+U` inserts an Unseen Rally after the selected one, `Shift+Backspace` deletes the selected Rally, and `Shift+Enter` starts Game N + 1, whose first Rally opens at 0-0-2.
 
 Side-out pre-fill (Inferred, never overwriting Observed):
@@ -304,6 +305,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Move a Play Segment's start or end | Drag a clip edge on the Segments track | ✓ in all workspaces |
 | Move field cursor | `Tab` / `Shift+Tab` | ✓ (in Calibrate, `Tab` skips to the next Landmark) |
 | Rally start / end at playhead (starts a new open-ended Rally when none is selected or past its end) | `Shift+I` / `Shift+O` | ✓ (in Calibrate: Play Segment start / end) |
+| Split Rally at playhead (`start < T ≤ end`) | `⌘K` | ✓ in Annotate |
 | Rally details form (score, Serving Team, Server, Returner, scoreboard, winner in play) | `Shift+S` | ✓ |
 | Insert an Unseen Rally after this one | `Shift+U` | ✓ |
 | Delete the Rally | `Shift+Backspace` | ✓ |
