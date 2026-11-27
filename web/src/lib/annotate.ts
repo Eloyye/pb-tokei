@@ -349,6 +349,27 @@ export function setRallyEdge(ctx: AnnotateContext, edge: RallyEdge, target: numb
   return { ...edit, message: reason ?? `${label} ${edge}s at frame ${frame}` };
 }
 
+/** How Rally start at the playhead would act on a selected Rally. */
+export function rallyStartTarget(
+  rally: Rally,
+  frame: number,
+): { targetsSelectedRally: boolean; disabledReason?: string } {
+  if (isFramed(rally) && rally.end_frame !== null && frame > rally.end_frame) {
+    return {
+      targetsSelectedRally: false,
+      disabledReason: "Move the playhead to or before this Rally’s end",
+    };
+  }
+  const first = firstShotFrame(rally);
+  if (first !== null && frame > first) {
+    return {
+      targetsSelectedRally: !isFramed(rally) || rally.end_frame !== null,
+      disabledReason: `A Rally must start at or before its first Shot (frame ${first})`,
+    };
+  }
+  return { targetsSelectedRally: true };
+}
+
 /**
  * `Shift+I`: starts a new open-ended Rally at the playhead (when none is selected, or the
  * playhead is past the selected Rally's end), or moves the selected Rally's start here.
@@ -361,20 +382,14 @@ export function markRallyStart(input: AnnotateContext): AnnotateEdit {
   const rallyIndex = ctx.selection.rally;
   const rally = selectedRally(ctx.games, ctx.selection);
 
-  const moveStart =
-    rally !== undefined &&
-    (rally.start_frame === null ||
-      (rally.end_frame !== null
-        ? frame <= rally.end_frame
-        : firstShotFrame(rally) === null || frame <= firstShotFrame(rally)!));
-  if (rally && rallyIndex !== null && moveStart) {
+  const startTarget = rally && rallyStartTarget(rally, frame);
+  if (rally && rallyIndex !== null && startTarget?.targetsSelectedRally) {
     const inside = rallyContaining(game.rallies, frame, rallyIndex);
     if (inside >= 0) {
       return unchanged(ctx, `Frame ${frame} is inside ${rallyLabel(game, game.rallies[inside]!)}`);
     }
-    const first = firstShotFrame(rally);
-    if (first !== null && frame > first) {
-      return unchanged(ctx, `A Rally must start at or before its first Shot (frame ${first})`);
+    if (startTarget.disabledReason) {
+      return unchanged(ctx, startTarget.disabledReason);
     }
     const rallies = [...game.rallies];
     rallies[rallyIndex] = {

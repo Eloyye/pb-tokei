@@ -58,7 +58,7 @@ function renderTimeline(
   return {
     container,
     ruler,
-    scrubLayer: container.querySelector<HTMLElement>(".playhead-layer")!,
+    scrubLayer: ruler,
     endHandle: container.querySelector<HTMLElement>(".seg-handle.end")!,
     onViewChange,
     onSeek,

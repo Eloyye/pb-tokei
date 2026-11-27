@@ -25,6 +25,11 @@ const GROUPS: [string, [string[], string][]][] = [
       [["Scroll on Overview"], "Move the visible window"],
       [["Drag"], "Scrub on the ruler or tracks"],
       [
+        ["Right-click"],
+        "Show actions and shortcuts on Timeline items, empty lanes or Rallies rows",
+      ],
+      [["Esc"], "Close the context menu"],
+      [
         ["Drag Rally edge"],
         "Move its start or end in Annotate and Review. Open-ended Rallies have a start handle",
       ],
@@ -44,11 +49,11 @@ const GROUPS: [string, [string[], string][]][] = [
   [
     "Calibrate: Play Segments",
     [
-      [["⇧I"], "Start a segment, or move its start here"],
-      [["⇧O"], "End the segment, or move its end here"],
+      [["⇧I"], "Start a segment, or move the start of the segment under the playhead"],
+      [["⇧O"], "End a pending segment, or move the end of the segment under the playhead"],
       [["1", "2"], "Main View / Sideline View"],
       [["⌫"], "Remove the segment under the playhead"],
-      [["Esc"], "Drop a segment not yet ended"],
+      [["Esc"], "Clear Play Segment selection and drop any pending segment"],
       [["⌘Z", "⇧⌘Z"], "Undo / redo"],
     ],
   ],

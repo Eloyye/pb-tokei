@@ -71,6 +71,14 @@ describe("markIn", () => {
     expect(edit.segments).toBe(SEGMENTS);
     expect(edit.startMoved).toBeNull();
   });
+
+  it("moves an explicitly targeted segment's start to a frame in the gap", () => {
+    const edit = markIn(SEGMENTS, null, 250, SIDE);
+
+    expect(edit.segments).toEqual([MAIN, seg(250, 399, "sideline")]);
+    expect(edit.startMoved).toEqual({ from: 300, to: 250, camera_view: "sideline" });
+    expect(edit.pending).toBeNull();
+  });
 });
 
 describe("markOut", () => {
@@ -114,6 +122,14 @@ describe("markOut", () => {
 
     expect(edit.segments).toBe(SEGMENTS);
     expect(edit.pending).toBeNull();
+  });
+
+  it("moves an explicitly targeted segment's end while keeping the pending segment", () => {
+    const open = pending(500);
+    const edit = markOut(SEGMENTS, open, 250, MAIN);
+
+    expect(edit.segments).toEqual([seg(100, 250), SIDE]);
+    expect(edit.pending).toBe(open);
   });
 });
 
@@ -166,12 +182,24 @@ describe("setCameraView", () => {
   it("leaves the segments alone when the view is already set", () => {
     expect(setCameraView(SEGMENTS, null, 150, "main").segments).toBe(SEGMENTS);
   });
+
+  it("relabels an explicitly targeted clip while keeping the pending segment", () => {
+    const open = pending(500);
+    const edit = setCameraView(SEGMENTS, open, 150, "main", SIDE);
+
+    expect(edit.segments).toEqual([MAIN, seg(300, 399)]);
+    expect(edit.pending).toBe(open);
+  });
 });
 
 describe("removeAt", () => {
   it("removes the segment under the playhead only", () => {
     expect(removeAt(SEGMENTS, null, 350).segments).toEqual([MAIN]);
     expect(removeAt(SEGMENTS, null, 250).segments).toBe(SEGMENTS);
+  });
+
+  it("removes the explicit target with the playhead in a different segment", () => {
+    expect(removeAt(SEGMENTS, null, 150, SIDE).segments).toEqual([MAIN]);
   });
 });
 
