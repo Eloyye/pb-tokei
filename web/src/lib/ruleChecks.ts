@@ -57,6 +57,7 @@ export type RuleIssueCode =
   | "kitchen_line_volley"
   | "non_final_error"
   | "error_winner_mismatch"
+  | "missing_landing"
   | "negative_score"
   | "server_wrong_team"
   | "returner_wrong_team"
@@ -74,7 +75,7 @@ export type RuleIssueCode =
   | "score_backwards"
   | "score_jump";
 
-export type ShotIssueField = Extract<ShotField, "hitter_id" | "contact_kind" | "error">;
+export type ShotIssueField = Extract<ShotField, "hitter_id" | "contact_kind" | "landing" | "error">;
 export type RallyIssueField = Extract<
   RallyField,
   "score" | "serving_team_id" | "server_id" | "returner_id" | "referee_call" | "winner_id"
@@ -230,7 +231,7 @@ function compareIssues(a: RuleIssue, b: RuleIssue): number {
   return 0;
 }
 
-/** Runs Shot-level checks 1–7 on one Rally. */
+/** Runs Shot-level rule checks on one Rally. */
 function checkShots(
   roster: Roster,
   gameIndex: number,
@@ -433,6 +434,21 @@ function checkShots(
           );
         }
       }
+    }
+
+    // Missing landing on Serve or Return (#99) (Amber).
+    if (
+      (shotNum === 1 || shotNum === 2) &&
+      !known(shot.landing) &&
+      !(isLastEntry && shot.error !== null)
+    ) {
+      const label = shotNum === 1 ? "Serve" : "Return";
+      emit(
+        "missing_landing",
+        "amber",
+        "landing",
+        `${label} has no landing — click the Court or Monitor to record it.`,
+      );
     }
   }
 }
@@ -876,7 +892,7 @@ function checkCrossGapMonotonicity(
   }
 }
 
-/** Runs Rally-level checks 8–11 and Shot-level checks 1–7 across one Game. */
+/** Runs Shot-level and Rally-level rule checks across one Game. */
 function checkGame(roster: Roster, gameIndex: number, game: Game, out: RuleIssue[]): void {
   const evenRight = new Map<string, string>();
   let legalServingBox: Box | null = null;
@@ -961,7 +977,7 @@ function checkGame(roster: Roster, gameIndex: number, game: Game, out: RuleIssue
 }
 
 /**
- * Evaluates all 11 rule checks across every Game and Rally of a Match, returning issues in
+ * Evaluates all rule checks across every Game and Rally of a Match, returning issues in
  * canonical chronological order: Game.number → Rally.number → Rally-level (Inspector field order)
  * → Shot-level (entryIndex order, then Inspector field order).
  */
