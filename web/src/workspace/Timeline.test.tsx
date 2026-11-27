@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Game, PlaySegment } from "../api/client";
@@ -21,9 +21,11 @@ function renderTimeline(
   rallyLog?: TimelineRallies,
 ) {
   const onViewChange = vi.fn<TimelineProps["onViewChange"]>();
+  const onPanningChange = vi.fn<NonNullable<TimelineProps["onPanningChange"]>>();
   const onSeek = vi.fn<TimelineProps["onSeek"]>();
   const onMoveEdge = vi.fn<TimelineProps["onMoveEdge"]>();
   const onPreviewEdge = vi.fn<TimelineProps["onPreviewEdge"]>();
+  const onSelectSegment = vi.fn<NonNullable<TimelineProps["onSelectSegment"]>>();
   const onZoom = vi.fn<TimelineProps["onZoom"]>();
 
   function TimelineHarness({ frame, playing }: Playback) {
@@ -35,6 +37,7 @@ function renderTimeline(
           onViewChange(next);
           setView(next);
         }}
+        onPanningChange={onPanningChange}
         frame={frame}
         totalFrames={3000}
         playing={playing}
@@ -42,6 +45,7 @@ function renderTimeline(
         onZoom={onZoom}
         focused={false}
         segments={SEGMENTS}
+        onSelectSegment={onSelectSegment}
         pending={null}
         onMoveEdge={onMoveEdge}
         onPreviewEdge={onPreviewEdge}
@@ -61,9 +65,11 @@ function renderTimeline(
     scrubLayer: ruler,
     endHandle: container.querySelector<HTMLElement>(".seg-handle.end")!,
     onViewChange,
+    onPanningChange,
     onSeek,
     onMoveEdge,
     onPreviewEdge,
+    onSelectSegment,
     rerenderPlayback: (next: Playback) => rerender(<TimelineHarness {...next} />),
   };
 }
@@ -188,6 +194,8 @@ describe("Timeline wheel input", () => {
 function renderRallies(selection = NO_SELECTION) {
   const onSelectRally = vi.fn<TimelineRallies["onSelectRally"]>();
   const onMoveRallyEdge = vi.fn<TimelineRallies["onMoveRallyEdge"]>();
+  const onSelectEntry = vi.fn<TimelineRallies["onSelectEntry"]>();
+  const onMoveContact = vi.fn<TimelineRallies["onMoveContact"]>();
   const log: TimelineRallies = {
     roster: ROSTER,
     selection,
@@ -207,14 +215,123 @@ function renderRallies(selection = NO_SELECTION) {
     ],
     onSelectRally,
     onMoveRallyEdge,
-    onSelectEntry: vi.fn<TimelineRallies["onSelectEntry"]>(),
-    onMoveContact: vi.fn<TimelineRallies["onMoveContact"]>(),
+    onSelectEntry,
+    onMoveContact,
     onFitRally: vi.fn<TimelineRallies["onFitRally"]>(),
   };
   const timeline = renderTimeline(undefined, log);
   const clip = screen.getByTitle("Game 1 Rally 1: frames 450–600");
-  return { ...timeline, clip, onSelectRally, onMoveRallyEdge };
+  return { ...timeline, clip, onSelectRally, onMoveRallyEdge, onSelectEntry, onMoveContact };
 }
+
+describe("Timeline middle-button pan", () => {
+  const press = { pointerId: 1, button: 1, buttons: 4, clientX: 200 };
+  const move = { pointerId: 1, buttons: 4, clientX: 260 };
+  const release = { pointerId: 1, button: 1, buttons: 0, clientX: 260 };
+
+  it.each([
+    ".ruler",
+    ".lane.segments",
+    ".lane.rallies",
+    ".lane.shots",
+    ".lane.issues",
+    ".timeline-fill",
+    ".seg",
+    ".seg .seg-handle",
+    ".clip",
+    ".clip .seg-handle",
+    ".pin",
+  ])("grabs the Timeline from %s without scrubbing or editing", (selector) => {
+    const timeline = renderRallies();
+    const target = timeline.container.querySelector<HTMLElement>(selector)!;
+    const surface = target.closest<HTMLElement>(".ruler, .lane, .timeline-fill")!;
+
+    fireEvent.pointerDown(target, press);
+    expect(surface.hasPointerCapture(press.pointerId)).toBe(true);
+    expect(timeline.onViewChange).not.toHaveBeenCalled();
+    fireEvent.pointerMove(surface, move);
+    fireEvent.pointerUp(surface, release);
+
+    expect(timeline.onViewChange).toHaveBeenCalledExactlyOnceWith({ start: 340, end: 940 });
+    expect(timeline.onSeek).not.toHaveBeenCalled();
+    expect(timeline.onSelectSegment).not.toHaveBeenCalled();
+    expect(timeline.onSelectRally).not.toHaveBeenCalled();
+    expect(timeline.onSelectEntry).not.toHaveBeenCalled();
+    expect(timeline.onPreviewEdge).not.toHaveBeenCalled();
+    expect(timeline.onMoveEdge).not.toHaveBeenCalled();
+    expect(timeline.onMoveRallyEdge).not.toHaveBeenCalled();
+    expect(timeline.onMoveContact).not.toHaveBeenCalled();
+  });
+
+  it("moves the Overview window with the cursor at the full-video scale", () => {
+    const { onViewChange, onSeek } = renderTimeline();
+    const button = screen.getByRole("button", { name: "Centre the Timeline view here" });
+    const overview = button.closest<HTMLElement>(".overview")!;
+    vi.spyOn(overview, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 300 }));
+
+    fireEvent.pointerDown(button, press);
+    expect(overview.hasPointerCapture(press.pointerId)).toBe(true);
+    fireEvent.pointerMove(overview, move);
+    fireEvent.pointerUp(overview, release);
+
+    expect(onViewChange).toHaveBeenCalledExactlyOnceWith({ start: 1000, end: 1600 });
+    expect(onSeek).not.toHaveBeenCalled();
+  });
+
+  it("cancels middle-click defaults and leaves the view alone without horizontal motion", () => {
+    const { ruler, onViewChange, onSeek, onSelectSegment } = renderTimeline();
+    const pointerDown = createEvent.pointerDown(ruler, press);
+    const mouseDown = createEvent.mouseDown(ruler, press);
+    const auxClick = new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true });
+
+    fireEvent(ruler, pointerDown);
+    fireEvent(ruler, mouseDown);
+    fireEvent.pointerMove(ruler, { ...move, clientX: press.clientX, clientY: 10 });
+    fireEvent.pointerUp(ruler, { ...release, clientX: press.clientX });
+    fireEvent(ruler, auxClick);
+
+    expect(pointerDown.defaultPrevented).toBe(true);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    expect(auxClick.defaultPrevented).toBe(true);
+    expect(onViewChange).not.toHaveBeenCalled();
+    expect(onSeek).not.toHaveBeenCalled();
+    expect(onSelectSegment).not.toHaveBeenCalled();
+  });
+
+  it("accumulates movement before React commits the next view", () => {
+    const { ruler, onViewChange } = renderTimeline();
+    fireEvent.pointerDown(ruler, press);
+    act(() => {
+      fireEvent.pointerMove(ruler, move);
+      fireEvent.pointerMove(ruler, { ...move, clientX: 320 });
+    });
+    expect(onViewChange).toHaveBeenLastCalledWith({ start: 280, end: 880 });
+  });
+
+  it.each(["pointerUp", "pointerCancel", "lostPointerCapture"] as const)(
+    "ends the pan on %s for the captured pointer",
+    (finishEvent) => {
+      const { ruler, onPanningChange, onViewChange } = renderTimeline();
+      fireEvent.pointerDown(ruler, press);
+      fireEvent[finishEvent](ruler, { ...release, pointerId: 2 });
+      expect(onPanningChange.mock.calls).toEqual([[true]]);
+
+      fireEvent[finishEvent](ruler, release);
+      fireEvent.pointerMove(ruler, move);
+      expect(onPanningChange.mock.calls).toEqual([[true], [false]]);
+      expect(onViewChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ends the pan when the middle button is released while the left is still held", () => {
+    const { ruler, onPanningChange, onViewChange } = renderTimeline();
+    fireEvent.pointerDown(ruler, press);
+    fireEvent.pointerMove(ruler, { ...move, button: 1, buttons: 1 });
+    expect(onPanningChange.mock.calls).toEqual([[true], [false]]);
+    expect(ruler.hasPointerCapture(press.pointerId)).toBe(false);
+    expect(onViewChange).not.toHaveBeenCalled();
+  });
+});
 
 describe("Timeline Rally edge drags", () => {
   it("previews the clamped edge in both tracks and commits once without seeking", () => {

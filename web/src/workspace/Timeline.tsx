@@ -18,6 +18,7 @@ import {
   type FrameRange,
   frameAt,
   fullView,
+  panView,
   rulerTicks,
   toPercent,
   type WheelAxisLock,
@@ -35,6 +36,8 @@ const TRACKS = [
 ] as const;
 
 const DRAG_THRESHOLD_PX = 3;
+const MIDDLE_BUTTON = 1;
+const MIDDLE_BUTTON_MASK = 4;
 
 type EdgeTarget =
   | { kind: "segment"; start: number }
@@ -65,11 +68,16 @@ interface PinDrag {
 
 type TimelineDrag = { pointerId: number; clientX: number } & (
   | { kind: "scrub"; frame: number | null }
+  | { kind: "pan"; overview: boolean }
   | EdgeDrag
   | ({ kind: "pin" } & PinDrag)
 );
 
 const STATUS_MARK = { empty: "○", in_progress: "●", done: "✓" } as const;
+
+function preventMiddleDefault(event: MouseEvent<HTMLElement>) {
+  if (event.button === MIDDLE_BUTTON) event.preventDefault();
+}
 
 /** Rally Log content for the Rallies, Shots, and Issues tracks (Annotate and Review). */
 export interface TimelineRallies {
@@ -88,11 +96,12 @@ export interface TimelineRallies {
 
 /**
  * The Timeline: an overview of the whole video, a ruler with the playhead, and one lane per
- * track. Dragging on the ruler or the lanes scrubs; the overview moves the view.
+ * track. Left dragging on the ruler or lanes scrubs, and middle dragging pans the view.
  */
 export function Timeline({
   view,
   onViewChange,
+  onPanningChange,
   frame,
   totalFrames,
   playing,
@@ -111,6 +120,7 @@ export function Timeline({
 }: {
   view: FrameRange;
   onViewChange: (view: FrameRange) => void;
+  onPanningChange?: (panning: boolean) => void;
   frame: number;
   totalFrames: number;
   playing: boolean;
@@ -140,7 +150,7 @@ export function Timeline({
   const bodyRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
   const wheelLock = useRef<WheelAxisLock | undefined>(undefined);
-  const queuedWheelView = useRef<{ from: FrameRange; to: FrameRange } | null>(null);
+  const queuedView = useRef<{ from: FrameRange; to: FrameRange } | null>(null);
   const activeDrag = useRef<TimelineDrag | null>(null);
   const [edgePreview, setEdgePreview] = useState<EdgeDrag>();
   const [pinPreview, setPinPreview] = useState<PinDrag>();
@@ -150,15 +160,22 @@ export function Timeline({
       ? moveEdge(segments, null, edgeTarget.start, edgePreview.edge, edgePreview.frame).segments
       : segments;
 
-  // Several wheel events can arrive before React commits the view.
+  // Several drag or wheel events can arrive before React commits the view.
   const currentView = () => {
-    const queued = queuedWheelView.current;
+    const queued = queuedView.current;
     return queued?.from === view ? queued.to : view;
+  };
+
+  const queueViewChange = (previous: FrameRange, next: FrameRange) => {
+    if (next.start === previous.start && next.end === previous.end) return false;
+    queuedView.current = { from: view, to: next };
+    onViewChange(next);
+    return true;
   };
 
   const applyDrag = (clientX: number, nextView: FrameRange, rect: DOMRect, fromWheel = false) => {
     const drag = activeDrag.current;
-    if (!drag || rect.width <= 0) return;
+    if (!drag || drag.kind === "pan" || rect.width <= 0) return;
     const target = clampFrame(frameAt(nextView, (clientX - rect.left) / rect.width), totalFrames);
     if (drag.kind === "edge") {
       activeDrag.current = { ...drag, clientX };
@@ -220,8 +237,28 @@ export function Timeline({
   };
 
   const moveDrag = (event: PointerEvent<HTMLElement>) => {
-    if (activeDrag.current?.pointerId !== event.pointerId) return;
+    const drag = activeDrag.current;
+    if (drag?.pointerId !== event.pointerId) return;
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    if (drag.kind === "pan") {
+      // With another mouse button held, a middle release arrives as a pointermove.
+      if (!(event.buttons & MIDDLE_BUTTON_MASK)) {
+        finishDrag(event);
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        return;
+      }
+      const deltaX = event.clientX - drag.clientX;
+      if (deltaX === 0) return;
+      drag.clientX = event.clientX;
+      const surface = drag.overview ? event.currentTarget : rulerRef.current;
+      const width = surface?.getBoundingClientRect().width ?? 0;
+      if (width <= 0) return;
+      const previous = currentView();
+      // The lanes move with the cursor. The Overview moves the window over the full video.
+      const framesAcross = drag.overview ? whole.end : previous.start - previous.end;
+      queueViewChange(previous, panView(previous, (deltaX / width) * framesAcross, totalFrames));
+      return;
+    }
     const rect = rulerRef.current?.getBoundingClientRect();
     if (rect) applyDrag(event.clientX, currentView(), rect);
   };
@@ -252,6 +289,10 @@ export function Timeline({
     const drag = activeDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     activeDrag.current = null;
+    if (drag.kind === "pan") {
+      onPanningChange?.(false);
+      return;
+    }
     if (drag.kind === "edge") {
       clearEdgePreview(drag);
       if (!commit) return;
@@ -276,6 +317,21 @@ export function Timeline({
     }
   };
 
+  const startPan = (event: PointerEvent<HTMLElement>, overview = false) => {
+    if (event.button !== MIDDLE_BUTTON) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!hasVideo || activeDrag.current) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    activeDrag.current = {
+      kind: "pan",
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      overview,
+    };
+    onPanningChange?.(true);
+  };
+
   const startScrub = (event: PointerEvent<HTMLElement>, selected: PlaySegment | null = null) => {
     if (event.button !== 0 || event.ctrlKey || activeDrag.current) return;
     onSelectSegment?.(selected);
@@ -291,13 +347,14 @@ export function Timeline({
     };
     applyDrag(event.clientX, currentView(), rect);
   };
-  const scrubHandlers = {
-    onPointerDown: startScrub,
+  const dragHandlers = {
     onPointerMove: moveDrag,
     onPointerUp: finishDrag,
     onPointerCancel: finishDrag,
     onLostPointerCapture: finishDrag,
   };
+  const scrubHandlers = { ...dragHandlers, onPointerDown: startScrub };
+  const surfaceHandlers = { ...scrubHandlers, onPointerDownCapture: startPan };
   const openLaneMenu = (event: MouseEvent<HTMLElement>) => {
     // Issue markers keep their own click behavior and aren't empty space.
     if (event.target instanceof Element && event.target.closest("button")) return;
@@ -365,10 +422,7 @@ export function Timeline({
       wheelLock.current,
     );
     wheelLock.current = lock;
-    if (next.start === previous.start && next.end === previous.end) return;
-
-    queuedWheelView.current = { from: view, to: next };
-    onViewChange(next);
+    if (!queueViewChange(previous, next)) return;
     const drag = activeDrag.current;
     if (drag) applyDrag(drag.clientX, next, rect, true);
   });
@@ -444,9 +498,18 @@ export function Timeline({
         </>
       }
     >
-      <div ref={bodyRef} className="timeline-body">
+      <div
+        ref={bodyRef}
+        className="timeline-body"
+        onMouseDownCapture={preventMiddleDefault}
+        onAuxClickCapture={preventMiddleDefault}
+      >
         <div className="timeline-timecode">{formatTimecode(frame)}</div>
-        <div className="overview">
+        <div
+          className="overview"
+          onPointerDownCapture={(event) => startPan(event, true)}
+          {...dragHandlers}
+        >
           <div
             className="overview-window"
             style={{
@@ -486,7 +549,7 @@ export function Timeline({
             }}
           />
         </div>
-        <div ref={rulerRef} className="ruler" title="Drag to scrub" {...scrubHandlers}>
+        <div ref={rulerRef} className="ruler" title="Drag to scrub" {...surfaceHandlers}>
           {ticks.frames.map((f) => (
             <div key={f} className="tick" style={{ left: `${toPercent(view, f)}%` }}>
               <span>{formatTimecode(f)}</span>
@@ -510,7 +573,7 @@ export function Timeline({
               className={`lane ${track.id}`}
               style={{ gridRow: i + 3 }}
               title="Drag to scrub"
-              {...scrubHandlers}
+              {...surfaceHandlers}
               onContextMenu={openLaneMenu}
             >
               {track.id === "segments" && shownSegments?.length ? (
@@ -618,7 +681,7 @@ export function Timeline({
           className="timeline-fill"
           style={{ gridRow: 7 }}
           title="Drag to scrub"
-          {...scrubHandlers}
+          {...surfaceHandlers}
           onContextMenu={openLaneMenu}
         />
         <div className="playhead-layer" aria-hidden>
