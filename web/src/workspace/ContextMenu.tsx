@@ -98,7 +98,7 @@ export function ContextMenu({
           }}
         >
           {name}
-          {shortcut && <kbd aria-hidden="true">{shortcut}</kbd>}
+          {shortcut && <kbd aria-hidden="true">{shortcut.replace("Meta+", "⌘")}</kbd>}
         </button>
       ))}
     </div>,

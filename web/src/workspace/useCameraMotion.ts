@@ -61,9 +61,13 @@ export function useCameraMotion(
   const inFlight = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
 
+  const saved = saveStatus.state === "saved";
   const scope = useMemo(
-    () => (segments ? `${matchId}:${JSON.stringify({ segments, calibrations })}` : null),
-    [matchId, segments, calibrations],
+    () =>
+      enabled && saved && segments
+        ? `${matchId}:${JSON.stringify({ segments, calibrations })}`
+        : null,
+    [matchId, enabled, saved, segments, calibrations],
   );
   const scopeRef = useRef<string | null>(scope);
   useEffect(() => {
@@ -77,12 +81,11 @@ export function useCameraMotion(
     };
   }, []);
 
-  const saved = saveStatus.state === "saved";
   const motion = scope && motionState?.scope === scope ? motionState.data : null;
 
   // Fetch status whenever the saved recording changes, auto-triggering tracking when idle.
   useEffect(() => {
-    if (!enabled || !saved || scope === null) return;
+    if (scope === null) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -109,12 +112,12 @@ export function useCameraMotion(
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [matchId, enabled, saved, scope, autoTrack]);
+  }, [matchId, scope, autoTrack]);
 
   // Poll while background tracking is in progress; re-trigger if tracking settles back to idle.
   const tracking = motion?.status === "tracking";
   useEffect(() => {
-    if (!enabled || !tracking || scope === null) return;
+    if (!tracking || scope === null) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -140,7 +143,7 @@ export function useCameraMotion(
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [matchId, enabled, tracking, scope, autoTrack]);
+  }, [matchId, tracking, scope, autoTrack]);
 
   // Compute primitive window bounds so moving `frame` within the same window never re-triggers
   // or cancels an in-flight frame-window fetch.
@@ -166,7 +169,7 @@ export function useCameraMotion(
       : null;
 
   useEffect(() => {
-    if (!enabled || windowStart === null || windowEnd === null || !windowKey || !scope) return;
+    if (windowStart === null || windowEnd === null || !windowKey || !scope) return;
     if (windowsRef.current.has(windowKey) || inFlight.current.has(windowKey)) return;
     inFlight.current.add(windowKey);
 
@@ -192,14 +195,16 @@ export function useCameraMotion(
       .finally(() => {
         inFlight.current.delete(windowKey);
       });
-  }, [enabled, matchId, scope, windowStart, windowEnd, windowKey]);
+  }, [matchId, scope, windowStart, windowEnd, windowKey]);
 
   const retrack = useCallback(() => {
-    if (!enabled || scope === null) return;
+    if (scope === null) return;
     trackCameraMotion(matchId)
-      .then((next) => setMotionState({ scope, data: next }))
+      .then((next) => {
+        if (mountedRef.current && scopeRef.current === scope) setMotionState({ scope, data: next });
+      })
       .catch(() => {});
-  }, [enabled, matchId, scope]);
+  }, [matchId, scope]);
 
   const loadedWindow = windowKey ? windows.get(windowKey) : undefined;
   const unmappedFromSummary = Boolean(motion && unmappedRangeAt(motion.unmapped_ranges, frame));

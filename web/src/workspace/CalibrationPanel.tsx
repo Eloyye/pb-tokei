@@ -496,9 +496,11 @@ function CameraMotionSection({
             ? `tracking ${motion.tracked_spans}/${motion.total_spans}…`
             : motion.status === "error"
               ? "failed"
-              : unmappedCount > 0
-                ? `${unmappedCount} unmapped`
-                : "all mapped"}
+              : motion.status === "idle"
+                ? "needs tracking"
+                : unmappedCount > 0
+                  ? `${unmappedCount} unmapped`
+                  : "all mapped"}
         </span>
       </h3>
       {motion.status === "error" && (

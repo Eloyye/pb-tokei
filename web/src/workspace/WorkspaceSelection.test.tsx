@@ -996,7 +996,7 @@ function expectMenuItems(menu: ReturnType<typeof within>, items: [string, string
   for (const [name, shortcut] of items) {
     const option = menu.getByRole("menuitem", { name });
     expect(option.getAttribute("aria-keyshortcuts")).toBe(shortcut ?? null);
-    expect(option.querySelector("kbd")?.textContent).toBe(shortcut);
+    expect(option.querySelector("kbd")?.textContent).toBe(shortcut?.replace("Meta+", "⌘"));
   }
 }
 
@@ -1120,13 +1120,18 @@ describe("Workspace context menus", () => {
         ["Delete Play Segment", "Backspace"],
         ["Play Segment start at playhead", "Shift+I"],
         ["Play Segment end at playhead", "Shift+O"],
+        ["Split Play Segment at playhead", "Meta+K"],
       ]);
       expect(segment.getAttribute("aria-pressed")).toBe("true");
       for (const option of segmentMenu.getAllByRole("menuitem")) {
-        expect(option.getAttribute("aria-disabled")).toBe(
-          workspace === "calibrate" ? null : "true",
-        );
-        expect(option.title).toBe(workspace === "calibrate" ? "" : "Available in Calibrate");
+        const reason =
+          workspace !== "calibrate"
+            ? "Available in Calibrate"
+            : option.textContent?.startsWith("Split Play Segment")
+              ? "Move the playhead past this Play Segment’s first frame"
+              : "";
+        expect(option.getAttribute("aria-disabled")).toBe(reason ? "true" : null);
+        expect(option.title).toBe(reason);
       }
       if (workspace !== "calibrate") {
         fireEvent.click(segmentMenu.getByRole("menuitem", { name: "Delete Play Segment" }));
@@ -1223,6 +1228,40 @@ describe("Workspace context menus", () => {
     );
   });
 
+  it("splits the targeted Play Segment without seeking when the playhead is inside it", async () => {
+    const first: PlaySegment = { start_frame: 0, end_frame: 80, camera_view: "main" };
+    const second: PlaySegment = { start_frame: 100, end_frame: 200, camera_view: "sideline" };
+    apiMocks.getPlaySegments.mockResolvedValue([first, second]);
+    const { video } = renderWorkspace("calibrate");
+    const target = await screen.findByRole("button", {
+      name: "Sideline View Play Segment, frames 100–200",
+    });
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    const blocked = openContextMenu(target, "Play Segment actions").getByRole("menuitem", {
+      name: "Split Play Segment at playhead",
+    });
+    expect(blocked.title).toBe("Move the playhead inside this Play Segment");
+    fireEvent.click(blocked);
+    expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    const playhead = video.currentTime;
+    const split = openContextMenu(target, "Play Segment actions").getByRole("menuitem", {
+      name: "Split Play Segment at playhead",
+    });
+    expect(split.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(split);
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenCalledExactlyOnceWith(MATCH.id, [
+        first,
+        { ...second, end_frame: 119 },
+        { ...second, start_frame: 120 },
+      ]),
+    );
+    expect(video.currentTime).toBe(playhead);
+  });
+
   it("keeps Play Segment shortcuts tied to the playhead and pending segment after clip clicks", async () => {
     const first: PlaySegment = { start_frame: 100, end_frame: 200, camera_view: "main" };
     const second: PlaySegment = { start_frame: 450, end_frame: 650, camera_view: "main" };
@@ -1258,5 +1297,49 @@ describe("Workspace context menus", () => {
         second,
       ]),
     );
+  });
+});
+
+describe("Split Play Segment shortcut", () => {
+  const shortcut = { key: "k", metaKey: true };
+
+  it("autosaves both halves in one undo step from Calibrate → Players", async () => {
+    const original: PlaySegment = { start_frame: 0, end_frame: 120, camera_view: "sideline" };
+    apiMocks.getPlaySegments.mockResolvedValue([original]);
+    renderWorkspace("calibrate");
+    await screen.findByTitle("Sideline View Play Segment, frames 0–120");
+    fireEvent.keyDown(window, shortcut);
+    expect(screen.getByText("Move the playhead past this Play Segment’s first frame")).toBeTruthy();
+    expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Players" }));
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    fireEvent.keyDown(window, shortcut);
+    fireEvent.keyDown(window, { ...shortcut, repeat: true });
+    expect(screen.getByText("Split Play Segment at frame 60")).toBeTruthy();
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenCalledExactlyOnceWith(MATCH.id, [
+        { ...original, end_frame: 59 },
+        { ...original, start_frame: 60 },
+      ]),
+    );
+
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenLastCalledWith(MATCH.id, [original]),
+    );
+    expect(screen.getByTitle("Sideline View Play Segment, frames 0–120")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    expect(screen.getByText("Nothing to undo")).toBeTruthy();
+    expect(apiMocks.replacePlaySegments).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["annotate", "review"] as const)("explains the no-op in %s", async (workspace) => {
+    renderWorkspace(workspace);
+    await screen.findByTitle("Main View Play Segment, frames 0–600");
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, shortcut);
+    expect(screen.getByText("Split Play Segment is available in Calibrate")).toBeTruthy();
+    expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
   });
 });

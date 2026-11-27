@@ -2,6 +2,7 @@ import type { MouseEvent } from "react";
 import type { PlaySegment, Rally, RallyEntry } from "../api/client";
 import { rallyStartTarget } from "../lib/annotate";
 import type { AnnotateAction, SegmentAction } from "../lib/keymap";
+import { segmentSplitBlocker } from "../lib/segments";
 import type { Workspace } from "../lib/workspaces";
 
 export type ContextMenuTarget =
@@ -136,6 +137,12 @@ export function contextMenuItems(
           frame < target.segment.start_frame
             ? "Move the playhead to or after this Play Segment’s start"
             : undefined,
+        ),
+        segment(
+          "Split Play Segment at playhead",
+          "Meta+K",
+          { type: "split" },
+          segmentSplitBlocker(target.segment, frame),
         ),
       ];
     case "lane":

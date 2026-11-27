@@ -52,18 +52,23 @@ export function usePlayerTracking(
   frame: number,
 ): PlayerTrackingState {
   const [statusState, setStatusState] = useState<{
-    matchId: string;
+    scope: string;
     value: PlayerTrackingOut;
   } | null>(null);
-  const status = statusState?.matchId === matchId ? statusState.value : null;
   const [windows, setWindows] = useState<Map<string, PlayerTrackingFramesOut>>(() => new Map());
   const windowsRef = useRef<Map<string, PlayerTrackingFramesOut>>(new Map());
   const inFlight = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
-  const matchIdRef = useRef(matchId);
+  const saved = saveStatus.state === "saved";
+  const statusScope = useMemo(
+    () => (enabled && saved && segments ? `${matchId}:${JSON.stringify(segments)}` : null),
+    [matchId, enabled, saved, segments],
+  );
+  const status = statusScope && statusState?.scope === statusScope ? statusState.value : null;
+  const statusScopeRef = useRef(statusScope);
   useEffect(() => {
-    matchIdRef.current = matchId;
-  }, [matchId]);
+    statusScopeRef.current = statusScope;
+  }, [statusScope]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -72,29 +77,24 @@ export function usePlayerTracking(
     };
   }, []);
 
-  const saved = saveStatus.state === "saved";
-
   // Refresh tracking status when segments change (never auto-triggers GPU tracking).
-  const segmentSig = useMemo(() => (segments ? JSON.stringify(segments) : null), [segments]);
   useEffect(() => {
-    if (!enabled || !saved || segmentSig === null) return;
+    if (statusScope === null) return;
     let cancelled = false;
     getPlayerTracking(matchId)
       .then((next) => {
-        if (!cancelled && matchIdRef.current === matchId) {
-          setStatusState({ matchId, value: next });
-        }
+        if (!cancelled) setStatusState({ scope: statusScope, value: next });
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [matchId, enabled, saved, segmentSig]);
+  }, [matchId, statusScope]);
 
   // Poll while tracking is in progress.
   const tracking = status?.status === "tracking";
   useEffect(() => {
-    if (!enabled || !tracking) return;
+    if (!tracking || statusScope === null) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -102,11 +102,11 @@ export function usePlayerTracking(
       timer = setTimeout(async () => {
         try {
           const next = await getPlayerTracking(matchId);
-          if (cancelled || matchIdRef.current !== matchId) return;
-          setStatusState({ matchId, value: next });
+          if (cancelled) return;
+          setStatusState({ scope: statusScope, value: next });
           if (next.status === "tracking") poll();
         } catch {
-          if (!cancelled && matchIdRef.current === matchId) poll();
+          if (!cancelled) poll();
         }
       }, POLL_MS);
     };
@@ -116,20 +116,19 @@ export function usePlayerTracking(
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [matchId, enabled, tracking]);
+  }, [matchId, statusScope, tracking]);
 
   const trackedSegments = status?.tracked_segments ?? 0;
   const scope = useMemo(
     () =>
-      segments
-        ? `${matchId}:${trackedSegments}:${trackedMotionSpans}:${JSON.stringify({
-            segments,
+      statusScope
+        ? `${statusScope}:${trackedSegments}:${trackedMotionSpans}:${JSON.stringify({
             calibrations,
             anchors,
             teamEnds,
           })}`
         : null,
-    [matchId, trackedSegments, trackedMotionSpans, segments, calibrations, anchors, teamEnds],
+    [statusScope, trackedSegments, trackedMotionSpans, calibrations, anchors, teamEnds],
   );
   const scopeRef = useRef<string | null>(scope);
   useEffect(() => {
@@ -157,7 +156,7 @@ export function usePlayerTracking(
       : null;
 
   useEffect(() => {
-    if (!enabled || !saved || windowStart === null || windowEnd === null || !windowKey || !scope) {
+    if (windowStart === null || windowEnd === null || !windowKey || !scope) {
       return;
     }
     if (windowsRef.current.has(windowKey) || inFlight.current.has(windowKey)) return;
@@ -183,40 +182,38 @@ export function usePlayerTracking(
       .finally(() => {
         inFlight.current.delete(windowKey);
       });
-  }, [enabled, saved, matchId, scope, windowStart, windowEnd, windowKey]);
+  }, [matchId, scope, windowStart, windowEnd, windowKey]);
 
   const startTracking = useCallback(
     (priorityFrame?: number) => {
-      const requestedMatch = matchId;
-      trackPlayers(
-        requestedMatch,
-        priorityFrame === undefined ? {} : { priority_frame: priorityFrame },
-      )
+      if (statusScope === null) return;
+      trackPlayers(matchId, priorityFrame === undefined ? {} : { priority_frame: priorityFrame })
         .then((next) => {
-          if (mountedRef.current && matchIdRef.current === requestedMatch) {
-            setStatusState({ matchId: requestedMatch, value: next });
+          if (mountedRef.current && statusScopeRef.current === statusScope) {
+            setStatusState({ scope: statusScope, value: next });
           }
         })
         .catch(() => {});
     },
-    [matchId],
+    [matchId, statusScope],
   );
 
   const cancelTracking = useCallback(() => {
-    const requestedMatch = matchId;
-    cancelPlayerTracking(requestedMatch)
+    if (statusScope === null) return;
+    cancelPlayerTracking(matchId)
       .then((next) => {
-        if (mountedRef.current && matchIdRef.current === requestedMatch) {
-          setStatusState({ matchId: requestedMatch, value: next });
+        if (mountedRef.current && statusScopeRef.current === statusScope) {
+          setStatusState({ scope: statusScope, value: next });
         }
       })
       .catch(() => {});
-  }, [matchId]);
+  }, [matchId, statusScope]);
 
   const loadedAt = useCallback((at: number): PlayerTrackingFrameOut | undefined => {
-    const prefix = scopeRef.current === null ? null : `${scopeRef.current}:`;
+    if (scopeRef.current === null) return undefined;
+    const prefix = `${scopeRef.current}:`;
     for (const [key, data] of windowsRef.current) {
-      if (prefix !== null && !key.startsWith(prefix)) continue;
+      if (!key.startsWith(prefix)) continue;
       if (at >= data.start_frame && at <= data.end_frame) {
         return data.frames[at - data.start_frame];
       }
@@ -235,17 +232,19 @@ export function usePlayerTracking(
 
   const trackingAt = useCallback(
     async (at: number): Promise<PlayerTrackingFrameOut | undefined> => {
+      if (statusScope === null) return undefined;
       const loaded = loadedAt(at);
       if (loaded) return loaded;
-      if (!enabled) return undefined;
       try {
         const data = await getPlayerTrackingFrames(matchId, at, at);
-        return data.frames[0];
+        return mountedRef.current && statusScopeRef.current === statusScope
+          ? data.frames[0]
+          : undefined;
       } catch {
         return undefined;
       }
     },
-    [enabled, matchId, loadedAt],
+    [matchId, statusScope, loadedAt],
   );
 
   const loadedWindow = windowKey ? windows.get(windowKey) : undefined;

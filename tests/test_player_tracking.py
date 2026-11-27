@@ -18,7 +18,7 @@ from test_calibration import MAIN, SIDELINE
 from pb_tokei import main
 from pb_tokei.annotate.app import create_app
 from pb_tokei.calibration import CourtMapping, Homography, Lens, fit_landmarks
-from pb_tokei.camera_motion import CameraMotion, SpanMotion
+from pb_tokei.camera_motion import CalibrationSpan, CameraMotion, SpanMotion
 from pb_tokei.player_tracking import (
     METHOD_VERSION,
     PlayerTrackingCache,
@@ -864,6 +864,72 @@ def test_player_tracking_http_api_round_trip_priority_and_security(tmp_path: Pat
     assert too_wide.status_code == 422
 
 
+def test_split_segments_retrack_without_serving_the_original_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db, match_id, _roster, _video = _setup_api_match(tmp_path)
+    homography = fit_landmarks(MAIN.clicks())
+    assert homography is not None
+    detection = _det_at_court(homography, -4.0, -8.0, emb=_unit_emb(0))
+    backend = _FakeVisionBackend([(detection,)])
+
+    def track_span(_video: Path, span: CalibrationSpan, _base: Homography, **_kwargs) -> SpanMotion:
+        return SpanMotion(
+            span.start_frame,
+            span.end_frame,
+            span.camera_view,
+            span.calibration.effective_from_frame,
+            span.calibration.reference_frame,
+            np.ones(span.frame_count, dtype=bool),
+            np.tile(np.eye(3), (span.frame_count, 1, 1)),
+            np.zeros(span.frame_count, dtype=np.float32),
+        )
+
+    monkeypatch.setattr("pb_tokei.camera_motion.track_span", track_span)
+    app = create_app(db, player_backend_factory=lambda _pref: backend)
+    client = TestClient(app, base_url=LOCAL, headers={"Origin": LOCAL})
+    match = f"/api/matches/{match_id}"
+    original = client.get(f"{match}/play-segments").json()
+    assert (
+        client.post(f"{match}/camera-motion/track", params={"wait": True}).json()["status"]
+        == "ready"
+    )
+    assert (
+        client.post(f"{match}/player-tracking/track", json={"wait": True}).json()["status"]
+        == "ready"
+    )
+    original_calls = backend.calls
+    window = {"start_frame": 4, "end_frame": 8}
+    old_motion = client.get(f"{match}/camera-motion/frames", params=window).json()
+    old_players = client.get(f"{match}/player-tracking/frames", params=window).json()
+    assert all(old_motion["court_to_image"])
+    assert old_players["frames"][0]["detections"]
+    assert old_players["frames"][-1]["detections"]
+
+    halves = [{**original[0], "end_frame": 6}, {**original[0], "start_frame": 7}]
+    assert client.put(f"{match}/play-segments", json=[*halves, original[1]]).status_code == 200
+    motion = client.get(f"{match}/camera-motion").json()
+    assert motion["status"] == "idle"
+    assert [span["tracked"] for span in motion["spans"]] == [False, False, True]
+    players = client.get(f"{match}/player-tracking").json()
+    assert players["status"] == "idle"
+    assert [span["status"] for span in players["spans"]] == ["pending", "pending", "done"]
+    assert (
+        client.get(f"{match}/camera-motion/frames", params=window).json()["court_to_image"]
+        == [None] * 5
+    )
+    assert all(
+        not frame["detections"]
+        for frame in client.get(f"{match}/player-tracking/frames", params=window).json()["frames"]
+    )
+
+    # Undo saves the original bounds again and recovers their cache entries.
+    assert client.put(f"{match}/play-segments", json=original).status_code == 200
+    assert client.get(f"{match}/camera-motion/frames", params=window).json() == old_motion
+    assert client.get(f"{match}/player-tracking/frames", params=window).json() == old_players
+    assert backend.calls == original_calls
+
+
 def test_partial_layer1_decode_raises_and_is_not_cached(tmp_path: Path) -> None:
     """A truncated video decode raises PlayerTrackingError and is never cached as complete."""
     video = tmp_path / "short.60fps.mp4"
@@ -877,7 +943,8 @@ def test_partial_layer1_decode_raises_and_is_not_cached(tmp_path: Path) -> None:
     assert not cache.has_layer1(video, seg)
 
 
-def test_player_tracking_cancel_stops_background_job(tmp_path: Path) -> None:
+@pytest.mark.parametrize("split", [False, True], ids=["same-segments", "split-segment"])
+def test_player_tracking_cancel_stops_background_job(tmp_path: Path, split: bool) -> None:
     db, match_id, _roster, _conv = _setup_api_match(tmp_path)
     started = threading.Event()
     release = threading.Event()
@@ -917,17 +984,25 @@ def test_player_tracking_cancel_stops_background_job(tmp_path: Path) -> None:
     assert cancelled["tracked_segments"] < cancelled["total_segments"]
     assert cancelled["error"] is None
 
-    # Regression for cancelled-job reuse: re-triggering while a cancelled job is still winding
-    # down waits for the cancelled job to exit and then runs a fresh job to completion.
+    # Re-triggering waits for a superseded job to exit before running a fresh job.
     started.clear()
     release.clear()
     res2 = client.post(f"/api/matches/{match_id}/player-tracking/track", json={}).json()
     assert res2["status"] == "tracking"
     assert started.wait(timeout=2.0)
 
-    # Mark the running job cancelled without waiting, then immediately fire a new /track request.
     running_job = service._jobs[match_id]
-    running_job.cancel.set()
+    if split:
+        # The running job belongs to the old bounds. Neither half can use its results.
+        url = f"/api/matches/{match_id}/play-segments"
+        first, second = client.get(url).json()
+        halves = [{**first, "end_frame": 6}, {**first, "start_frame": 7}]
+        assert client.put(url, json=[*halves, second]).status_code == 200
+        status = client.get(f"/api/matches/{match_id}/player-tracking").json()
+        assert status["status"] == "idle"
+        assert [span["status"] for span in status["spans"]] == ["pending"] * 3
+    else:
+        running_job.cancel.set()
 
     retracked: dict[str, object] = {}
 
@@ -939,13 +1014,14 @@ def test_player_tracking_cancel_stops_background_job(tmp_path: Path) -> None:
 
     retrigger_thread = threading.Thread(target=trigger_fresh, daemon=True)
     retrigger_thread.start()
+    assert running_job.cancel.wait(timeout=2.0)
     # Unblock both the winding-down cancelled job and the fresh job.
     release.set()
     retrigger_thread.join(timeout=5.0)
     body = retracked.get("body")
     assert isinstance(body, dict)
     assert body["status"] == "ready"
-    assert body["tracked_segments"] == body["total_segments"] == 2
+    assert body["tracked_segments"] == body["total_segments"] == (3 if split else 2)
     assert body["error"] is None
 
 

@@ -18,7 +18,7 @@ import {
 } from "../api/client";
 import { clearLandmark, currentFit, fitKey, placeLandmark } from "../lib/calibrations";
 import { addShot, markRallyStart, NO_SELECTION, swapShotTeammates } from "../lib/annotate";
-import { markIn, markOut } from "../lib/segments";
+import { markIn, markOut, splitPlaySegmentAt } from "../lib/segments";
 import { ROSTER } from "../lib/testRoster";
 import { tabSaveStatus, waitUntilSaved } from "../lib/unsavedChanges";
 import { useRecording } from "./useRecording";
@@ -148,6 +148,31 @@ describe("useRecording with a Rally Log switch", () => {
 });
 
 describe("useRecording", () => {
+  it("refreshes off-reference Calibration fits after a Play Segment split saves", async () => {
+    const fit = calibrationOut("main", 100);
+    fit.landmarks.near_baseline_left = { x: 0.2, y: 0.8, frame: 155 };
+    fit.resolved_landmarks.near_baseline_left = { x: 0.25, y: 0.8 };
+    const nextFit: CalibrationOut = {
+      ...fit,
+      resolved_landmarks: {},
+      unmapped_landmarks: ["near_baseline_left"],
+    };
+    vi.mocked(getCalibrations).mockResolvedValueOnce([fit]).mockResolvedValueOnce([nextFit]);
+    const { result } = await loaded();
+    const finishSave = holdNextSegmentsSave();
+    expect(result.current[0].fits.get(fitKey(fit))).toBe(fit);
+
+    act(() =>
+      result.current[1].editSegments((list, pending) => splitPlaySegmentAt(list, pending, 150)),
+    );
+    expect(result.current[0].fits.has(fitKey(fit))).toBe(false);
+    expect(getCalibrations).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishSave());
+    await waitFor(() => expect(result.current[0].fits.get(fitKey(fit))).toBe(nextFit));
+    expect(replaceCalibrations).not.toHaveBeenCalled();
+  });
+
   it("loads segments and Calibrations without the server's fit", async () => {
     const { result } = await loaded();
 
