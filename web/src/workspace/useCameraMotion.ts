@@ -31,6 +31,8 @@ export interface CameraMotionState {
   frameLens: Lens | null;
   /** True when the playhead frame is inside a tracked span and could not be registered. */
   frameUnmapped: boolean;
+  /** True while the playhead frame's tracked Camera Motion window is still loading. */
+  frameLoading: boolean;
   /** Retries Camera Motion tracking (e.g. after an error). */
   retrack: () => void;
 }
@@ -54,6 +56,7 @@ export function useCameraMotion(
     data: CameraMotionOut;
   } | null>(null);
   const [windows, setWindows] = useState<Map<string, CameraMotionFramesOut>>(() => new Map());
+  const [failedWindowKey, setFailedWindowKey] = useState<string | null>(null);
   const windowsRef = useRef<Map<string, CameraMotionFramesOut>>(new Map());
   const inFlight = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
@@ -171,6 +174,7 @@ export function useCameraMotion(
       .then((data) => {
         if (!mountedRef.current || scopeRef.current !== scope) return;
         const prefix = `${scope}:`;
+        setFailedWindowKey((prev) => (prev === windowKey ? null : prev));
         setWindows((prev) => {
           const next = new Map<string, CameraMotionFramesOut>();
           for (const [k, v] of prev) {
@@ -182,7 +186,8 @@ export function useCameraMotion(
         });
       })
       .catch(() => {
-        // Leave uncached so a later seek or refresh can retry.
+        // Leave uncached so a later seek or refresh can retry, without falling back to a static fit.
+        if (mountedRef.current && scopeRef.current === scope) setFailedWindowKey(windowKey);
       })
       .finally(() => {
         inFlight.current.delete(windowKey);
@@ -198,23 +203,26 @@ export function useCameraMotion(
 
   const loadedWindow = windowKey ? windows.get(windowKey) : undefined;
   const unmappedFromSummary = Boolean(motion && unmappedRangeAt(motion.unmapped_ranges, frame));
+  const windowFailed = windowKey !== null && failedWindowKey === windowKey;
+  const frameLoading =
+    Boolean(activeSpan) && !loadedWindow && !unmappedFromSummary && !windowFailed;
 
   let frameMatrix: number[][] | null | undefined;
   let frameLens: Lens | null = null;
   let frameUnmapped = unmappedFromSummary;
   if (loadedWindow && frame >= loadedWindow.start_frame && frame <= loadedWindow.end_frame) {
     const idx = frame - loadedWindow.start_frame;
-    if (loadedWindow.unmapped[idx]) {
+    if (loadedWindow.unmapped[idx] || !loadedWindow.court_to_image[idx]) {
       frameMatrix = null;
       frameUnmapped = true;
-    } else if (loadedWindow.court_to_image[idx]) {
+    } else {
       frameMatrix = loadedWindow.court_to_image[idx];
       frameLens = loadedWindow.lens[idx] ?? null;
       frameUnmapped = false;
     }
-  } else if (unmappedFromSummary) {
+  } else if (unmappedFromSummary || windowFailed) {
     frameMatrix = null;
   }
 
-  return { motion, frameMatrix, frameLens, frameUnmapped, retrack };
+  return { motion, frameMatrix, frameLens, frameUnmapped, frameLoading, retrack };
 }

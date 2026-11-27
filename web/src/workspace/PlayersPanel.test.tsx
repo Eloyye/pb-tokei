@@ -138,6 +138,24 @@ function makeVideoRef() {
   return { current: video };
 }
 
+function setupLayerRect(layer: HTMLElement) {
+  layer.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      width: 1000,
+      height: 500,
+      right: 1000,
+      bottom: 500,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  layer.setPointerCapture = vi.fn<(pointerId: number) => void>();
+  layer.hasPointerCapture = () => true;
+  layer.releasePointerCapture = vi.fn<(pointerId: number) => void>();
+}
+
 describe("PlayersPanel", () => {
   it("renders device badge, tracking controls, 4-Player checklist, swap buttons, and anchor/end lists", () => {
     const onTrack = vi.fn<() => void>();
@@ -306,6 +324,183 @@ describe("PlayerOverlay", () => {
     expect(onMove).not.toHaveBeenCalled();
     expect(onAssign).not.toHaveBeenCalled();
   });
+
+  it("handles landing clicks, Alt+click override over Players, and click-to-deselect foot dots", () => {
+    const onAssign =
+      vi.fn<(playerId: string, click: { x: number; y: number }, detection: unknown) => void>();
+    const onMove = vi.fn<(playerId: string, pt: { x: number; y: number }) => void>();
+    const onSelect = vi.fn<(playerId: string) => void>();
+    const onSetLanding = vi.fn<(pt: { x: number; y: number }) => void>();
+    const onBackgroundClick = vi.fn<() => void>();
+
+    // Shot selected, no Player selected: plain click on empty video sets landing, not background play.
+    const { container, rerender } = render(
+      <PlayerOverlay
+        videoRef={makeVideoRef()}
+        players={MATCH.players}
+        frameData={FRAME_DATA}
+        selectedPlayerId={null}
+        editable
+        clickEmptyPlaces={false}
+        landing={{ at: { x: 0.55, y: 0.42 }, team: "a" }}
+        landingMapped
+        onSetLanding={onSetLanding}
+        onSelectPlayer={onSelect}
+        onAssignDetection={onAssign}
+        onMovePlayer={onMove}
+        onBackgroundClick={onBackgroundClick}
+      />,
+    );
+    const layer = container.querySelector<HTMLElement>(".player-layer")!;
+    setupLayerRect(layer);
+
+    expect(layer.classList.contains("landing-click")).toBe(true);
+    const marker = container.querySelector<SVGSVGElement>(".monitor-landing.team-a");
+    expect(marker).not.toBeNull();
+    expect(Number.parseFloat(marker!.style.left)).toBeCloseTo(55, 6);
+    expect(Number.parseFloat(marker!.style.top)).toBeCloseTo(42, 6);
+
+    // Plain click on empty video sets landing; right-click does nothing.
+    fireEvent.pointerDown(layer, { pointerId: 1, button: 2, clientX: 500, clientY: 250 });
+    expect(onSetLanding).not.toHaveBeenCalled();
+    fireEvent.pointerDown(layer, { pointerId: 1, button: 0, clientX: 500, clientY: 250 });
+    expect(onSetLanding).toHaveBeenCalledExactlyOnceWith({ x: 0.5, y: 0.5 });
+    expect(onBackgroundClick).not.toHaveBeenCalled();
+
+    // Plain click on a foot dot selects Player (does not set landing).
+    onSetLanding.mockClear();
+    const dot = screen.getByRole("button", { name: "Anna Bright foot position" });
+    fireEvent.pointerDown(dot, { pointerId: 2, button: 0, clientX: 300, clientY: 350 });
+    fireEvent.pointerUp(dot, { pointerId: 2, button: 0, clientX: 300, clientY: 350 });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("p-a1");
+    expect(onSetLanding).not.toHaveBeenCalled();
+
+    // Alt+click directly on a foot dot sets landing instead of selecting/dragging the Player.
+    onSelect.mockClear();
+    fireEvent.pointerDown(dot, {
+      pointerId: 3,
+      button: 0,
+      altKey: true,
+      clientX: 300,
+      clientY: 350,
+    });
+    expect(onSetLanding).toHaveBeenCalledExactlyOnceWith({ x: 0.3, y: 0.7 });
+    expect(onSelect).not.toHaveBeenCalled();
+
+    // With an already-selected Player (p-a1), plain click on their foot dot without moving calls
+    // onSelectPlayer on pointerUp (toggling off in Annotate), while dragging moves them instead.
+    onSetLanding.mockClear();
+    rerender(
+      <PlayerOverlay
+        videoRef={makeVideoRef()}
+        players={MATCH.players}
+        frameData={FRAME_DATA}
+        selectedPlayerId="p-a1"
+        editable
+        clickEmptyPlaces={false}
+        landingMapped
+        onSetLanding={onSetLanding}
+        onSelectPlayer={onSelect}
+        onAssignDetection={onAssign}
+        onMovePlayer={onMove}
+        onBackgroundClick={onBackgroundClick}
+      />,
+    );
+    const selectedDot = screen.getByRole("button", { name: "Anna Bright foot position" });
+    fireEvent.pointerDown(selectedDot, { pointerId: 4, button: 0, clientX: 300, clientY: 350 });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.pointerUp(layer, { pointerId: 4, button: 0, clientX: 300, clientY: 350 });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("p-a1");
+    expect(onMove).not.toHaveBeenCalled();
+
+    onSelect.mockClear();
+    fireEvent.pointerDown(selectedDot, { pointerId: 5, button: 0, clientX: 300, clientY: 350 });
+    fireEvent.pointerMove(layer, { pointerId: 5, clientX: 350, clientY: 360 });
+    fireEvent.pointerUp(layer, { pointerId: 5, button: 0, clientX: 350, clientY: 360 });
+    expect(onMove).toHaveBeenCalledExactlyOnceWith("p-a1", { x: 0.35, y: 0.72 });
+    expect(onSelect).not.toHaveBeenCalled();
+
+    // With p-b1 (Unknown on this frame) armed for placement:
+    // - plain click in detection box binds p-b1;
+    // - plain click on empty video places p-b1;
+    // - Alt+click over box or empty video still sets landing.
+    onAssign.mockClear();
+    onMove.mockClear();
+    onSetLanding.mockClear();
+    rerender(
+      <PlayerOverlay
+        videoRef={makeVideoRef()}
+        players={MATCH.players}
+        frameData={FRAME_DATA}
+        selectedPlayerId="p-b1"
+        editable
+        clickEmptyPlaces={false}
+        landingMapped
+        onSetLanding={onSetLanding}
+        onSelectPlayer={onSelect}
+        onAssignDetection={onAssign}
+        onMovePlayer={onMove}
+      />,
+    );
+    expect(layer.classList.contains("placing")).toBe(true);
+    fireEvent.pointerDown(layer, { pointerId: 6, button: 0, clientX: 300, clientY: 300 });
+    expect(onAssign).toHaveBeenCalledExactlyOnceWith(
+      "p-b1",
+      { x: 0.3, y: 0.6 },
+      FRAME_DATA.detections[0],
+    );
+    expect(onSetLanding).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(layer, { pointerId: 7, button: 0, clientX: 800, clientY: 250 });
+    expect(onMove).toHaveBeenCalledExactlyOnceWith("p-b1", { x: 0.8, y: 0.5 });
+    expect(onSetLanding).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(layer, {
+      pointerId: 8,
+      button: 0,
+      altKey: true,
+      clientX: 300,
+      clientY: 300,
+    });
+    expect(onSetLanding).toHaveBeenCalledWith({ x: 0.3, y: 0.6 });
+    fireEvent.pointerDown(layer, {
+      pointerId: 9,
+      button: 0,
+      altKey: true,
+      clientX: 800,
+      clientY: 250,
+    });
+    expect(onSetLanding).toHaveBeenCalledWith({ x: 0.8, y: 0.5 });
+
+    // With showPlayers=false, Player boxes/dots are hidden, landing ✕ still renders, and plain click sets landing.
+    onSetLanding.mockClear();
+    onAssign.mockClear();
+    onMove.mockClear();
+    rerender(
+      <PlayerOverlay
+        videoRef={makeVideoRef()}
+        players={MATCH.players}
+        frameData={FRAME_DATA}
+        selectedPlayerId="p-b1"
+        editable
+        showPlayers={false}
+        clickEmptyPlaces={false}
+        landing={{ at: { x: 0.4, y: 0.6 }, team: "b" }}
+        landingMapped
+        onSetLanding={onSetLanding}
+        onSelectPlayer={onSelect}
+        onAssignDetection={onAssign}
+        onMovePlayer={onMove}
+      />,
+    );
+    expect(container.querySelectorAll(".player-box")).toHaveLength(0);
+    expect(container.querySelectorAll(".player-dot")).toHaveLength(0);
+    expect(container.querySelector(".monitor-landing.team-b")).not.toBeNull();
+    fireEvent.pointerDown(layer, { pointerId: 10, button: 0, clientX: 300, clientY: 300 });
+    expect(onSetLanding).toHaveBeenCalledExactlyOnceWith({ x: 0.3, y: 0.6 });
+    expect(onAssign).not.toHaveBeenCalled();
+    expect(onMove).not.toHaveBeenCalled();
+  });
 });
 
 describe("CourtDiagram", () => {
@@ -366,5 +561,53 @@ describe("CourtDiagram", () => {
       true,
     );
     expect(screen.getByText("Cara Lee / Dan Kim")).toBeTruthy();
+  });
+
+  it("defers onSelectPlayer to pointerUp when clicking an already-selected dot without dragging", () => {
+    const onSelect = vi.fn<(playerId: string) => void>();
+    const onMove = vi.fn<(playerId: string, pt: { x: number; y: number }) => void>();
+    const { container } = render(
+      <CourtDiagram
+        nearTeam="Anna Bright / Ben Johns"
+        farTeam="Cara Lee / Dan Kim"
+        interactive
+        selectedPlayerId="p-a1"
+        onSelectPlayer={onSelect}
+        onMovePlayer={onMove}
+        players={[
+          {
+            id: "p-a1",
+            name: "Anna Bright",
+            initials: "AB",
+            team: "a",
+            x: -4,
+            y: -8,
+            certainty: "observed",
+            selected: true,
+          },
+        ]}
+      />,
+    );
+    const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+    svg.setPointerCapture = vi.fn<(pointerId: number) => void>();
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 0, width: 320, height: 672 }),
+    );
+    const dot = svg.querySelector<SVGGElement>('[data-player-id="p-a1"]')!;
+
+    // Click without dragging: does not fire on pointerDown, fires on pointerUp to toggle off.
+    fireEvent.pointerDown(dot, { pointerId: 1, button: 0, clientX: 120, clientY: 416 });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.pointerUp(svg, { pointerId: 1, button: 0, clientX: 120, clientY: 416 });
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("p-a1");
+    expect(onMove).not.toHaveBeenCalled();
+
+    // Dragging an already-selected dot moves it without calling onSelectPlayer.
+    onSelect.mockClear();
+    fireEvent.pointerDown(dot, { pointerId: 2, button: 0, clientX: 120, clientY: 416 });
+    fireEvent.pointerMove(svg, { pointerId: 2, clientX: 160, clientY: 380 });
+    fireEvent.pointerUp(svg, { pointerId: 2, button: 0, clientX: 160, clientY: 380 });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onMove).toHaveBeenCalledTimes(1);
   });
 });

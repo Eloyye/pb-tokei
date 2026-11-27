@@ -11,7 +11,7 @@ import type {
   TrackedPlayerOut,
   Zone,
 } from "../api/client";
-import { type Point, project } from "./calibrations";
+import { type Point, project, unproject } from "./calibrations";
 
 /**
  * Pure helpers for Player Tracking anchors, `team_ends`, Partner/End swaps, and Court projection.
@@ -313,32 +313,13 @@ export function courtPointToImage(
   return mapped;
 }
 
-/** Inverts a `3x3` court-to-image matrix (with optional lens undistortion) to estimate court `y`. */
+/** Inverts a `3x3` court-to-image matrix (with optional lens undistortion) to map to court feet. */
 export function imagePointToCourt(
   imagePt: Point,
   courtToImage: number[][] | null | undefined,
   lens?: Lens | null,
 ): Point | null {
-  if (!courtToImage) return null;
-  const inv = invert3x3(courtToImage);
-  if (!inv) return null;
-  let ux = imagePt.x;
-  let uy = imagePt.y;
-  if (lens && lens.k1 !== 0) {
-    const dx = ux - 0.5;
-    const dy = uy - 0.5;
-    const a2 = lens.aspect * lens.aspect;
-    const r2 = (4 * (dx * dx * a2 + dy * dy)) / (a2 + 1);
-    const scale = 1 + lens.k1 * r2;
-    ux = 0.5 + dx * scale;
-    uy = 0.5 + dy * scale;
-  }
-  const [r0, r1, r2] = inv as [number[], number[], number[]];
-  const w = r2[0]! * ux + r2[1]! * uy + r2[2]!;
-  if (Math.abs(w) < 1e-9) return null;
-  const x = (r0[0]! * ux + r0[1]! * uy + r0[2]!) / w;
-  const y = (r1[0]! * ux + r1[1]! * uy + r1[2]!) / w;
-  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  return courtToImage ? unproject(courtToImage, imagePt, lens) : null;
 }
 
 function currentImagePointFor(
@@ -360,32 +341,4 @@ function currentImagePointFor(
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
-}
-
-function invert3x3(m: number[][]): number[][] | null {
-  const a = m[0]?.[0] ?? 0;
-  const b = m[0]?.[1] ?? 0;
-  const c = m[0]?.[2] ?? 0;
-  const d = m[1]?.[0] ?? 0;
-  const e = m[1]?.[1] ?? 0;
-  const f = m[1]?.[2] ?? 0;
-  const g = m[2]?.[0] ?? 0;
-  const h = m[2]?.[1] ?? 0;
-  const i = m[2]?.[2] ?? 0;
-  const A = e * i - f * h;
-  const B = -(d * i - f * g);
-  const C = d * h - e * g;
-  const det = a * A + b * B + c * C;
-  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
-  const D = -(b * i - c * h);
-  const E = a * i - c * g;
-  const F = -(a * h - b * g);
-  const G = b * f - c * e;
-  const H = -(a * f - c * d);
-  const I = a * e - b * d;
-  return [
-    [A / det, D / det, G / det],
-    [B / det, E / det, H / det],
-    [C / det, F / det, I / det],
-  ];
 }

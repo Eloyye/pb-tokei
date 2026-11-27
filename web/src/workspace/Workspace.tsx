@@ -24,6 +24,7 @@ import {
   reuseCalibration,
   skipLandmark,
   unmappedRangeAt,
+  unproject,
 } from "../lib/calibrations";
 import {
   type AnnotateContext,
@@ -105,7 +106,7 @@ import {
   swapTeamEnds,
   swapTeamPartners,
 } from "../lib/players";
-import { isShot, positionsFromTracking, rosterOf, shotsOf } from "../lib/rallyLog";
+import { isShot, positionsFromTracking, rosterOf, shotsOf, teamKey } from "../lib/rallyLog";
 import {
   checkMatch,
   countIssues,
@@ -113,7 +114,15 @@ import {
   nextRuleIssue,
   type RuleIssue,
 } from "../lib/ruleChecks";
-import { markIn, markOut, moveEdge, removeAt, segmentAt, setCameraView } from "../lib/segments";
+import {
+  markIn,
+  markOut,
+  moveEdge,
+  removeAt,
+  segmentAt,
+  setCameraView,
+  VIEW_LABELS,
+} from "../lib/segments";
 import { fitRange, type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
 import { ZOOM_STEP } from "../lib/wheel";
 import type { Workspace as WorkspaceName } from "../lib/workspaces";
@@ -123,7 +132,7 @@ import type { PanelId } from "./Panel";
 import { CalibrationOverlay } from "./CalibrationOverlay";
 import { type CalibrateTab, CalibrationPanel } from "./CalibrationPanel";
 import type { CourtNavigation } from "./CourtDiagram";
-import { PlayerOverlay } from "./PlayerOverlay";
+import { type MonitorLanding, PlayerOverlay } from "./PlayerOverlay";
 import { PlayersPanel } from "./PlayersPanel";
 import { type InspectorForm, InspectorPanel, type InspectorTab } from "./Inspector";
 import { RalliesPanel } from "./RalliesPanel";
@@ -199,12 +208,13 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     () => match.players[0]?.id ?? null,
   );
   // In Annotate, no Player is selected until the operator explicitly clicks one in CourtPanel or
-  // the Monitor overlay, so clicking the video toggles play/pause instead of saving an anchor.
+  // the Monitor overlay; clicking the already-selected Player again deselects them.
   const [annotateSelectedPlayerId, setAnnotateSelectedPlayerId] = useState<string | null>(null);
   const selectedPlayerId = calibrating ? calibrateSelectedPlayerId : annotateSelectedPlayerId;
-  const setSelectedPlayerId = calibrating
+  const selectPlayer = calibrating
     ? setCalibrateSelectedPlayerId
-    : setAnnotateSelectedPlayerId;
+    : (playerId: string) =>
+        setAnnotateSelectedPlayerId((currentId) => (currentId === playerId ? null : playerId));
   const [showPlayerOverlay, setShowPlayerOverlay] = useState(true);
 
   // Rally and Shot entry (#12): what is selected, the Inspector's tab, field cursor and form.
@@ -263,15 +273,19 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
   const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
   const activeFit = calibration ? currentFit(recordingState.fits, calibration) : undefined;
-  const activeCourtToImage = cameraMotion.frameUnmapped
-    ? null
-    : cameraMotion.frameMatrix !== undefined
-      ? cameraMotion.frameMatrix
-      : (activeFit?.court_to_image ??
-        (calibration ? recordingState.fits.get(fitKey(calibration))?.court_to_image : null) ??
-        null);
+  const activeCourtToImage =
+    !segment || cameraMotion.frameUnmapped || cameraMotion.frameLoading
+      ? null
+      : cameraMotion.frameMatrix !== undefined
+        ? cameraMotion.frameMatrix
+        : (activeFit?.court_to_image ??
+          (calibration ? recordingState.fits.get(fitKey(calibration))?.court_to_image : null) ??
+          null);
   const activeLens =
-    !cameraMotion.frameUnmapped && cameraMotion.frameMatrix !== undefined
+    segment &&
+    !cameraMotion.frameUnmapped &&
+    !cameraMotion.frameLoading &&
+    cameraMotion.frameMatrix !== undefined
       ? cameraMotion.frameLens
       : null;
 
@@ -420,6 +434,51 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     if (index >= 0) setCursor((c) => ({ ...c, [tab]: index }));
   };
 
+  /** Maps a Monitor click on the playhead frame to court feet and sets the selected Shot's landing. */
+  const setLandingFromMonitor = (imagePoint: Point) => {
+    if (!currentShot) return;
+    if (!segment) {
+      recording.notify("Frame is outside a Play Segment; set the landing on the Court");
+      return;
+    }
+    if (!calibration) {
+      recording.notify(
+        `No ${VIEW_LABELS[segment.camera_view]} Calibration; set the landing on the Court`,
+      );
+      return;
+    }
+    if (cameraMotion.frameUnmapped) {
+      recording.notify("Frame unmapped by Camera Motion; set the landing on the Court");
+      return;
+    }
+    if (cameraMotion.frameLoading) {
+      recording.notify("Loading Camera Motion for this frame; try again in a moment");
+      return;
+    }
+    if (!activeCourtToImage) {
+      recording.notify("Frame not mapped to the court; set the landing on the Court");
+      return;
+    }
+    const courtPoint = unproject(activeCourtToImage, imagePoint, activeLens);
+    if (!courtPoint) {
+      recording.notify(
+        "Click is above the court plane; click the bounce on the ground or set the landing on the Court",
+      );
+      return;
+    }
+    focusField("shot", "landing");
+    annotateEdit((c) => setLanding(c, courtPoint));
+  };
+
+  const monitorLanding: MonitorLanding | null = useMemo(() => {
+    if (!annotating || !currentShot?.landing.value || !activeCourtToImage) return null;
+    const at = courtPointToImage(currentShot.landing.value, activeCourtToImage, activeLens);
+    if (!at) return null;
+    const hitter = currentShot.hitter_id.value;
+    const team = teamKey(roster, match.players.find((p) => p.id === hitter)?.team_id ?? null);
+    return { at, team };
+  }, [annotating, currentShot, activeCourtToImage, activeLens, roster, match.players]);
+
   /** Fits the Timeline to a Rally (8% padding); false for an Unseen Rally. */
   const fitRally = (rally = currentRally): boolean => {
     if (!rally || rally.start_frame === null) return false;
@@ -478,10 +537,18 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     else goToRally(next);
   };
 
-  /** `Esc`: closes an open popup or inline form first, then steps selection Shot → Rally → none. */
+  /**
+   * `Esc`: closes Go-to popup or inline form first, then cancels Player placement (Annotate),
+   * then steps selection Shot → Rally → none.
+   */
   const handleEscape = () => {
     if (gotoOpen) return setGotoOpen(false);
     if (form !== null) return setForm(null);
+    if (annotating && annotateSelectedPlayerId !== null) {
+      setAnnotateSelectedPlayerId(null);
+      recording.notify("Player placement cancelled");
+      return;
+    }
     applyDeselect(deselectSelection(current));
   };
   /** Navigates straight to a rule issue's Game, Rally, Shot, Inspector tab, and field cursor. */
@@ -1103,15 +1170,19 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   onBlocked={recording.notify}
                 />
               ) : (calibrating && calibrateTab === "players") ||
-                (annotating && showPlayerOverlay) ? (
+                (annotating && (showPlayerOverlay || Boolean(currentShot))) ? (
                 <PlayerOverlay
                   videoRef={videoRef}
                   players={match.players}
                   frameData={playerTracking.frameData}
                   selectedPlayerId={selectedPlayerId}
                   editable={Boolean(segment)}
+                  showPlayers={calibrating || showPlayerOverlay}
                   clickEmptyPlaces={calibrating && calibrateTab === "players"}
-                  onSelectPlayer={setSelectedPlayerId}
+                  landing={monitorLanding}
+                  landingMapped={Boolean(activeCourtToImage)}
+                  onSetLanding={annotating && currentShot ? setLandingFromMonitor : undefined}
+                  onSelectPlayer={selectPlayer}
                   onAssignDetection={assignPlayerDetection}
                   onMovePlayer={movePlayerOnMonitor}
                   onBackgroundClick={annotating ? togglePlayAnnotate : undefined}
@@ -1177,7 +1248,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   anchors={anchors}
                   teamEnds={teamEnds}
                   selectedPlayerId={selectedPlayerId}
-                  onSelectPlayer={setSelectedPlayerId}
+                  onSelectPlayer={selectPlayer}
                   onTrack={() => playerTracking.startTracking(frame)}
                   onCancelTrack={playerTracking.cancelTracking}
                   onSwapTeam={swapTeam}
@@ -1212,7 +1283,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 frameData={playerTracking.frameData}
                 teamEnds={teamEnds}
                 selectedPlayerId={selectedPlayerId}
-                onSelectPlayer={setSelectedPlayerId}
+                onSelectPlayer={selectPlayer}
                 onMovePlayer={movePlayerOnCourt}
                 onPlaceOnCourt={placeSelectedOnCourt}
                 roster={roster}
@@ -1228,9 +1299,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   focusField("shot", "landing");
                   annotateEdit((c) => setLanding(c, point));
                 }}
-                onMoveShotPlayer={(playerId, point) =>
-                  annotateEdit((c) => moveShotPosition(c, playerId, point))
-                }
+                onMoveShotPlayer={(playerId, point) => {
+                  annotateEdit((c) => moveShotPosition(c, playerId, point));
+                  setAnnotateSelectedPlayerId(null);
+                }}
                 onDeselectShot={() => {
                   if (current.entry !== null) applyDeselect({ ...current, entry: null });
                 }}

@@ -27,7 +27,9 @@ import {
   reuseBlocker,
   reuseCalibration,
   skipLandmark,
+  undistort,
   unmappedRangeAt,
+  unproject,
 } from "./calibrations";
 import LENS_GOLDEN from "./lens-golden.json";
 
@@ -355,14 +357,6 @@ function sag(run: { x: number; y: number }[]): number {
   return mid.y - (first.y + last.y) / 2;
 }
 
-/** The server's lens model (ADR 0011): an undistorted point lies at c + (p - c) * (1 + k1 * r^2). */
-function undistort(p: { x: number; y: number }, k1: number, aspect: number) {
-  const dx = p.x - 0.5;
-  const dy = p.y - 0.5;
-  const r2 = (4 * (dx * dx * aspect * aspect + dy * dy)) / (aspect * aspect + 1);
-  return { x: 0.5 + dx * (1 + k1 * r2), y: 0.5 + dy * (1 + k1 * r2) };
-}
-
 describe("project", () => {
   it("applies the homography and rejects points behind the camera", () => {
     const scaled = [
@@ -425,11 +419,19 @@ describe("distort", () => {
     const lens = { k1: 0.12, aspect: 16 / 9 };
     for (const x of [0, 0.2, 0.5, 0.8, 1]) {
       for (const y of [0, 0.3, 0.5, 1]) {
-        const back = distort(undistort({ x, y }, lens.k1, lens.aspect), lens);
+        const back = distort(undistort({ x, y }, lens), lens);
         // Within a millionth of the frame: far below a pixel.
         expect(back.x).toBeCloseTo(x, 6);
         expect(back.y).toBeCloseTo(y, 6);
       }
+    }
+  });
+
+  it("undistort inverts distort on the shared golden fixture", () => {
+    for (const { k1, aspect, point, distorted } of LENS_GOLDEN) {
+      const got = undistort({ x: distorted[0]!, y: distorted[1]! }, { k1, aspect });
+      expect(got.x).toBeCloseTo(point[0]!, 5);
+      expect(got.y).toBeCloseTo(point[1]!, 5);
     }
   });
 
@@ -820,5 +822,106 @@ describe("landmarkHighlight", () => {
         matrix: behindCamera,
       }),
     ).toEqual({ kind: "none" });
+  });
+});
+
+describe("unproject", () => {
+  // Perspective Main View court_to_image: camera elevated behind the near baseline looking forward.
+  const MAIN_PERSPECTIVE = [
+    [0.028, 0.004, 0.5],
+    [0.001, -0.014, 0.55],
+    [0.001, 0.018, 1.0],
+  ];
+  // Rotated perspective Sideline View court_to_image: camera off the right sideline looking across.
+  const SIDELINE_PERSPECTIVE = [
+    [-0.006, 0.019, 0.48],
+    [0.022, 0.003, 0.58],
+    [0.014, 0.005, 1.0],
+  ];
+  const COURT_SAMPLES = [
+    { x: 0, y: 0 },
+    { x: -10, y: -22 },
+    { x: 10, y: -22 },
+    { x: -10, y: 22 },
+    { x: 10, y: 22 },
+    { x: -7, y: -7 },
+    { x: 6.5, y: 7 },
+    { x: -13, y: 15 },
+    { x: 12, y: -14 },
+  ];
+
+  it("round-trips court → image → court across perspective Main and Sideline Views with and without lens distortion", () => {
+    const lenses = [
+      null,
+      { k1: 0, aspect: 16 / 9 },
+      { k1: 0.09, aspect: 16 / 9 },
+      { k1: 0.14, aspect: 16 / 9 },
+      { k1: -0.05, aspect: 4 / 3 },
+    ];
+    for (const matrix of [MAIN_PERSPECTIVE, SIDELINE_PERSPECTIVE]) {
+      for (const lens of lenses) {
+        for (const courtPt of COURT_SAMPLES) {
+          const imagePt = project(matrix, courtPt, lens);
+          expect(imagePt).not.toBeNull();
+          const roundTripped = unproject(matrix, imagePt!, lens);
+          expect(roundTripped).not.toBeNull();
+          expect(roundTripped!.x).toBeCloseTo(courtPt.x, 4);
+          expect(roundTripped!.y).toBeCloseTo(courtPt.y, 4);
+
+          const reprojected = project(matrix, roundTripped!, lens);
+          expect(reprojected).not.toBeNull();
+          expect(reprojected!.x).toBeCloseTo(imagePt!.x, 5);
+          expect(reprojected!.y).toBeCloseTo(imagePt!.y, 5);
+        }
+      }
+    }
+  });
+
+  it("is invariant to positive matrix scaling", () => {
+    const lens = { k1: 0.09, aspect: 16 / 9 };
+    const courtPt = { x: -4.2, y: 11.7 };
+    const imagePt = project(MAIN_PERSPECTIVE, courtPt, lens)!;
+    for (const factor of [1e-5, 1e5]) {
+      const scaled = MAIN_PERSPECTIVE.map((row) => row.map((v) => v * factor));
+      const got = unproject(scaled, imagePt, lens);
+      expect(got).not.toBeNull();
+      expect(got!.x).toBeCloseTo(courtPt.x, 4);
+      expect(got!.y).toBeCloseTo(courtPt.y, 4);
+    }
+  });
+
+  it("returns null for image points on or above the horizon (w <= 0)", () => {
+    // Simple perspective where y_img = (0.5 - 0.02 * y_court) / (1 + 0.05 * y_court).
+    // Horizon (y_court -> +inf) sits at y_img = -0.02 / 0.05 = -0.4; let's place the horizon at y_img = 0.2:
+    // y_img = (0.2 * 0.05 * y + 0.6) / (0.05 * y + 1) = (0.01 * y + 0.6) / (0.05 * y + 1)
+    const withVisibleHorizon = [
+      [0.02, 0, 0.5],
+      [0, 0.01, 0.6],
+      [0, 0.05, 1],
+    ];
+    // Below horizon (y_img = 0.6 -> court (0, 0)): valid.
+    const onCourt = unproject(withVisibleHorizon, { x: 0.5, y: 0.6 });
+    expect(onCourt).not.toBeNull();
+    expect(onCourt!.x).toBeCloseTo(0, 6);
+    expect(onCourt!.y).toBeCloseTo(0, 6);
+    // On horizon (y_img = 0.2) and above horizon (y_img = 0.1): rejected.
+    expect(unproject(withVisibleHorizon, { x: 0.5, y: 0.2 })).toBeNull();
+    expect(unproject(withVisibleHorizon, { x: 0.5, y: 0.1 })).toBeNull();
+  });
+
+  it("returns null for singular, non-finite, or malformed matrices", () => {
+    const singular = [
+      [1, 2, 3],
+      [2, 4, 6],
+      [0, 0, 1],
+    ];
+    const nonFinite = [
+      [Number.NaN, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    expect(unproject(singular, { x: 0.5, y: 0.5 })).toBeNull();
+    expect(unproject(nonFinite, { x: 0.5, y: 0.5 })).toBeNull();
+    expect(unproject([[1, 0]], { x: 0.5, y: 0.5 })).toBeNull();
   });
 });

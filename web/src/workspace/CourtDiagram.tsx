@@ -45,7 +45,14 @@ export interface CourtNavigation {
 
 type CourtDrag =
   | { kind: "pan"; pointerId: number; last: Point }
-  | { kind: "player"; pointerId: number; playerId: string; start: Point; from: Point };
+  | {
+      kind: "player";
+      pointerId: number;
+      playerId: string;
+      start: Point;
+      from: Point;
+      alreadySelected: boolean;
+    };
 
 export interface CourtPlayerDot {
   id: string;
@@ -209,7 +216,11 @@ export function CourtDiagram({
       return;
     }
     setPlayerDrag(null);
-    if (!commit || (event.clientX === drag.start.x && event.clientY === drag.start.y)) return;
+    if (!commit) return;
+    if (event.clientX === drag.start.x && event.clientY === drag.start.y) {
+      if (drag.alreadySelected) onSelectPlayer?.(drag.playerId);
+      return;
+    }
     const at = pointerPoint(event);
     if (!at) return;
     const point = transform.toCourt(at);
@@ -293,16 +304,20 @@ export function CourtDiagram({
         const playerId = target?.closest("[data-player-id]")?.getAttribute("data-player-id");
         const dot = playerId ? dots.find(({ player }) => player.id === playerId) : undefined;
         if (dot) {
-          onSelectPlayer?.(dot.player.id);
+          const alreadySelected = dot.player.id === selectedPlayerId;
+          if (!alreadySelected) onSelectPlayer?.(dot.player.id);
           if (interactive && onMovePlayer) {
-            event.currentTarget.setPointerCapture(event.pointerId);
+            event.currentTarget.setPointerCapture?.(event.pointerId);
             dragRef.current = {
               kind: "player",
               pointerId: event.pointerId,
               playerId: dot.player.id,
               start: { x: event.clientX, y: event.clientY },
               from: dot.at,
+              alreadySelected,
             };
+          } else if (alreadySelected) {
+            onSelectPlayer?.(dot.player.id);
           }
           return;
         }

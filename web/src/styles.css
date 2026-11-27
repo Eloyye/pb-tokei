@@ -1417,8 +1417,41 @@ fieldset.transport-group {
   touch-action: none;
 }
 
-.player-layer.placing {
+.player-layer.placing,
+.player-layer.landing-click {
   cursor: crosshair;
+}
+
+.monitor-landing {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.monitor-landing .halo {
+  stroke: rgb(18 18 18 / 85%);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.monitor-landing .mark {
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+
+.monitor-landing.team-a .mark {
+  stroke: var(--team-a);
+}
+
+.monitor-landing.team-b .mark {
+  stroke: var(--team-b);
+}
+
+.monitor-landing.team-none .mark {
+  stroke: var(--text);
 }
 
 .player-box {

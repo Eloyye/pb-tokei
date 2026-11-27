@@ -728,11 +728,42 @@ export function project(matrix: number[][], point: Point, lens?: Lens | null): P
   return lens ? distort(at, lens) : at;
 }
 
+/**
+ * Maps a normalised image point back onto the court plane in feet by undistorting through `lens`
+ * (if any) and inverting `matrix` (`court_to_image`). Returns null when `matrix` is singular or
+ * the point lies on or above the horizon (`w <= 0`).
+ */
+export function unproject(matrix: number[][], point: Point, lens?: Lens | null): Point | null {
+  const inv = invert3x3Scaled(matrix);
+  if (!inv) return null;
+  const u = lens ? undistort(point, lens) : point;
+  const [r0, r1, r2] = inv;
+  const w = r2[0] * u.x + r2[1] * u.y + r2[2];
+  if (!(w > 0)) return null;
+  const x = (r0[0] * u.x + r0[1] * u.y + r0[2]) / w;
+  const y = (r1[0] * u.x + r1[1] * u.y + r1[2]) / w;
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
 // `distort`'s fixed-point iteration, matching `Lens.distort` in src/pb_tokei/calibration.py: both
 // are checked against lens-golden.json, which pytest asserts against the server's model.
 const DISTORT_ITERATIONS = 12;
 const DISTORT_SCALE_RANGE = [0.2, 5] as const;
 const DISTORT_MIN_DENOMINATOR = 1e-3;
+
+/**
+ * Where a normalised frame point lies in the undistorted image (ADR 0011), matching
+ * `Lens.undistort` in `src/pb_tokei/calibration.py`.
+ */
+export function undistort(point: Point, lens: Lens): Point {
+  if (lens.k1 === 0) return point;
+  const dx = point.x - 0.5;
+  const dy = point.y - 0.5;
+  const a2 = lens.aspect * lens.aspect;
+  const r2 = (4 * (dx * dx * a2 + dy * dy)) / (a2 + 1);
+  const scale = 1 + lens.k1 * r2;
+  return { x: 0.5 + dx * scale, y: 0.5 + dy * scale };
+}
 
 /**
  * Where an undistorted normalised image point appears in the frame through a broadcast lens.
@@ -754,6 +785,74 @@ export function distort(point: Point, lens: Lens): Point {
     s = Math.min(high, Math.max(low, 1 / denominator));
   }
   return { x: 0.5 + dx * s, y: 0.5 + dy * s };
+}
+
+type Matrix3x3 = [[number, number, number], [number, number, number], [number, number, number]];
+
+/**
+ * Positive scalar multiple of `m^-1`, computed after normalising by `max(|m|)` so the inversion is
+ * invariant to matrix scale while preserving the sign of homogeneous `w`.
+ */
+function invert3x3Scaled(m: number[][]): Matrix3x3 | null {
+  const a0 = m[0]?.[0];
+  const b0 = m[0]?.[1];
+  const c0 = m[0]?.[2];
+  const d0 = m[1]?.[0];
+  const e0 = m[1]?.[1];
+  const f0 = m[1]?.[2];
+  const g0 = m[2]?.[0];
+  const h0 = m[2]?.[1];
+  const i0 = m[2]?.[2];
+  if (
+    a0 === undefined ||
+    b0 === undefined ||
+    c0 === undefined ||
+    d0 === undefined ||
+    e0 === undefined ||
+    f0 === undefined ||
+    g0 === undefined ||
+    h0 === undefined ||
+    i0 === undefined
+  ) {
+    return null;
+  }
+  const scale = Math.max(
+    Math.abs(a0),
+    Math.abs(b0),
+    Math.abs(c0),
+    Math.abs(d0),
+    Math.abs(e0),
+    Math.abs(f0),
+    Math.abs(g0),
+    Math.abs(h0),
+    Math.abs(i0),
+  );
+  if (!(scale > 0) || !Number.isFinite(scale)) return null;
+  const a = a0 / scale;
+  const b = b0 / scale;
+  const c = c0 / scale;
+  const d = d0 / scale;
+  const e = e0 / scale;
+  const f = f0 / scale;
+  const g = g0 / scale;
+  const h = h0 / scale;
+  const i = i0 / scale;
+  const A = e * i - f * h;
+  const B = -(d * i - f * g);
+  const C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
+  const D = -(b * i - c * h);
+  const E = a * i - c * g;
+  const F = -(a * h - b * g);
+  const G = b * f - c * e;
+  const H = -(a * f - c * d);
+  const I = a * e - b * d;
+  return [
+    [A / det, D / det, G / det],
+    [B / det, E / det, H / det],
+    [C / det, F / det, I / det],
+  ];
 }
 
 /** A court line, and whether it is drawn dashed (the Zone boundaries at 9, 12 and 18 ft). */
