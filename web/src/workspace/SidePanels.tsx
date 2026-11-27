@@ -29,6 +29,7 @@ export function CourtPanel({
   teamEnds = [],
   selectedPlayerId = null,
   onSelectPlayer,
+  onDeselectPlayer,
   onMovePlayer,
   onPlaceOnCourt,
   roster,
@@ -48,6 +49,7 @@ export function CourtPanel({
   teamEnds?: readonly TeamEnd[];
   selectedPlayerId?: string | null;
   onSelectPlayer?: (playerId: string) => void;
+  onDeselectPlayer?: () => void;
   onMovePlayer?: (playerId: string, courtPoint: Point) => void;
   onPlaceOnCourt?: (courtPoint: Point) => void;
   roster?: Roster;
@@ -171,6 +173,7 @@ export function CourtPanel({
           interactive={shot ? Boolean(onMoveShotPlayer) : Boolean(onMovePlayer)}
           selectedPlayerId={selectedPlayerId}
           onSelectPlayer={onSelectPlayer}
+          onDeselectPlayer={onDeselectPlayer}
           onMovePlayer={shot ? onMoveShotPlayer : onMovePlayer}
           onPlaceOnCourt={shot ? undefined : onPlaceOnCourt}
           ghosts={ghosts}

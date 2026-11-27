@@ -124,7 +124,7 @@ const GROUPS: [string, [string[], string][]][] = [
         ["Drag dot"],
         "Override a Player's foot position on the Monitor (or Court, with no Shot selected)",
       ],
-      [["Click dot again", "Esc"], "Deselect the armed Player in Annotate"],
+      [["Click dot again", "Esc"], "Cancel Player placement in Annotate"],
       [["⌘Z", "⇧⌘Z"], "Undo / redo anchor and end-change edits"],
     ],
   ],

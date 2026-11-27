@@ -325,11 +325,12 @@ describe("PlayerOverlay", () => {
     expect(onAssign).not.toHaveBeenCalled();
   });
 
-  it("handles landing clicks, Alt+click override over Players, and click-to-deselect foot dots", () => {
+  it("handles landing clicks, Alt+click override over Players, click-to-deselect, cancel, and team-none marker", () => {
     const onAssign =
       vi.fn<(playerId: string, click: { x: number; y: number }, detection: unknown) => void>();
     const onMove = vi.fn<(playerId: string, pt: { x: number; y: number }) => void>();
     const onSelect = vi.fn<(playerId: string) => void>();
+    const onDeselect = vi.fn<() => void>();
     const onSetLanding = vi.fn<(pt: { x: number; y: number }) => void>();
     const onBackgroundClick = vi.fn<() => void>();
 
@@ -346,6 +347,7 @@ describe("PlayerOverlay", () => {
         landingMapped
         onSetLanding={onSetLanding}
         onSelectPlayer={onSelect}
+        onDeselectPlayer={onDeselect}
         onAssignDetection={onAssign}
         onMovePlayer={onMove}
         onBackgroundClick={onBackgroundClick}
@@ -373,6 +375,7 @@ describe("PlayerOverlay", () => {
     fireEvent.pointerDown(dot, { pointerId: 2, button: 0, clientX: 300, clientY: 350 });
     fireEvent.pointerUp(dot, { pointerId: 2, button: 0, clientX: 300, clientY: 350 });
     expect(onSelect).toHaveBeenCalledExactlyOnceWith("p-a1");
+    expect(onDeselect).not.toHaveBeenCalled();
     expect(onSetLanding).not.toHaveBeenCalled();
 
     // Alt+click directly on a foot dot sets landing instead of selecting/dragging the Player.
@@ -388,7 +391,7 @@ describe("PlayerOverlay", () => {
     expect(onSelect).not.toHaveBeenCalled();
 
     // With an already-selected Player (p-a1), plain click on their foot dot without moving calls
-    // onSelectPlayer on pointerUp (toggling off in Annotate), while dragging moves them instead.
+    // onDeselectPlayer on pointerUp, while dragging moves them instead, and cancel/lostCapture aborts.
     onSetLanding.mockClear();
     rerender(
       <PlayerOverlay
@@ -398,27 +401,47 @@ describe("PlayerOverlay", () => {
         selectedPlayerId="p-a1"
         editable
         clickEmptyPlaces={false}
+        landing={{ at: { x: 0.5, y: 0.5 }, team: null }}
         landingMapped
         onSetLanding={onSetLanding}
         onSelectPlayer={onSelect}
+        onDeselectPlayer={onDeselect}
         onAssignDetection={onAssign}
         onMovePlayer={onMove}
         onBackgroundClick={onBackgroundClick}
       />,
     );
+    expect(container.querySelector(".monitor-landing.team-none")).not.toBeNull();
+
     const selectedDot = screen.getByRole("button", { name: "Anna Bright foot position" });
     fireEvent.pointerDown(selectedDot, { pointerId: 4, button: 0, clientX: 300, clientY: 350 });
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(onDeselect).not.toHaveBeenCalled();
     fireEvent.pointerUp(layer, { pointerId: 4, button: 0, clientX: 300, clientY: 350 });
-    expect(onSelect).toHaveBeenCalledExactlyOnceWith("p-a1");
+    expect(onDeselect).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
     expect(onMove).not.toHaveBeenCalled();
 
-    onSelect.mockClear();
+    onDeselect.mockClear();
     fireEvent.pointerDown(selectedDot, { pointerId: 5, button: 0, clientX: 300, clientY: 350 });
     fireEvent.pointerMove(layer, { pointerId: 5, clientX: 350, clientY: 360 });
     fireEvent.pointerUp(layer, { pointerId: 5, button: 0, clientX: 350, clientY: 360 });
     expect(onMove).toHaveBeenCalledExactlyOnceWith("p-a1", { x: 0.35, y: 0.72 });
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(onDeselect).not.toHaveBeenCalled();
+
+    // pointerCancel and lostPointerCapture abort the drag cleanly without moving or deselecting.
+    onMove.mockClear();
+    fireEvent.pointerDown(selectedDot, { pointerId: 11, button: 0, clientX: 300, clientY: 350 });
+    fireEvent.pointerMove(layer, { pointerId: 11, clientX: 360, clientY: 360 });
+    fireEvent.pointerCancel(layer, { pointerId: 11 });
+    fireEvent.pointerUp(layer, { pointerId: 11, button: 0, clientX: 360, clientY: 360 });
+    expect(onMove).not.toHaveBeenCalled();
+    expect(onDeselect).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(selectedDot, { pointerId: 12, button: 0, clientX: 300, clientY: 350 });
+    fireEvent.lostPointerCapture(layer, { pointerId: 12 });
+    fireEvent.pointerUp(layer, { pointerId: 12, button: 0, clientX: 300, clientY: 350 });
+    expect(onMove).not.toHaveBeenCalled();
+    expect(onDeselect).not.toHaveBeenCalled();
 
     // With p-b1 (Unknown on this frame) armed for placement:
     // - plain click in detection box binds p-b1;
@@ -438,6 +461,7 @@ describe("PlayerOverlay", () => {
         landingMapped
         onSetLanding={onSetLanding}
         onSelectPlayer={onSelect}
+        onDeselectPlayer={onDeselect}
         onAssignDetection={onAssign}
         onMovePlayer={onMove}
       />,
@@ -489,6 +513,7 @@ describe("PlayerOverlay", () => {
         landingMapped
         onSetLanding={onSetLanding}
         onSelectPlayer={onSelect}
+        onDeselectPlayer={onDeselect}
         onAssignDetection={onAssign}
         onMovePlayer={onMove}
       />,
@@ -563,29 +588,32 @@ describe("CourtDiagram", () => {
     expect(screen.getByText("Cara Lee / Dan Kim")).toBeTruthy();
   });
 
-  it("defers onSelectPlayer to pointerUp when clicking an already-selected dot without dragging", () => {
+  it("calls onDeselectPlayer on unmoved pointerUp when interactive, and on pointerDown when non-interactive", () => {
     const onSelect = vi.fn<(playerId: string) => void>();
+    const onDeselect = vi.fn<() => void>();
     const onMove = vi.fn<(playerId: string, pt: { x: number; y: number }) => void>();
-    const { container } = render(
+    const playerDot = [
+      {
+        id: "p-a1",
+        name: "Anna Bright",
+        initials: "AB",
+        team: "a" as const,
+        x: -4,
+        y: -8,
+        certainty: "observed" as const,
+        selected: true,
+      },
+    ];
+    const { container, rerender } = render(
       <CourtDiagram
         nearTeam="Anna Bright / Ben Johns"
         farTeam="Cara Lee / Dan Kim"
         interactive
         selectedPlayerId="p-a1"
         onSelectPlayer={onSelect}
+        onDeselectPlayer={onDeselect}
         onMovePlayer={onMove}
-        players={[
-          {
-            id: "p-a1",
-            name: "Anna Bright",
-            initials: "AB",
-            team: "a",
-            x: -4,
-            y: -8,
-            certainty: "observed",
-            selected: true,
-          },
-        ]}
+        players={playerDot}
       />,
     );
     const svg = container.querySelector<SVGSVGElement>("svg.court")!;
@@ -595,19 +623,37 @@ describe("CourtDiagram", () => {
     );
     const dot = svg.querySelector<SVGGElement>('[data-player-id="p-a1"]')!;
 
-    // Click without dragging: does not fire on pointerDown, fires on pointerUp to toggle off.
+    // Click without dragging: does not fire on pointerDown, fires onDeselectPlayer on pointerUp.
     fireEvent.pointerDown(dot, { pointerId: 1, button: 0, clientX: 120, clientY: 416 });
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(onDeselect).not.toHaveBeenCalled();
     fireEvent.pointerUp(svg, { pointerId: 1, button: 0, clientX: 120, clientY: 416 });
-    expect(onSelect).toHaveBeenCalledExactlyOnceWith("p-a1");
+    expect(onDeselect).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
     expect(onMove).not.toHaveBeenCalled();
 
-    // Dragging an already-selected dot moves it without calling onSelectPlayer.
-    onSelect.mockClear();
+    // Dragging an already-selected dot moves it without calling onSelectPlayer or onDeselectPlayer.
+    onDeselect.mockClear();
     fireEvent.pointerDown(dot, { pointerId: 2, button: 0, clientX: 120, clientY: 416 });
     fireEvent.pointerMove(svg, { pointerId: 2, clientX: 160, clientY: 380 });
     fireEvent.pointerUp(svg, { pointerId: 2, button: 0, clientX: 160, clientY: 380 });
     expect(onSelect).not.toHaveBeenCalled();
+    expect(onDeselect).not.toHaveBeenCalled();
     expect(onMove).toHaveBeenCalledTimes(1);
+
+    // Non-interactive CourtDiagram calls onDeselectPlayer directly on pointerDown.
+    rerender(
+      <CourtDiagram
+        nearTeam="Anna Bright / Ben Johns"
+        farTeam="Cara Lee / Dan Kim"
+        interactive={false}
+        selectedPlayerId="p-a1"
+        onSelectPlayer={onSelect}
+        onDeselectPlayer={onDeselect}
+        players={playerDot}
+      />,
+    );
+    fireEvent.pointerDown(dot, { pointerId: 3, button: 0, clientX: 120, clientY: 416 });
+    expect(onDeselect).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });

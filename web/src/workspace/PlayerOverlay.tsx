@@ -35,6 +35,7 @@ export function PlayerOverlay({
   landingMapped = false,
   onSetLanding,
   onSelectPlayer,
+  onDeselectPlayer,
   onAssignDetection,
   onMovePlayer,
   onBackgroundClick,
@@ -55,6 +56,8 @@ export function PlayerOverlay({
   /** Fired when a click or `Alt`+click on the Monitor sets the selected Shot's landing. */
   onSetLanding?: (imagePoint: Point) => void;
   onSelectPlayer: (playerId: string) => void;
+  /** When set, clicking the already-selected Player dot without dragging deselects them. */
+  onDeselectPlayer?: () => void;
   onAssignDetection: (playerId: string, point: Point, detection: FrameDetectionOut) => void;
   onMovePlayer: (playerId: string, point: Point) => void;
   onBackgroundClick?: () => void;
@@ -138,7 +141,7 @@ export function PlayerOverlay({
         if (drag.moved && (drag.at.x !== drag.from.x || drag.at.y !== drag.from.y)) {
           onMovePlayer(drag.playerId, drag.at);
         } else if (drag.alreadySelected) {
-          onSelectPlayer(drag.playerId);
+          onDeselectPlayer?.();
         }
         setDrag(null);
       }}
@@ -221,7 +224,7 @@ export function PlayerOverlay({
               event.stopPropagation();
               if (!isSelected) onSelectPlayer(player.id);
               if (!editable) {
-                if (isSelected) onSelectPlayer(player.id);
+                if (isSelected) onDeselectPlayer?.();
                 return;
               }
               event.currentTarget.parentElement?.setPointerCapture?.(event.pointerId);

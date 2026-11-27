@@ -16,6 +16,7 @@ import type {
   ShotPosition,
   TeamEnd,
 } from "../api/client";
+import { unproject } from "../lib/calibrations";
 import { inferred, newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { ROSTER } from "../lib/testRoster";
 import { ShortcutSheet } from "../shell/ShortcutSheet";
@@ -518,7 +519,7 @@ describe("Workspace Shot and Rally deselection", () => {
         "Set the landing (ground bounce on mapped frames; Alt+click video over a Player)",
       ),
     ).toBeTruthy();
-    expect(screen.getByText("Deselect the armed Player in Annotate")).toBeTruthy();
+    expect(screen.getByText("Cancel Player placement in Annotate")).toBeTruthy();
   });
 });
 
@@ -625,6 +626,11 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     mockLayerRect(layer);
 
     // Click at image (0.7, 0.3) -> (700, 150) on bounce frame 121.
+    const click = { x: 0.7, y: 0.3 };
+    const expected = unproject(BOUNCE_MATRIX, click, BOUNCE_LENS)!;
+    const withoutLens = unproject(BOUNCE_MATRIX, click, null)!;
+    expect(Math.hypot(expected.x - withoutLens.x, expected.y - withoutLens.y)).toBeGreaterThan(0.2);
+
     fireEvent.pointerDown(layer, { pointerId: 1, button: 0, clientX: 700, clientY: 150 });
     await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalled());
 
@@ -632,10 +638,8 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     if (savedShot.type !== "shot") throw new Error("expected Shot");
     expect(savedShot.landing.certainty).toBe("observed");
     expect(savedShot.landing.value).not.toBeNull();
-    // With CONTACT_MATRIX (no lens), (0.7, 0.3) would map to (5, 10); with BOUNCE_MATRIX + BOUNCE_LENS
-    // it maps to roughly (7.3, 12.2).
-    expect(savedShot.landing.value!.x).toBeGreaterThan(6.5);
-    expect(savedShot.landing.value!.y).toBeGreaterThan(11.5);
+    expect(savedShot.landing.value!.x).toBeCloseTo(expected.x, 5);
+    expect(savedShot.landing.value!.y).toBeCloseTo(expected.y, 5);
 
     // Landing ✕ appears on both the Monitor and the Court in Team A colour (hitter is a1).
     const monitorMark = container.querySelector<SVGSVGElement>(".monitor-landing.team-a");
@@ -649,8 +653,12 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     expect(container.querySelector(".monitor-landing.team-a")).not.toBeNull();
     const layerNoPlayers = container.querySelector<HTMLElement>(".player-layer")!;
     mockLayerRect(layerNoPlayers);
-    fireEvent.pointerDown(layerNoPlayers, { pointerId: 2, button: 0, clientX: 520, clientY: 240 });
+    // Click near the edge (0.95, 0.01): unprojects just past COURT_BOUNDS (~18.6, ~33.8) and clamps to (16, 32).
+    fireEvent.pointerDown(layerNoPlayers, { pointerId: 2, button: 0, clientX: 950, clientY: 5 });
     await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalledTimes(2));
+    const clampedShot = apiMocks.replaceGames.mock.calls.at(-1)![1][0]!.rallies[0]!.entries[0]!;
+    if (clampedShot.type !== "shot") throw new Error("expected Shot");
+    expect(clampedShot.landing).toEqual(observed({ x: 16, y: 32 }));
 
     // One undo step reverts the second landing click back to the first.
     fireEvent.keyDown(window, { key: "z", metaKey: true });
@@ -661,8 +669,11 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     );
   });
 
-  it("treats unmapped frames (outside segment, no Calibration, unmapped motion, above horizon) as no-ops with status reasons", async () => {
-    // Frame 120: unmapped by Camera Motion. Frame 700: outside Play Segment (0..600).
+  it("treats unmapped frames (loading, outside segment, no Calibration, unmapped motion, above/near horizon) as no-ops with status reasons", async () => {
+    let resolveFrames!: (value: CameraMotionFramesOut) => void;
+    const pendingFrames = new Promise<CameraMotionFramesOut>((resolve) => {
+      resolveFrames = resolve;
+    });
     apiMocks.getPlaySegments.mockResolvedValue([
       { start_frame: 0, end_frame: 600, camera_view: "main" },
     ]);
@@ -687,48 +698,66 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
       ],
       error: null,
     });
-    apiMocks.getCameraMotionFrames.mockResolvedValue({
-      start_frame: 0,
-      end_frame: 600,
-      court_to_image: Array.from({ length: 601 }, (_, f) =>
-        f === 120
-          ? null
-          : [
-              [0.02, 0, 0.5],
-              [0, 0.01, 0.6],
-              [0, 0.05, 1],
-            ],
-      ),
-      lens: Array.from({ length: 601 }, () => null),
-      unmapped: Array.from({ length: 601 }, (_, f) => f === 120),
-    });
+    apiMocks.getCameraMotionFrames.mockReturnValueOnce(pendingFrames);
 
     const { container } = renderWorkspace("annotate");
     const rallyList = container.querySelector<HTMLElement>(".rally-list")!;
     const rallyRow = await within(rallyList).findByRole("button", { name: /R1/ });
     fireEvent.click(rallyRow);
-    await waitFor(() => expect(apiMocks.getCameraMotion).toHaveBeenCalled());
+    await waitFor(() => expect(apiMocks.getCameraMotionFrames).toHaveBeenCalled());
 
     const layer = container.querySelector<HTMLElement>(".player-layer")!;
     mockLayerRect(layer);
 
-    // 1) Frame 120 is unmapped by Camera Motion.
+    // 0) Frame 121 while tracked Camera Motion window is still loading -> no-op with loading reason.
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.pointerDown(layer, { pointerId: 10, button: 0, clientX: 500, clientY: 250 });
+    expect(
+      screen.getByText("Loading Camera Motion for this frame; try again in a moment"),
+    ).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    // Resolve Camera Motion frames (horizon at y_img = 0.2 on frame 121).
+    await act(async () => {
+      resolveFrames({
+        start_frame: 0,
+        end_frame: 600,
+        court_to_image: Array.from({ length: 601 }, (_, f) =>
+          f === 120
+            ? null
+            : [
+                [0.02, 0, 0.5],
+                [0, 0.01, 0.6],
+                [0, 0.05, 1],
+              ],
+        ),
+        lens: Array.from({ length: 601 }, () => null),
+        unmapped: Array.from({ length: 601 }, (_, f) => f === 120),
+      });
+      await pendingFrames;
+    });
+    await waitFor(() =>
+      expect(container.querySelector(".player-layer.landing-click")).not.toBeNull(),
+    );
+
+    // 1) Above horizon (y_img = 0.1) and just below horizon (y_img = 0.22 -> y = 380 ft): both rejected.
+    fireEvent.pointerDown(layer, { pointerId: 2, button: 0, clientX: 500, clientY: 50 });
+    expect(screen.getByText(/off the court plane/i)).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(layer, { pointerId: 20, button: 0, clientX: 500, clientY: 110 });
+    expect(screen.getByText(/off the court plane/i)).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    // 2) Step back to frame 120: unmapped by Camera Motion.
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
     fireEvent.pointerDown(layer, { pointerId: 1, button: 0, clientX: 500, clientY: 250 });
     expect(
       screen.getByText("Frame unmapped by Camera Motion; set the landing on the Court"),
     ).toBeTruthy();
     expect(apiMocks.replaceGames).not.toHaveBeenCalled();
 
-    // 2) Step to frame 121 (mapped with horizon at y_img = 0.2): clicking above horizon (y = 0.1) is a no-op.
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-    await waitFor(() =>
-      expect(container.querySelector(".player-layer.landing-click")).not.toBeNull(),
-    );
-    fireEvent.pointerDown(layer, { pointerId: 2, button: 0, clientX: 500, clientY: 50 });
-    expect(screen.getByText(/above the court plane/i)).toBeTruthy();
-    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
-
-    // 3) Step past frame 600 (Alt+→ jumps +600 frames to 721, outside Play Segment).
+    // 3) Step past frame 600 (Alt+→ jumps +600 frames to 720, outside Play Segment).
     fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
     fireEvent.pointerDown(layer, { pointerId: 3, button: 0, clientX: 500, clientY: 250 });
     expect(
@@ -839,8 +868,15 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     expect(courtA2.classList.contains("selected")).toBe(true);
     expect(layer.classList.contains("placing")).toBe(true);
 
-    // Open inline form (Shift+S): first Esc closes only the form; second Esc clears selected Player
-    // (preserving Shot 1!); third Esc deselects Shot 1; fourth Esc deselects Rally 1.
+    // Open Go-to popup (`/`): Esc closes only Go-to, preserving the selected Player and Shot.
+    fireEvent.keyDown(window, { key: "/" });
+    const gotoInput = screen.getByLabelText(/Go to a frame number/);
+    fireEvent.keyDown(gotoInput, { key: "Escape" });
+    expect(screen.queryByLabelText(/Go to a frame number/)).toBeNull();
+    expect(layer.classList.contains("placing")).toBe(true);
+
+    // Open inline form (Shift+S): Esc closes only the form; next Esc clears selected Player
+    // (preserving Shot 1!); next Esc deselects Shot 1; final Esc deselects Rally 1.
     fireEvent.keyDown(window, { key: "S", code: "KeyS", shiftKey: true });
     expect(screen.getByRole("form", { name: "Rally details" })).toBeTruthy();
 

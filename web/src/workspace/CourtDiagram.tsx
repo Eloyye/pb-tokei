@@ -110,6 +110,7 @@ export function CourtDiagram({
   interactive = false,
   selectedPlayerId = null,
   onSelectPlayer,
+  onDeselectPlayer,
   onMovePlayer,
   onPlaceOnCourt,
   ghosts = [],
@@ -126,6 +127,8 @@ export function CourtDiagram({
   interactive?: boolean;
   selectedPlayerId?: string | null;
   onSelectPlayer?: (playerId: string) => void;
+  /** When set, clicking the already-selected Player dot without dragging deselects them. */
+  onDeselectPlayer?: () => void;
   /** Fired when a Player dot is dragged to a new court position (in feet). */
   onMovePlayer?: (playerId: string, courtPoint: Point) => void;
   /** Fired when empty court is clicked while placing an undetected Player. */
@@ -218,7 +221,7 @@ export function CourtDiagram({
     setPlayerDrag(null);
     if (!commit) return;
     if (event.clientX === drag.start.x && event.clientY === drag.start.y) {
-      if (drag.alreadySelected) onSelectPlayer?.(drag.playerId);
+      if (drag.alreadySelected) onDeselectPlayer?.();
       return;
     }
     const at = pointerPoint(event);
@@ -317,7 +320,7 @@ export function CourtDiagram({
               alreadySelected,
             };
           } else if (alreadySelected) {
-            onSelectPlayer?.(dot.player.id);
+            onDeselectPlayer?.();
           }
           return;
         }

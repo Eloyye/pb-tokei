@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
+  type Calibration,
+  type CalibrationOut,
   type FrameDetectionOut,
   type Landmark,
+  type Lens,
   type MatchDetail,
+  type PlaySegment,
   matchVideoUrl,
 } from "../api/client";
 import {
@@ -72,7 +76,7 @@ import {
   toggleRally,
   toggleShot,
 } from "../lib/annotate";
-import { type CourtView, FIT_COURT } from "../lib/courtView";
+import { COURT_BOUNDS, type CourtView, FIT_COURT } from "../lib/courtView";
 import {
   type AnnotateAction,
   annotateKeyAction,
@@ -140,10 +144,53 @@ import { CourtPanel } from "./SidePanels";
 import { Splitter } from "./Splitter";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
-import { useCameraMotion } from "./useCameraMotion";
+import { type CameraMotionState, useCameraMotion } from "./useCameraMotion";
 import { usePlayerTracking } from "./usePlayerTracking";
 import { useActionQueue } from "./useActionQueue";
 import { useRecording } from "./useRecording";
+
+/**
+ * Extra feet beyond `COURT_BOUNDS` that a Monitor landing click may unproject to before we treat
+ * it as a near-horizon / off-court click rather than clamping it to the surround.
+ */
+const MONITOR_LANDING_MARGIN_FT = 6;
+
+type FrameMapping =
+  | { ok: true; courtToImage: number[][]; lens: Lens | null }
+  | { ok: false; reason: string };
+
+/** Resolves the playhead frame's court-to-image mapping and lens, or explains why it is unmapped. */
+function resolveFrameMapping(
+  segment: PlaySegment | undefined,
+  calibration: Calibration | undefined,
+  activeFit: CalibrationOut | undefined,
+  fits: Map<string, CalibrationOut>,
+  cameraMotion: CameraMotionState,
+): FrameMapping {
+  if (!segment) {
+    return { ok: false, reason: "Frame is outside a Play Segment; set the landing on the Court" };
+  }
+  if (!calibration) {
+    return {
+      ok: false,
+      reason: `No ${VIEW_LABELS[segment.camera_view]} Calibration; set the landing on the Court`,
+    };
+  }
+  if (cameraMotion.frameUnmapped) {
+    return { ok: false, reason: "Frame unmapped by Camera Motion; set the landing on the Court" };
+  }
+  if (cameraMotion.frameLoading) {
+    return { ok: false, reason: "Loading Camera Motion for this frame; try again in a moment" };
+  }
+  const tracked = cameraMotion.frameMatrix !== undefined;
+  const courtToImage = tracked
+    ? cameraMotion.frameMatrix
+    : (activeFit?.court_to_image ?? fits.get(fitKey(calibration))?.court_to_image ?? null);
+  if (!courtToImage) {
+    return { ok: false, reason: "Frame not mapped to the court; set the landing on the Court" };
+  }
+  return { ok: true, courtToImage, lens: tracked ? cameraMotion.frameLens : null };
+}
 
 const MESSAGES: Record<WorkspaceName, string> = {
   calibrate:
@@ -211,10 +258,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   // the Monitor overlay; clicking the already-selected Player again deselects them.
   const [annotateSelectedPlayerId, setAnnotateSelectedPlayerId] = useState<string | null>(null);
   const selectedPlayerId = calibrating ? calibrateSelectedPlayerId : annotateSelectedPlayerId;
-  const selectPlayer = calibrating
+  const setSelectedPlayerId = calibrating
     ? setCalibrateSelectedPlayerId
-    : (playerId: string) =>
-        setAnnotateSelectedPlayerId((currentId) => (currentId === playerId ? null : playerId));
+    : setAnnotateSelectedPlayerId;
+  const deselectPlayer = calibrating ? undefined : () => setAnnotateSelectedPlayerId(null);
   const [showPlayerOverlay, setShowPlayerOverlay] = useState(true);
 
   // Rally and Shot entry (#12): what is selected, the Inspector's tab, field cursor and form.
@@ -273,21 +320,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const calibration = segment && calibrationAt(calibrations, segment.camera_view, frame);
   const calibrationKey = segment ? calibrationKeyFor(segment, calibration) : null;
   const activeFit = calibration ? currentFit(recordingState.fits, calibration) : undefined;
-  const activeCourtToImage =
-    !segment || cameraMotion.frameUnmapped || cameraMotion.frameLoading
-      ? null
-      : cameraMotion.frameMatrix !== undefined
-        ? cameraMotion.frameMatrix
-        : (activeFit?.court_to_image ??
-          (calibration ? recordingState.fits.get(fitKey(calibration))?.court_to_image : null) ??
-          null);
-  const activeLens =
-    segment &&
-    !cameraMotion.frameUnmapped &&
-    !cameraMotion.frameLoading &&
-    cameraMotion.frameMatrix !== undefined
-      ? cameraMotion.frameLens
-      : null;
+  const frameMapping = resolveFrameMapping(
+    segment,
+    calibration,
+    activeFit,
+    recordingState.fits,
+    cameraMotion,
+  );
+  const activeCourtToImage = frameMapping.ok ? frameMapping.courtToImage : null;
+  const activeLens = frameMapping.ok ? frameMapping.lens : null;
 
   const oppositeEndFlipYFt = playerTracking.status?.opposite_end_flip_y_ft;
 
@@ -437,32 +478,18 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   /** Maps a Monitor click on the playhead frame to court feet and sets the selected Shot's landing. */
   const setLandingFromMonitor = (imagePoint: Point) => {
     if (!currentShot) return;
-    if (!segment) {
-      recording.notify("Frame is outside a Play Segment; set the landing on the Court");
+    if (!frameMapping.ok) {
+      recording.notify(frameMapping.reason);
       return;
     }
-    if (!calibration) {
+    const courtPoint = unproject(frameMapping.courtToImage, imagePoint, frameMapping.lens);
+    if (
+      !courtPoint ||
+      Math.abs(courtPoint.x) > COURT_BOUNDS.x + MONITOR_LANDING_MARGIN_FT ||
+      Math.abs(courtPoint.y) > COURT_BOUNDS.y + MONITOR_LANDING_MARGIN_FT
+    ) {
       recording.notify(
-        `No ${VIEW_LABELS[segment.camera_view]} Calibration; set the landing on the Court`,
-      );
-      return;
-    }
-    if (cameraMotion.frameUnmapped) {
-      recording.notify("Frame unmapped by Camera Motion; set the landing on the Court");
-      return;
-    }
-    if (cameraMotion.frameLoading) {
-      recording.notify("Loading Camera Motion for this frame; try again in a moment");
-      return;
-    }
-    if (!activeCourtToImage) {
-      recording.notify("Frame not mapped to the court; set the landing on the Court");
-      return;
-    }
-    const courtPoint = unproject(activeCourtToImage, imagePoint, activeLens);
-    if (!courtPoint) {
-      recording.notify(
-        "Click is above the court plane; click the bounce on the ground or set the landing on the Court",
+        "Click is off the court plane; click the bounce on the ground or set the landing on the Court",
       );
       return;
     }
@@ -1180,9 +1207,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   showPlayers={calibrating || showPlayerOverlay}
                   clickEmptyPlaces={calibrating && calibrateTab === "players"}
                   landing={monitorLanding}
-                  landingMapped={Boolean(activeCourtToImage)}
+                  landingMapped={frameMapping.ok}
                   onSetLanding={annotating && currentShot ? setLandingFromMonitor : undefined}
-                  onSelectPlayer={selectPlayer}
+                  onSelectPlayer={setSelectedPlayerId}
+                  onDeselectPlayer={deselectPlayer}
                   onAssignDetection={assignPlayerDetection}
                   onMovePlayer={movePlayerOnMonitor}
                   onBackgroundClick={annotating ? togglePlayAnnotate : undefined}
@@ -1248,7 +1276,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                   anchors={anchors}
                   teamEnds={teamEnds}
                   selectedPlayerId={selectedPlayerId}
-                  onSelectPlayer={selectPlayer}
+                  onSelectPlayer={setSelectedPlayerId}
                   onTrack={() => playerTracking.startTracking(frame)}
                   onCancelTrack={playerTracking.cancelTracking}
                   onSwapTeam={swapTeam}
@@ -1283,7 +1311,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                 frameData={playerTracking.frameData}
                 teamEnds={teamEnds}
                 selectedPlayerId={selectedPlayerId}
-                onSelectPlayer={selectPlayer}
+                onSelectPlayer={setSelectedPlayerId}
+                onDeselectPlayer={deselectPlayer}
                 onMovePlayer={movePlayerOnCourt}
                 onPlaceOnCourt={placeSelectedOnCourt}
                 roster={roster}
