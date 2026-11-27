@@ -276,6 +276,46 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe("Workspace Timeline paging", () => {
+  it("keeps playing and resumes paging on the next frame after a middle drag", async () => {
+    let frameCallback: VideoFrameRequestCallback | null = null;
+    HTMLVideoElement.prototype.requestVideoFrameCallback = (callback) => {
+      frameCallback = callback;
+      return 1;
+    };
+    const { container, video } = renderAnnotateWorkspace();
+    await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    const ruler = container.querySelector<HTMLElement>(".ruler")!;
+    const overviewWindow = container.querySelector<HTMLElement>(".overview-window")!;
+    const timecode = container.querySelector(".timeline-timecode")!;
+    vi.spyOn(ruler, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 600 }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    Object.defineProperty(video, "paused", { value: false, configurable: true });
+    fireEvent(video, new Event("play"));
+    const pause = vi.spyOn(video, "pause");
+    const emitFrame = (frame: number) =>
+      act(() => frameCallback?.(0, { mediaTime: frame / 60 } as VideoFrameCallbackMetadata));
+
+    fireEvent.pointerDown(ruler, { pointerId: 1, button: 1, buttons: 4, clientX: 300 });
+    emitFrame(810);
+    expect(overviewWindow.style.left).toBe("0%");
+
+    fireEvent.pointerMove(ruler, { pointerId: 1, buttons: 4, clientX: 240 });
+    expect(Number.parseFloat(overviewWindow.style.left)).toBeCloseTo((80 / 1200) * 100);
+    const panned = overviewWindow.style.left;
+    emitFrame(900);
+    expect(timecode.textContent).toBe("00:00:15:00");
+    expect(overviewWindow.style.left).toBe(panned);
+
+    fireEvent.pointerUp(ruler, { pointerId: 1, button: 1, clientX: 240 });
+    expect(overviewWindow.style.left).toBe(panned);
+    emitFrame(960);
+    expect(Number.parseFloat(overviewWindow.style.left)).toBeCloseTo((400 / 1200) * 100);
+    expect(pause).not.toHaveBeenCalled();
+  });
+});
+
 describe("Workspace Shot and Rally deselection", () => {
   it("switches Court back to live tracked positions and Live header when deselecting a Shot", async () => {
     const { container } = renderAnnotateWorkspace();

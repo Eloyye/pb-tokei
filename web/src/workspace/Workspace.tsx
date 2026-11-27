@@ -233,6 +233,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const { step, togglePlay, setSpeed } = controls;
   const [gotoOpen, setGotoOpen] = useState(false);
   const [view, setView] = useState<FrameRange>(() => fullView(totalFrames));
+  const [panningTimeline, setPanningTimeline] = useState(false);
   const [previousPosition, setPreviousPosition] = useState({ frame, totalFrames });
   const [sizes, setSizes] = useState<PanelSizes>(loadSizes);
   const [focused, setFocused] = useState<PanelId>("monitor");
@@ -997,10 +998,10 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   };
 
   // Reconcile the Timeline while rendering so duration and playhead updates use one view.
-  // Paging only on frame changes lets the overview pan while paused.
+  // Page on frame changes outside a middle-button pan.
   if (previousPosition.totalFrames !== totalFrames || previousPosition.frame !== frame) {
     const position = { frame, totalFrames };
-    const nextView = reconcileView(view, previousPosition, position);
+    const nextView = reconcileView(view, previousPosition, position, !panningTimeline);
     setPreviousPosition(position);
     if (nextView !== view) setView(nextView);
   }
@@ -1529,6 +1530,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         <Timeline
           view={view}
           onViewChange={setView}
+          onPanningChange={setPanningTimeline}
           frame={frame}
           totalFrames={totalFrames}
           playing={playing}

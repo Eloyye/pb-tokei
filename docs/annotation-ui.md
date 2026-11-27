@@ -228,7 +228,7 @@ Side-out pre-fill (Inferred, never overwriting Observed):
 - **Ruler.** HH:MM:SS:FF ticks, with the tick step chosen from the zoom. The blue playhead has a head on the ruler. Click or drag on the ruler or any lane to scrub.
 - **Track headers** on the left, Premiere-style, with the current timecode above them.
 - **Zoom.** Scroll up to zoom in and down to zoom out, or pinch. Over the ruler and lanes, zoom follows the pointer while paused. During playback or over the track headers and timecode, zoom follows the playhead.
-- **Pan.** Swipe horizontally or hold `Shift` while scrolling. During playback, the view follows the playhead again on the next frame.
+- **Pan.** Swipe horizontally, hold `Shift` while scrolling, or drag with the middle mouse button. On the ruler and lanes, the content moves with the cursor. On the Overview bar, middle-drag moves the visible window directly across the video. A middle-click by itself has no effect. Playback continues while you hold the button, and the view can follow the playhead again on the next frame after release.
 - **Context menus.** Right-click a Rally clip, Shot pin, Observation Gap pill, or Play Segment clip to select it and see its actions without moving the playhead. Right-click empty lane space for Fit Rally, Fit video, and Rally start at playhead. Items show their shortcuts and disabled actions explain why on hover. Press `Esc` or click outside to close the menu. Menu edits use the same undo history and status messages as their shortcuts.
 - Scrubs and edge drags follow the frame under the pointer as you zoom or pan. An edge drag pauses playback and previews that frame in the Monitor. Releasing returns the Monitor to the playhead and saves the changed edge as one undo step.
 - **Tracks:**
@@ -295,7 +295,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Previous / next Rally (fit and seek to it) | `PgUp` / `PgDn` | ✓ |
 | Next / previous rule issue (chronological across Games, wraps around) | `F8` / `Shift+F8` | ✓ (Annotate and Review) |
 | Zoom the Timeline | `-` / `=`, vertical scroll or pinch | ✓ |
-| Pan the Timeline | Horizontal swipe, `Shift`+scroll, or scroll on the Overview bar | ✓ |
+| Pan the Timeline | Horizontal swipe, `Shift`+scroll, middle-button drag, or scroll on the Overview bar | ✓ |
 | Swap Court and Monitor | Backtick (`` ` ``) or **⇄** in either header | ✓ (Annotate and Review) |
 | Zoom the Court around the pointer | Scroll or trackpad pinch | ✓ |
 | Pan the Court | `Space`+drag or middle-button drag | ✓ |

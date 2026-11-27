@@ -60,6 +60,12 @@ function clampView(view: FrameRange, totalFrames: number): FrameRange {
   return { start: end - span, end };
 }
 
+/** Shift the view by `frames` while keeping its zoom and staying inside the video. */
+export function panView(view: FrameRange, frames: number, totalFrames: number): FrameRange {
+  if (frames === 0) return view;
+  return clampView({ start: view.start + frames, end: view.end + frames }, totalFrames);
+}
+
 /**
  * Scale the view by `factor` (below 1 zooms in), keeping `anchor` at the same place on screen
  * when the video bounds allow it. The span is at least `MIN_SPAN` when the video is long enough.
@@ -132,11 +138,7 @@ export function wheelToView(
     const axis = lock?.axis ?? dominantAxis(x, y);
     const delta = axis === "x" ? x : y;
     const shift = (delta / laneWidth) * span;
-    if (shift === 0) return { view, lock };
-    return {
-      view: clampView({ start: view.start + shift, end: view.end + shift }, totalFrames),
-      lock,
-    };
+    return { view: panView(view, shift, totalFrames), lock };
   }
   if (y === 0) return { view, lock };
 
@@ -171,18 +173,21 @@ interface PlaybackPosition {
 /**
  * Fit the whole video when its length first becomes known. On later length changes, shift the
  * view inside the new bounds, keeping its span when it fits. Follow a changed playhead after
- * applying the length change.
+ * applying the length change unless the operator is panning.
  */
 export function reconcileView(
   view: FrameRange,
   previous: PlaybackPosition,
   { frame, totalFrames }: PlaybackPosition,
+  followPlayhead = true,
 ): FrameRange {
   let nextView = view;
   if (previous.totalFrames !== totalFrames) {
     nextView = previous.totalFrames === 0 ? fullView(totalFrames) : clampView(view, totalFrames);
   }
-  return previous.frame === frame ? nextView : followFrame(nextView, frame, totalFrames);
+  return followPlayhead && previous.frame !== frame
+    ? followFrame(nextView, frame, totalFrames)
+    : nextView;
 }
 
 /** Padding on each side when fitting the view to a Rally, as a fraction of its length. */

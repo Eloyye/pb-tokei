@@ -6,6 +6,7 @@ import {
   fullView,
   lockWheelAxis,
   MIN_SPAN,
+  panView,
   reconcileView,
   rulerTicks,
   toPercent,
@@ -193,6 +194,16 @@ describe("wheelToView", () => {
   });
 });
 
+describe("panView", () => {
+  it("shifts the view at its current zoom and clamps to both video bounds", () => {
+    const view = { start: 400, end: 1000 };
+    expect(panView(view, 50, 3000)).toEqual({ start: 450, end: 1050 });
+    expect(panView(view, -500, 3000)).toEqual({ start: 0, end: 600 });
+    expect(panView(view, 2500, 3000)).toEqual({ start: 2400, end: 3000 });
+    expect(panView(view, 0, 3000)).toBe(view);
+  });
+});
+
 describe("lockWheelAxis", () => {
   it("locks to the first dominant axis until 150 ms after the last event", () => {
     const first = lockWheelAxis(undefined, { x: 20, y: 4, timeStamp: 0 });
@@ -292,6 +303,15 @@ describe("reconcileView", () => {
     expect(reconcileView(view, previous, { frame: 300, totalFrames: 600 })).toEqual({
       start: 120,
       end: 320,
+    });
+  });
+
+  it("applies new bounds without following the playhead while panning", () => {
+    const view = { start: 800, end: 1000 };
+    const previous = { frame: 999, totalFrames: 1000 };
+    expect(reconcileView(view, previous, { frame: 300, totalFrames: 600 }, false)).toEqual({
+      start: 400,
+      end: 600,
     });
   });
 });
