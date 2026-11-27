@@ -569,6 +569,25 @@ def _team_at_fault(roster: MatchRoster, error: Error) -> TeamId | None:
     return None if erring is None else roster.team_id_for(erring)
 
 
+def resolve_serving_team(rally: Rally, roster: MatchRoster) -> TeamId | None:
+    """Prefer a recorded Serving Team, then identify it from the Server or Returner."""
+    if rally.serving_team_id.value is not None:
+        return rally.serving_team_id.value
+
+    # The same walk supplies the exact Shot Numbers used by the stats.
+    shots, _ = _walk(rally, roster)
+    opening_hitters = {
+        shot.shot_number: shot.hitter_id
+        for shot in shots
+        if shot.shot_number in (SERVE_SHOT_NUMBER, RETURN_SHOT_NUMBER)
+    }
+    server = opening_hitters.get(SERVE_SHOT_NUMBER) or rally.server_id.value
+    if server is not None:
+        return roster.team_id_for(server)
+    returner = opening_hitters.get(RETURN_SHOT_NUMBER) or rally.returner_id.value
+    return None if returner is None else roster.other_team_id(roster.team_id_for(returner))
+
+
 def resolve_rally_winner(rally: Rally, roster: MatchRoster) -> TeamId | None:
     """The Rally's winner, falling back to its last Shot's Error when the call stands."""
     winner = rally.winner_id.value

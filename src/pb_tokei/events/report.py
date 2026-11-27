@@ -10,7 +10,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from pb_tokei.rally_log import Game, Match, MatchRoster, Rally, RallyStatus, TeamId, Zone
+from pb_tokei.rally_log import Game, Match, MatchRoster, RallyStatus, TeamId, Zone
 
 from .derived import (
     OPENING_LAST_SHOT_NUMBER,
@@ -19,9 +19,11 @@ from .derived import (
     ShotType,
     TeamStatus,
     resolve_rally_winner,
+    resolve_serving_team,
 )
 from .outcomes import OutcomeReason, ShotOutcome
 from .stats import (
+    CourtHalf,
     RallyRole,
     ShotBreakdown,
     Stat,
@@ -279,7 +281,10 @@ STAT_DEFINITIONS = {
 _UNKNOWN = "Unknown"
 _IN_OPENING = "In the Opening (Shots 1–5)"
 _AFTER_OPENING = "After the Opening (6+)"
+_SHOTS_6_TO_10 = "6–10"
+_SHOTS_11_PLUS = "11+"
 _PHASE_LABELS = {phase: phase.value.replace("_", " ").title() for phase in RallyPhase}
+_COURT_HALF_LABELS = {half: half.value.capitalize() for half in CourtHalf}
 _CATEGORY_LABELS = {
     "follow_up_popup": "Follow-up Popup",
     "established_at_follow_up": "Established at follow-up",
@@ -287,9 +292,9 @@ _CATEGORY_LABELS = {
 _SHOT_LABELS = tuple(str(n) for n in range(1, OPENING_LAST_SHOT_NUMBER + 1))
 _SPLIT_BUCKETS = {
     ReportSplit.RALLY_PHASE: tuple(_PHASE_LABELS.values()),
-    ReportSplit.SHOT_NUMBER: (*_SHOT_LABELS, "6–10", "11+"),
+    ReportSplit.SHOT_NUMBER: (*_SHOT_LABELS, _SHOTS_6_TO_10, _SHOTS_11_PLUS),
     ReportSplit.OPENING: (_IN_OPENING, _AFTER_OPENING),
-    ReportSplit.COURT_HALF: ("Left", "Right"),
+    ReportSplit.COURT_HALF: tuple(_COURT_HALF_LABELS.values()),
 }
 _FIXED_BUCKETS = {
     ReportDimension.SHOT_TYPE: tuple(shot.value for shot in ShotType),
@@ -313,13 +318,13 @@ def _bucket(shot: ShotBreakdown, split: ReportSplit) -> str:
                 return _UNKNOWN
             if number <= OPENING_LAST_SHOT_NUMBER:
                 return str(number)
-            return "6–10" if number <= 10 else "11+"
+            return _SHOTS_6_TO_10 if number <= 10 else _SHOTS_11_PLUS
         case ReportSplit.OPENING:
             if shot.in_opening is None:
                 return _UNKNOWN
             return _IN_OPENING if shot.in_opening else _AFTER_OPENING
         case ReportSplit.COURT_HALF:
-            return _UNKNOWN if shot.court_half is None else shot.court_half.capitalize()
+            return _UNKNOWN if shot.court_half is None else _COURT_HALF_LABELS[shot.court_half]
 
 
 def _fixed_bucket(breakdown: StatBreakdown, dimension: ReportDimension | None) -> str | None:
@@ -542,26 +547,18 @@ class _ReportTallies:
         return stats
 
 
-def _serving_team(rally: Rally, roster: MatchRoster) -> TeamId | None:
-    if rally.serving_team_id.value is not None:
-        return rally.serving_team_id.value
-    if rally.server_id.value is not None:
-        return roster.team_id_for(rally.server_id.value)
-    if rally.returner_id.value is not None:
-        return roster.other_team_id(roster.team_id_for(rally.returner_id.value))
-    return None
-
-
 def _game_score(game: Game, roster: MatchRoster) -> ReportGame:
     """The latest known score in Team A/B order, advanced through known side-out results."""
     latest = current = None
     previous = 0
     for rally in sorted(game.rallies, key=lambda rally: rally.number):
-        serving = _serving_team(rally, roster)
         if rally.number != previous + 1:
             current = None
         previous = rally.number
         called = rally.score.value
+        if called is None and current is None:
+            continue
+        serving = resolve_serving_team(rally, roster)
         if called is not None:
             if serving == roster.team_a_id or called.serving == called.receiving:
                 current = called.serving, called.receiving

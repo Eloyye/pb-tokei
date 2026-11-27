@@ -34,7 +34,21 @@ from pb_tokei.events.report import (
     build_report,
 )
 from pb_tokei.events.stats import ShotBreakdown, StatBreakdown, StatSubject
-from pb_tokei.rally_log import Match, MatchId, MatchRoster, RallyLog, RallyStatus
+from pb_tokei.rally_log import (
+    UNKNOWN,
+    Game,
+    Match,
+    MatchId,
+    MatchRoster,
+    ObservationGap,
+    Parity,
+    Rally,
+    RallyLog,
+    RallyStatus,
+    Score,
+    Shot,
+    observed,
+)
 
 OVERALL = StatBreakdown()
 
@@ -71,6 +85,86 @@ def test_every_stat_has_a_label_and_group() -> None:
     for definition in STAT_DEFINITIONS.values():
         assert definition.label.strip()
         assert isinstance(definition.group, ReportGroup)
+
+
+def score_for(demo: tuple[Match, MatchRoster], *rallies: Rally) -> tuple[int, int] | None:
+    match, roster = demo
+    report = build_report(replace(match, games=(Game(1, rallies),)), roster, DEMO_TOURNAMENT, ())
+    return report.header.games[0].score
+
+
+@pytest.mark.parametrize("opening_hitter", ["serve", "return_after_gap", "recorded_returner"])
+def test_game_score_resolves_the_serving_team_from_opening_hitters(
+    demo: tuple[Match, MatchRoster], opening_hitter: str
+) -> None:
+    _, roster = demo
+    rally = Rally(1, score=observed(Score(6, 8, 1)), winner_id=observed(roster.team_b_id))
+    returner = roster.team_a_players[0].id
+    if opening_hitter == "serve":
+        # A known Shot 1 hitter provides the Serving Team even with the Server field Unknown.
+        rally = replace(rally, entries=(Shot(hitter_id=observed(roster.team_b_players[0].id)),))
+    elif opening_hitter == "return_after_gap":
+        rally = replace(
+            rally,
+            entries=(
+                ObservationGap(Parity.ODD),
+                Shot(shot_number=observed(2), hitter_id=observed(returner)),
+            ),
+        )
+    else:
+        rally = replace(rally, returner_id=observed(returner))
+    assert score_for(demo, rally) == (8, 7)
+
+
+def test_game_score_swaps_a_team_b_call_and_advances_only_for_serving_wins(
+    demo: tuple[Match, MatchRoster],
+) -> None:
+    _, roster = demo
+    side_out = Rally(
+        1,
+        score=observed(Score(6, 8, 2)),
+        serving_team_id=observed(roster.team_b_id),
+        winner_id=observed(roster.team_a_id),
+    )
+    a_scores = Rally(
+        2, serving_team_id=observed(roster.team_a_id), winner_id=observed(roster.team_a_id)
+    )
+    assert score_for(demo, side_out) == (8, 6)
+    assert score_for(demo, side_out, a_scores) == (9, 6)
+
+
+@pytest.mark.parametrize("missing", ["rally", "winner", "serving_team"])
+def test_game_score_keeps_the_last_known_score_until_a_new_call(
+    demo: tuple[Match, MatchRoster], missing: str
+) -> None:
+    _, roster = demo
+    team = observed(roster.team_a_id)
+    first = Rally(1, score=observed(Score(7, 3, 1)), serving_team_id=team, winner_id=team)
+    next_known = Rally(3, serving_team_id=team, winner_id=team)
+    rallies = [first]
+    if missing == "winner":
+        rallies.append(Rally(2, serving_team_id=team))
+    elif missing == "serving_team":
+        rallies.append(Rally(2, winner_id=team))
+    rallies.append(next_known)
+
+    assert score_for(demo, *rallies) == (8, 3)
+    fresh_call = Rally(4, score=observed(Score(9, 4, 1)), serving_team_id=team, winner_id=team)
+    assert score_for(demo, *rallies, fresh_call) == (10, 4)
+
+
+def test_game_score_handles_tied_unknown_calls_and_games_without_scores(
+    demo: tuple[Match, MatchRoster],
+) -> None:
+    _, roster = demo
+    tied = Rally(1, score=observed(Score(4, 4, 2)))
+    assert score_for(demo, tied) == (4, 4)
+    assert score_for(demo, replace(tied, score=observed(Score(4, 5, 2)))) is None
+    team = observed(roster.team_a_id)
+    assert (
+        score_for(demo, replace(tied, score=UNKNOWN, serving_team_id=team, winner_id=team)) is None
+    )
+    assert score_for(demo) is None
 
 
 def test_one_dimension_pools_shot_rows_and_recomputes_the_interval(

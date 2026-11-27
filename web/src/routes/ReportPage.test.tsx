@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { getMatchReport } from "../api/client";
+import { ApiError, getMatchReport } from "../api/client";
 import type { components } from "../api/schema";
 import { reportSaveStatus } from "../lib/unsavedChanges";
 import { router as appRouter } from "../router";
@@ -246,4 +246,21 @@ it("waits for queued annotation edits before fetching the report", async () => {
   }
   expect(await screen.findByRole("table", { name: "Serve & Return" })).toBeTruthy();
   expect(getMatchReport).toHaveBeenCalledTimes(1);
+});
+
+it("opens the Rally Log picker when the report request conflicts with the open file", async () => {
+  vi.mocked(getMatchReport).mockRejectedValueOnce(new ApiError(409, "Rally Log switched"));
+  renderReport();
+  expect(await screen.findByText("Rally Log switched")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Choose a Rally Log" }));
+  expect(await screen.findByRole("dialog", { name: "Rally Log" })).toBeTruthy();
+});
+
+it("shows a request error and loads the report when Retry succeeds", async () => {
+  vi.mocked(getMatchReport).mockRejectedValueOnce(new ApiError(404, "Match not found"));
+  renderReport();
+  expect(await screen.findByText("Match not found")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("table", { name: "Serve & Return" })).toBeTruthy();
+  expect(getMatchReport).toHaveBeenCalledTimes(2);
 });

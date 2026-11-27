@@ -17,7 +17,7 @@ type ReportRate = components["schemas"]["ReportRate"];
 type ReportMix = components["schemas"]["ReportMix"];
 type ReportTeam = components["schemas"]["ReportTeam"];
 
-type Column = { id: string; label: string; kind: "team" | "player"; side: "a" | "b" };
+type Column = { id: string; label: string; kind: "team" | "player"; teamLetter: "a" | "b" };
 type TableContext = { columns: Column[]; by?: ReportSplit };
 
 const route = getRouteApi("/matches/$matchId/$workspace");
@@ -82,14 +82,14 @@ function Report({
 }) {
   const { header, stats } = report;
   const columns = header.teams.flatMap((team, index): Column[] => {
-    const side = index === 0 ? "a" : "b";
+    const teamLetter = index === 0 ? "a" : "b";
     return [
-      { id: team.id, label: `Team: ${teamLabel(team)}`, kind: "team", side },
+      { id: team.id, label: `Team: ${teamLabel(team)}`, kind: "team", teamLetter },
       ...team.players.map((player): Column => ({
         id: player.id,
         label: player.name,
         kind: "player",
-        side,
+        teamLetter,
       })),
     ];
   });
@@ -304,7 +304,7 @@ function ValueRows({
 
 function columnClass(column: Column) {
   return column.kind === "team"
-    ? `report-team-column report-team-${column.side}`
+    ? `report-team-column report-team-${column.teamLetter}`
     : "report-player-column";
 }
 
