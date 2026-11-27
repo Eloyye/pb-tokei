@@ -32,6 +32,37 @@ export function segmentAt(segments: PlaySegment[], frame: number): PlaySegment |
   return segments.find((s) => s.start_frame <= frame && frame <= s.end_frame);
 }
 
+export function segmentSplitBlocker(segment: PlaySegment, frame: number): string | undefined {
+  if (frame < segment.start_frame || frame > segment.end_frame) {
+    return "Move the playhead inside this Play Segment";
+  }
+  if (segment.start_frame === segment.end_frame) return "This Play Segment has only one frame";
+  if (frame === segment.start_frame)
+    return "Move the playhead past this Play Segment’s first frame";
+}
+
+/** The second Play Segment begins at the playhead. Neither half moves a Calibration. */
+export function splitPlaySegmentAt(
+  segments: PlaySegment[],
+  pending: PendingSegment | null,
+  frame: number,
+  selected?: PlaySegment,
+): SegmentEdit {
+  const segment = selected ?? segmentAt(segments, frame);
+  if (!segment) return unchanged(segments, pending, "Move the playhead inside a Play Segment");
+  const reason = segmentSplitBlocker(segment, frame);
+  if (reason) return unchanged(segments, pending, reason);
+
+  const first = { ...segment, end_frame: frame - 1 };
+  const second = { ...segment, start_frame: frame };
+  return {
+    segments: segments.flatMap((s) => (s === segment ? [first, second] : [s])),
+    pending,
+    startMoved: null,
+    message: `Split Play Segment at frame ${frame}`,
+  };
+}
+
 /** A new segment's view: that of the nearest segment before it, or Main View. */
 export function defaultView(segments: PlaySegment[], frame: number): CameraView {
   const before = segments.filter((s) => s.end_frame < frame);

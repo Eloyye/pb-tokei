@@ -10,6 +10,7 @@ import {
   type PlaySegment,
   trackCameraMotion,
 } from "../api/client";
+import type { SaveStatus } from "../lib/saveQueue";
 import { useCameraMotion, WINDOW_SIZE } from "./useCameraMotion";
 
 type Client = typeof import("../api/client");
@@ -22,6 +23,10 @@ vi.mock("../api/client", async (importActual) => ({
 }));
 
 const SEGMENTS: PlaySegment[] = [{ start_frame: 100, end_frame: 103, camera_view: "sideline" }];
+const HALVES: PlaySegment[] = [
+  { start_frame: 100, end_frame: 101, camera_view: "sideline" },
+  { start_frame: 102, end_frame: 103, camera_view: "sideline" },
+];
 const CALIBRATIONS: Calibration[] = [
   {
     camera_view: "sideline",
@@ -82,6 +87,18 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function renderMotionWithSegments() {
+  const initialProps: { segments: PlaySegment[]; saveStatus: SaveStatus } = {
+    segments: SEGMENTS,
+    saveStatus: SAVED,
+  };
+  return renderHook(
+    ({ segments, saveStatus }) =>
+      useCameraMotion("match-1", true, saveStatus, segments, CALIBRATIONS, 100),
+    { initialProps },
+  );
+}
+
 beforeEach(() => {
   vi.mocked(getCameraMotion).mockResolvedValue(READY_MOTION);
   vi.mocked(trackCameraMotion).mockResolvedValue(READY_MOTION);
@@ -94,6 +111,65 @@ afterEach(() => {
 });
 
 describe("useCameraMotion", () => {
+  it("waits until a split saves before fetching Camera Motion for the new halves", async () => {
+    const { result, rerender } = renderMotionWithSegments();
+    await waitFor(() => expect(result.current.frameMatrix).toEqual(MATRIX_A));
+
+    rerender({ segments: HALVES, saveStatus: { state: "saving" } });
+    expect(result.current.motion).toBeNull();
+    expect(result.current.frameMatrix).toBeUndefined();
+    act(() => result.current.retrack());
+    expect(getCameraMotion).toHaveBeenCalledOnce();
+    expect(getCameraMotionFrames).toHaveBeenCalledOnce();
+    expect(trackCameraMotion).not.toHaveBeenCalled();
+
+    const pending: CameraMotionOut = {
+      ...READY_MOTION,
+      status: "idle",
+      tracked_spans: 0,
+      total_spans: 2,
+      unmapped_ranges: [],
+      spans: HALVES.map((half) => ({
+        ...READY_MOTION.spans[0]!,
+        ...half,
+        tracked: false,
+        mapped_frames: 0,
+        unmapped_frames: 0,
+        unmapped_ranges: [],
+      })),
+    };
+    vi.mocked(getCameraMotion).mockResolvedValueOnce(pending);
+    vi.mocked(trackCameraMotion).mockResolvedValueOnce({ ...pending, status: "tracking" });
+    rerender({ segments: HALVES, saveStatus: SAVED });
+    await waitFor(() => expect(result.current.motion?.status).toBe("tracking"));
+    expect(result.current.motion?.spans).toEqual(pending.spans);
+    expect(getCameraMotionFrames).toHaveBeenCalledOnce();
+    expect(trackCameraMotion).toHaveBeenCalledOnce();
+  });
+
+  it("discards old frame and retry responses even when undo restores the same Play Segment", async () => {
+    const oldFrames = deferred<CameraMotionFramesOut>();
+    const oldRetry = deferred<CameraMotionOut>();
+    vi.mocked(getCameraMotionFrames).mockReturnValueOnce(oldFrames.promise);
+    vi.mocked(trackCameraMotion).mockReturnValueOnce(oldRetry.promise);
+    const { result, rerender } = renderMotionWithSegments();
+    await waitFor(() => expect(getCameraMotionFrames).toHaveBeenCalledOnce());
+    act(() => result.current.retrack());
+    expect(trackCameraMotion).toHaveBeenCalledOnce();
+
+    rerender({ segments: HALVES, saveStatus: { state: "saving" } });
+    rerender({ segments: SEGMENTS, saveStatus: SAVED });
+    await waitFor(() => expect(result.current.frameMatrix).toEqual(MATRIX_A));
+
+    await act(async () => {
+      oldFrames.resolve({ ...FRAMES_OUT, court_to_image: [MATRIX_B, MATRIX_B, null, MATRIX_A] });
+      oldRetry.resolve({ ...READY_MOTION, status: "error", error: "Old tracking failure" });
+    });
+    expect(result.current.frameMatrix).toEqual(MATRIX_A);
+    expect(result.current.motion?.status).toBe("ready");
+    expect(getCameraMotionFrames).toHaveBeenCalledTimes(2);
+  });
+
   it("auto-triggers tracking when idle and fetches frames once ready", async () => {
     vi.mocked(getCameraMotion).mockResolvedValueOnce({
       ...READY_MOTION,

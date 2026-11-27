@@ -14,7 +14,8 @@ matched through a one-coefficient lens model estimated on the reference frame (`
 span stores that `Lens` with its per-frame homographies of the undistorted image (ADR 0011).
 
 Per-frame results are cached on disk outside the Rally Log as derived, rebuildable data keyed by
-the Calibration, Play Segment bounds, source video fingerprint, and `METHOD_VERSION` (ADR 0006).
+the Calibration, span bounds, source video fingerprint and `METHOD_VERSION` (ADR 0006). For
+off-reference Landmarks the key also includes the resolved fit (ADR 0015).
 Frames that fail registration (cuts, whip pans, severe motion blur, wrong angle) map to nothing
 so downstream positions become Unknown rather than wrong.
 """
@@ -29,7 +30,7 @@ import math
 import os
 import tempfile
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
@@ -447,10 +448,11 @@ def default_cache_dir(db_path: Path) -> Path:
 def span_cache_key(
     video_path: Path,
     span: CalibrationSpan,
+    base_homography: Homography,
     *,
     method_version: int = METHOD_VERSION,
 ) -> str:
-    """Stable hash keying a span's Camera Motion to its Calibration, bounds, video and version."""
+    """Stable hash keying Camera Motion to the inputs of span tracking."""
     stat = video_path.stat()
     cal = span.calibration
     payload = {
@@ -475,6 +477,10 @@ def span_cache_key(
             },
         },
     }
+    if cal.has_off_reference_landmarks:
+        # Splitting a Play Segment can change Landmark registration even when the span
+        # bounds stay the same, such as when the split is at a Calibration boundary.
+        payload["base_court_to_image"] = base_homography.court_to_image.tolist()
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
 
@@ -516,8 +522,10 @@ class CameraMotionCache:
     def cache_dir(self) -> Path:
         return self._dir
 
-    def _path_for(self, video_path: Path, span: CalibrationSpan) -> Path:
-        key = span_cache_key(video_path, span, method_version=self._method_version)
+    def _path_for(
+        self, video_path: Path, span: CalibrationSpan, base_homography: Homography
+    ) -> Path:
+        key = span_cache_key(video_path, span, base_homography, method_version=self._method_version)
         return self._dir / f"{key}.npz"
 
     def _reg_path_for(
@@ -676,11 +684,13 @@ class CameraMotionCache:
                 out[(cal.camera_view, cal.effective_from_frame)] = f2r
         return out
 
-    def get(self, video_path: Path, span: CalibrationSpan) -> SpanMotion | None:
+    def get(
+        self, video_path: Path, span: CalibrationSpan, base_homography: Homography
+    ) -> SpanMotion | None:
         """Loads a cached SpanMotion if present and valid, else returns None."""
         if not video_path.is_file():
             return None
-        path = self._path_for(video_path, span)
+        path = self._path_for(video_path, span, base_homography)
         if not path.is_file():
             return None
         try:
@@ -715,10 +725,16 @@ class CameraMotionCache:
             lens=Lens(lens_k1, lens_aspect) if lens_k1 != 0.0 else None,
         )
 
-    def put(self, video_path: Path, span: CalibrationSpan, motion: SpanMotion) -> None:
+    def put(
+        self,
+        video_path: Path,
+        span: CalibrationSpan,
+        base_homography: Homography,
+        motion: SpanMotion,
+    ) -> None:
         """Atomically writes a SpanMotion to the cache directory."""
         self._dir.mkdir(parents=True, exist_ok=True)
-        target = self._path_for(video_path, span)
+        target = self._path_for(video_path, span, base_homography)
         fd, raw_tmp = tempfile.mkstemp(dir=self._dir, prefix=".motion-", suffix=".tmp.npz")
         os.close(fd)
         tmp = Path(raw_tmp)
@@ -748,12 +764,12 @@ class CameraMotionCache:
     ) -> SpanMotion:
         """Returns cached Camera Motion for `span`, or tracks and caches it."""
         _check_cancelled(cancel)
-        cached = self.get(video_path, span)
+        cached = self.get(video_path, span, base_homography)
         if cached is not None:
             return cached
         motion = track_span(video_path, span, base_homography, cancel=cancel)
         _check_cancelled(cancel)
-        self.put(video_path, span, motion)
+        self.put(video_path, span, base_homography, motion)
         return motion
 
     def load_cached(
@@ -761,22 +777,30 @@ class CameraMotionCache:
         video_path: Path,
         segments: Sequence[PlaySegment],
         calibrations: Sequence[Calibration],
+        *,
+        landmark_frame_to_ref: Mapping[tuple[CameraView, int], dict[int, Matrix]] | None = None,
     ) -> tuple[CameraMotion, list[tuple[CalibrationSpan, Homography]]]:
         """Loads all cached spans for a Match and returns any complete spans not yet cached."""
         from pb_tokei.calibration import assess
 
         cached_spans: list[SpanMotion] = []
         missing: list[tuple[CalibrationSpan, Homography]] = []
-        reg_cache: dict[tuple[CameraView, int], dict[int, Matrix]] = {}
-        for span in calibration_spans(segments, calibrations):
+        spans = calibration_spans(segments, calibrations)
+        if landmark_frame_to_ref is None:
+            span_calibrations = {
+                (span.camera_view, span.calibration.effective_from_frame): span.calibration
+                for span in spans
+            }
+            landmark_frame_to_ref = self.landmark_frame_to_ref(
+                video_path, segments, list(span_calibrations.values())
+            )
+        for span in spans:
             cal = span.calibration
             cal_key = (cal.camera_view, cal.effective_from_frame)
-            if cal.has_off_reference_landmarks and cal_key not in reg_cache:
-                reg_cache[cal_key] = self.register_calibration_frames(video_path, cal, segments)
-            base = assess(cal, frame_to_ref=reg_cache.get(cal_key)).homography
+            base = assess(cal, frame_to_ref=landmark_frame_to_ref.get(cal_key)).homography
             if base is None:
                 continue
-            hit = self.get(video_path, span)
+            hit = self.get(video_path, span, base)
             if hit is not None:
                 cached_spans.append(hit)
             else:
@@ -789,11 +813,14 @@ class CameraMotionCache:
         segments: Sequence[PlaySegment],
         calibrations: Sequence[Calibration],
         *,
+        landmark_frame_to_ref: Mapping[tuple[CameraView, int], dict[int, Matrix]] | None = None,
         on_span_done: Callable[[SpanMotion], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> CameraMotion:
         """Ensures every complete CalibrationSpan in a Match is tracked and cached."""
-        motion, missing = self.load_cached(video_path, segments, calibrations)
+        motion, missing = self.load_cached(
+            video_path, segments, calibrations, landmark_frame_to_ref=landmark_frame_to_ref
+        )
         spans = list(motion.spans)
         for span, base in missing:
             _check_cancelled(cancel)

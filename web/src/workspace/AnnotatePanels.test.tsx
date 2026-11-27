@@ -691,11 +691,12 @@ function gamesWithIssues() {
     serving_team_id: observed("A"),
     server_id: observed("b1"), // Red Check 8
     entries: [
-      { ...newShot(120) }, // Unknown hitter -> no incidental Check 2
+      { ...newShot(120), landing: observed({ x: 0, y: 15 }) }, // Unknown hitter -> no incidental Check 2
       {
         ...newShot(170),
         hitter_id: observed("b1"),
         contact_kind: observed("volley"), // Red Check 4
+        landing: observed({ x: 0, y: -18 }),
         positions: { b1: at(0, 6.8) }, // Amber Check 5
       },
     ],
@@ -707,7 +708,7 @@ function gamesWithIssues() {
     score: observed({ serving: 0, receiving: 0, server_number: 2 }),
     serving_team_id: observed("A"),
     server_id: observed("b2"), // Red Check 8
-    entries: [{ ...newShot(560) }],
+    entries: [{ ...newShot(560), landing: observed({ x: 0, y: 15 }) }],
   });
   const r3Unseen = numberShots({
     ...newRally(3, null),
@@ -885,5 +886,130 @@ describe("rule check UI surfaces", () => {
     expect(cal.container.querySelectorAll(".issue-unmapped")).toHaveLength(1);
     expect(cal.container.querySelectorAll(".issue-bar")).toHaveLength(0);
     expect(cal.container.querySelectorAll(".issue-tri")).toHaveLength(0);
+  });
+
+  it("shows missing_landing on the Shot Inspector Landing row, Rally tab, RalliesPanel, and Timeline", () => {
+    const r1 = numberShots({
+      ...newRally(1, 100),
+      end_frame: 300,
+      status: "in_progress",
+      score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      entries: [
+        { ...newShot(120), hitter_id: observed("a1") },
+        { ...newShot(170), hitter_id: observed("b1"), contact_kind: observed("bounce") },
+      ],
+    });
+    const games = [{ number: 1, rallies: [r1] }];
+    const issues = checkMatch(games, ROSTER);
+    const onSelectIssue = vi.fn<(issue: RuleIssue) => void>();
+
+    const { unmount } = render(
+      <InspectorPanel
+        focused={false}
+        tab="shot"
+        onTabChange={vi.fn<() => void>()}
+        games={games}
+        selection={{ game: 0, rally: 0, entry: 0 }}
+        roster={ROSTER}
+        frame={120}
+        cursor={{ shot: 0, rally: 0 }}
+        onCursor={vi.fn<() => void>()}
+        form={null}
+        onOpenForm={vi.fn<() => void>()}
+        onCloseForm={vi.fn<() => void>()}
+        onEdit={vi.fn<() => void>()}
+        onMoveContactHere={vi.fn<() => void>()}
+        onSyncFromTracking={vi.fn<() => void>()}
+        onDeleteRally={vi.fn<() => void>()}
+        issues={issues}
+        onSelectIssue={onSelectIssue}
+      />,
+    );
+    const landingRow = screen.getByRole("button", { name: "Landing" }).closest(".insp-row")!;
+    expect(landingRow.querySelector(".badge.amber")?.textContent).toContain("Serve has no landing");
+    unmount();
+
+    const rallyView = render(
+      <InspectorPanel
+        focused={false}
+        tab="rally"
+        onTabChange={vi.fn<() => void>()}
+        games={games}
+        selection={{ game: 0, rally: 0, entry: 0 }}
+        roster={ROSTER}
+        frame={120}
+        cursor={{ shot: 0, rally: 0 }}
+        onCursor={vi.fn<() => void>()}
+        form={null}
+        onOpenForm={vi.fn<() => void>()}
+        onCloseForm={vi.fn<() => void>()}
+        onEdit={vi.fn<() => void>()}
+        onMoveContactHere={vi.fn<() => void>()}
+        onSyncFromTracking={vi.fn<() => void>()}
+        onDeleteRally={vi.fn<() => void>()}
+        issues={issues}
+        onSelectIssue={onSelectIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Shot 2:.*Return has no landing/ }));
+    expect(onSelectIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "missing_landing", entryIndex: 1, field: "landing" }),
+    );
+    rallyView.unmount();
+
+    const tl = render(
+      <Timeline
+        view={{ start: 0, end: 500 }}
+        onViewChange={vi.fn<() => void>()}
+        frame={120}
+        totalFrames={1000}
+        playing={false}
+        onSeek={vi.fn<() => void>()}
+        onZoom={vi.fn<() => void>()}
+        focused={false}
+        segments={[]}
+        pending={null}
+        onMoveEdge={vi.fn<() => void>()}
+        onPreviewEdge={vi.fn<() => void>()}
+        rallyLog={{
+          games,
+          selection: { game: 0, rally: 0, entry: 0 },
+          roster: ROSTER,
+          issues,
+          onSelectRally: vi.fn<() => void>(),
+          onMoveRallyEdge: vi.fn<() => void>(),
+          onSelectEntry: vi.fn<() => void>(),
+          onMoveContact: vi.fn<() => void>(),
+          onSelectIssue,
+          onFitRally: vi.fn<() => void>(),
+        }}
+      />,
+    );
+    const tris = tl.container.querySelectorAll<HTMLButtonElement>(".issue-tri.amber");
+    expect(tris).toHaveLength(2);
+    expect(tris[0]!.title).toContain("Serve has no landing");
+    expect(tris[1]!.title).toContain("Return has no landing");
+    tl.unmount();
+
+    const ralliesPanel = render(
+      <RalliesPanel
+        focused={false}
+        games={games}
+        selection={{ game: 0, rally: 0, entry: 0 }}
+        roster={ROSTER}
+        issues={issues}
+        onSelectRally={vi.fn<() => void>()}
+        onSelectGame={vi.fn<() => void>()}
+        onAddUnseen={vi.fn<() => void>()}
+        onAddGame={vi.fn<() => void>()}
+        onDeleteGame={vi.fn<() => void>()}
+      />,
+    );
+    const row = ralliesPanel.container.querySelector(".r-row")!;
+    expect(row.querySelector(".iss .red")).toBeNull();
+    expect(row.querySelector(".iss .amber")?.textContent).toBe("2");
   });
 });

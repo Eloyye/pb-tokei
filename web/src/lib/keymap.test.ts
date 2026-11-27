@@ -151,6 +151,14 @@ describe("isPanelSwapKey", () => {
 });
 
 describe("segmentKeyAction", () => {
+  it("splits a Play Segment with Command+K or Ctrl+K", () => {
+    expect(segmentKeyAction(press("k", { metaKey: true }))).toEqual({ type: "split" });
+    expect(segmentKeyAction(press("k", { ctrlKey: true }))).toEqual({ type: "split" });
+    expect(segmentKeyAction(press("k"))).toBeNull();
+    expect(segmentKeyAction(press("k", { ctrlKey: true, metaKey: true }))).toBeNull();
+    expect(segmentKeyAction(press("K", { metaKey: true, shiftKey: true }))).toBeNull();
+  });
+
   it("sets bounds with Shift+I and Shift+O, whatever the key's case", () => {
     expect(segmentKeyAction(press("I", { shiftKey: true }))).toEqual({ type: "markIn" });
     expect(segmentKeyAction(press("o", { shiftKey: true }))).toEqual({ type: "markOut" });
@@ -260,6 +268,7 @@ describe("annotateKeyAction", () => {
     expect(annotateKeyAction(press("k"))).toBeNull();
     expect(annotateKeyAction(shift("KeyK", "K"))).toBeNull();
     expect(annotateKeyAction(press("k", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(annotateKeyAction(press("k", { metaKey: true, ctrlKey: true }))).toBeNull();
     expect(annotateKeyAction(press("k", { metaKey: true, altKey: true }))).toBeNull();
   });
 

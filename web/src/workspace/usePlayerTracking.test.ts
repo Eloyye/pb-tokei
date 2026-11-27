@@ -14,6 +14,7 @@ import {
   type TeamEnd,
   trackPlayers,
 } from "../api/client";
+import type { SaveStatus } from "../lib/saveQueue";
 import { PLAYER_WINDOW_SIZE, usePlayerTracking } from "./usePlayerTracking";
 
 type Client = typeof import("../api/client");
@@ -123,6 +124,61 @@ function renderAt(enabled = true, anchors: PlayerAnchor[] = EMPTY_ANCHORS) {
 }
 
 describe("usePlayerTracking", () => {
+  it("drops the original status and frame data when a split is awaiting autosave", async () => {
+    vi.mocked(getPlayerTracking).mockResolvedValue(READY_STATUS);
+    const initialProps: { segments: PlaySegment[]; saveStatus: SaveStatus } = {
+      segments: SEGMENTS,
+      saveStatus: SAVED,
+    };
+    const { result, rerender } = renderHook(
+      ({ segments, saveStatus }) =>
+        usePlayerTracking(
+          "match-1",
+          true,
+          saveStatus,
+          segments,
+          CALIBRATIONS,
+          EMPTY_ANCHORS,
+          EMPTY_ENDS,
+          0,
+          10,
+        ),
+      { initialProps },
+    );
+    await waitFor(() => expect(result.current.frameData?.frame).toBe(10));
+    const stale = deferred<PlayerTrackingFramesOut>();
+    vi.mocked(getPlayerTrackingFrames).mockReturnValueOnce(stale.promise);
+    const requested = result.current.trackingAt(350);
+
+    const halves: PlaySegment[] = [
+      { start_frame: 0, end_frame: 124, camera_view: "main" },
+      { start_frame: 125, end_frame: 399, camera_view: "main" },
+    ];
+    rerender({ segments: halves, saveStatus: { state: "saving" } });
+    expect(result.current.status).toBeNull();
+    expect(result.current.frameData).toBeUndefined();
+    expect(result.current.cachedAt(10)).toBeUndefined();
+    expect(await result.current.trackingAt(10)).toBeUndefined();
+    expect(getPlayerTrackingFrames).toHaveBeenCalledTimes(2);
+
+    const pending: PlayerTrackingOut = {
+      ...IDLE_STATUS,
+      total_segments: 2,
+      spans: halves.map((segment) => ({ ...segment, tracked: false, status: "pending" })),
+    };
+    vi.mocked(getPlayerTracking).mockResolvedValueOnce(pending);
+    rerender({ segments: halves, saveStatus: SAVED });
+    await waitFor(() => expect(result.current.status).toEqual(pending));
+    expect(result.current.cachedAt(10)).toBeNull();
+    expect(trackPlayers).not.toHaveBeenCalled();
+
+    rerender({ segments: SEGMENTS, saveStatus: { state: "saving" } });
+    rerender({ segments: SEGMENTS, saveStatus: SAVED });
+    await waitFor(() => expect(result.current.status).toEqual(READY_STATUS));
+    stale.resolve(makeFramesWindow(350, 350));
+    expect(await requested).toBeUndefined();
+  });
+
   it("loads status without auto-triggering tracking, then polls after explicit startTracking until ready", async () => {
     vi.useFakeTimers();
     vi.mocked(getPlayerTracking)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from pathlib import Path
 
 import cv2
@@ -491,8 +491,8 @@ def test_tracks_through_a_distorting_lens_within_a_quarter_foot(tmp_path: Path) 
 
     # The lens survives the cache.
     cache = CameraMotionCache(tmp_path / "cache")
-    cache.put(video, span, span_motion)
-    cached = cache.get(video, span)
+    cache.put(video, span, base, span_motion)
+    cached = cache.get(video, span, base)
     assert cached is not None and cached.lens == span_motion.lens
 
     mapping = CourtMapping([seg], [cal], camera_motion=CameraMotion([cached]))
@@ -695,10 +695,74 @@ def test_camera_motion_cache_hits_and_invalidates_on_edits_or_version_bump(
     span_reframed = calibration_spans([seg], [cal_reframed])[0]
     span_shorter = calibration_spans([PlaySegment(0, 10, CameraView.SIDELINE)], [cal])[0]
 
-    k_base = span_cache_key(video, span, method_version=METHOD_VERSION)
-    assert span_cache_key(video, span_moved, method_version=METHOD_VERSION) != k_base
-    assert span_cache_key(video, span_reframed, method_version=METHOD_VERSION) != k_base
-    assert span_cache_key(video, span_shorter, method_version=METHOD_VERSION) != k_base
+    base = assess(cal).homography
+    moved_base = assess(cal_moved).homography
+    assert base is not None and moved_base is not None
+    assert not np.allclose(base.court_to_image, moved_base.court_to_image)
+    k_base = span_cache_key(video, span, base, method_version=METHOD_VERSION)
+    assert span_cache_key(video, span, moved_base, method_version=METHOD_VERSION) == k_base
+    assert span_cache_key(video, span_reframed, base) != span_cache_key(
+        video, span_reframed, moved_base
+    )
+    assert span_cache_key(video, span_moved, base, method_version=METHOD_VERSION) != k_base
+    assert span_cache_key(video, span_reframed, base, method_version=METHOD_VERSION) != k_base
+    assert span_cache_key(video, span_shorter, base, method_version=METHOD_VERSION) != k_base
     bumped = METHOD_VERSION + 1
-    assert span_cache_key(video, span, method_version=bumped) != k_base
-    assert CameraMotionCache(tmp_path / "cache", method_version=bumped).get(video, span) is None
+    assert span_cache_key(video, span, base, method_version=bumped) != k_base
+    assert (
+        CameraMotionCache(tmp_path / "cache", method_version=bumped).get(video, span, base) is None
+    )
+
+
+def test_split_at_calibration_boundary_invalidates_motion_if_the_resolved_fit_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "cached.mp4"
+    video.touch()
+    monkeypatch.setattr("pb_tokei.camera_motion.video_frame_count", lambda _video: 20)
+    original = [PlaySegment(0, 19, CameraView.MAIN)]
+    halves = [PlaySegment(0, 9, CameraView.MAIN), PlaySegment(10, 19, CameraView.MAIN)]
+    placed = MAIN.placed(0)
+    landmark = next(iter(placed))
+    placed[landmark] = PlacedLandmark.at(placed[landmark].point, 12)
+    calibrations = [
+        Calibration(CameraView.MAIN, 0, 0, placed),
+        Calibration(CameraView.MAIN, 10, 10, MAIN.placed(10)),
+    ]
+
+    def register(
+        _video: Path, _reference: int, frames: Sequence[int], *, chain_frames: Set[int], **_kwargs
+    ) -> dict[int, np.ndarray]:
+        matrix = np.eye(3)
+        if 12 not in chain_frames:
+            matrix[0, 2] = 0.02
+        return dict.fromkeys(frames, matrix)
+
+    monkeypatch.setattr("pb_tokei.camera_motion.register_frames_to_reference", register)
+    cache = CameraMotionCache(tmp_path / "cache")
+    _, before = cache.load_cached(video, original, calibrations)
+    assert [span for span, _base in before] == calibration_spans(halves, calibrations)
+    for span, base in before:
+        cache.put(
+            video,
+            span,
+            base,
+            SpanMotion(
+                span.start_frame,
+                span.end_frame,
+                span.camera_view,
+                span.calibration.effective_from_frame,
+                span.calibration.reference_frame,
+                np.ones(span.frame_count, dtype=bool),
+                np.tile(np.eye(3), (span.frame_count, 1, 1)),
+                np.zeros(span.frame_count, dtype=np.float32),
+            ),
+        )
+
+    motion, missing = cache.load_cached(video, halves, calibrations)
+    assert [(span.start_frame, span.end_frame) for span in motion.spans] == [(10, 19)]
+    assert [span for span, _base in missing] == [before[0][0]]
+    assert not np.allclose(missing[0][1].court_to_image, before[0][1].court_to_image)
+    restored, missing = cache.load_cached(video, original, calibrations)
+    assert len(restored.spans) == 2
+    assert not missing

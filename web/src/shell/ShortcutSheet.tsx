@@ -51,6 +51,7 @@ const GROUPS: [string, [string[], string][]][] = [
     [
       [["⇧I"], "Start a segment, or move the start of the segment under the playhead"],
       [["⇧O"], "End a pending segment, or move the end of the segment under the playhead"],
+      [["⌘K", "Ctrl+K"], "Split Play Segment at playhead after its first frame"],
       [["1", "2"], "Main View / Sideline View"],
       [["⌫"], "Remove the segment under the playhead"],
       [["Esc"], "Clear Play Segment selection and drop any pending segment"],
@@ -74,7 +75,7 @@ const GROUPS: [string, [string[], string][]][] = [
     [
       [["⇧I"], "Start an open-ended Rally here, or move the selected Rally's start"],
       [["⇧O"], "End the selected Rally here"],
-      [["⌘K"], "Split Rally at playhead (when strictly inside the selected Rally)"],
+      [["⌘K", "Ctrl+K"], "Split Rally at playhead (when strictly inside the selected Rally)"],
       [["⇧P", "⇧2", "⇧X"], "Referee Call: Point / Second server / Side out (again clears)"],
       [["⇧S"], "Rally details: score, Serving Team, Server, Returner, scoreboard, winner"],
       [["⇧C"], "Challenge: challenger, original call, ruling"],

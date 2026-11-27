@@ -23,7 +23,10 @@ const match: StatusMatch = {
 function renderBar(
   overrides: Partial<StatusMatch> = {},
   workspace: ComponentProps<typeof StatusBar>["workspace"] = "annotate",
-  extra: Partial<Pick<ComponentProps<typeof StatusBar>, "issueCounts" | "onNextIssue">> = {},
+  extra: Pick<
+    ComponentProps<typeof StatusBar>,
+    "issueCounts" | "onNextIssue" | "calibrationFitRetry"
+  > = {},
 ) {
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -39,6 +42,16 @@ function renderBar(
 }
 
 afterEach(cleanup);
+
+it("offers a retry when Calibration fits cannot be refreshed", () => {
+  const onRetry = vi.fn<() => void>();
+  const message = "Couldn't refresh Calibration fits (Rally Log unavailable)";
+  renderBar({}, "calibrate", { calibrationFitRetry: { message, onRetry } });
+  const retry = screen.getByRole("button", { name: "Retry Calibration fits" });
+  expect(retry.title).toBe(message);
+  fireEvent.click(retry);
+  expect(onRetry).toHaveBeenCalledOnce();
+});
 
 describe("operator time in the StatusBar", () => {
   it("shows persisted time and broadcast length while footage is offline", () => {

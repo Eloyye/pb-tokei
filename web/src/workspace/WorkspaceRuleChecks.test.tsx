@@ -99,8 +99,13 @@ function sampleGames(): Game[] {
     server_id: observed("a1"),
     returner_id: observed("b1"),
     entries: [
-      { ...newShot(110), hitter_id: observed("a1") },
-      { ...newShot(150), hitter_id: observed("b1"), contact_kind: observed("volley") }, // Red Check 4
+      { ...newShot(110), hitter_id: observed("a1"), landing: observed({ x: 0, y: 15 }) },
+      {
+        ...newShot(150),
+        hitter_id: observed("b1"),
+        contact_kind: observed("volley"),
+        landing: observed({ x: 0, y: -18 }),
+      }, // Red Check 4
     ],
   });
   const r2Unseen = numberShots({
@@ -470,6 +475,62 @@ describe("Workspace live rule checks and F8 navigation", () => {
     expect(screen.getByText("Next / previous rule issue")).toBeTruthy();
     expect(screen.getByText("F8")).toBeTruthy();
     expect(screen.getByText("⇧F8")).toBeTruthy();
+  });
+
+  it("warns on missing Serve and Return landings across Timeline, Inspector, and StatusBar, and clears live on landing click", async () => {
+    const games: Game[] = [
+      {
+        number: 1,
+        rallies: [
+          numberShots({
+            ...newRally(1, 100),
+            end_frame: 300,
+            status: "in_progress",
+            score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+            serving_team_id: observed("A"),
+            server_id: observed("a1"),
+            returner_id: observed("b1"),
+            entries: [
+              { ...newShot(110), hitter_id: observed("a1") },
+              { ...newShot(150), hitter_id: observed("b1"), contact_kind: observed("bounce") },
+            ],
+          }),
+        ],
+      },
+    ];
+    const { container } = renderWorkspace("annotate", games);
+    loadVideoMetadata(container);
+
+    // StatusBar shows 2 amber issues (Serve and Return) and Timeline shows 2 amber triangles.
+    const statusIssues = await screen.findByRole("button", { name: /● 2\s*issues/ });
+    expect(statusIssues.querySelector(".sb-red")).toBeNull();
+    expect(statusIssues.querySelector(".sb-amber")?.textContent).toBe("● 2");
+    expect(container.querySelectorAll(".issue-tri.amber")).toHaveLength(2);
+
+    // F8 jumps to Shot 1's Landing row with an inline amber badge.
+    fireEvent.keyDown(window, { key: "F8" });
+    expect(screen.getByText(/Issue 1\/2 · G1 R1 · Serve has no landing/)).toBeTruthy();
+    const landingRow = screen.getByRole("button", { name: "Landing" }).closest(".insp-row")!;
+    expect(landingRow.className).toContain("cursor");
+    expect(landingRow.querySelector(".badge.amber")?.textContent).toContain("Serve has no landing");
+
+    // Enter (Mark Done) is never blocked by the warning.
+    fireEvent.keyDown(window, { key: "Enter" });
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalled());
+    expect(container.querySelector(".r-row .st.done")).toBeTruthy();
+
+    // Clicking the Court diagram records the Serve's landing and clears its warning live.
+    const svg = container.querySelector<SVGSVGElement>("svg.court")!;
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 0, width: 320, height: 672 }),
+    );
+    fireEvent.pointerDown(svg.querySelector(".zone-bc")!, {
+      pointerId: 1,
+      clientX: 160,
+      clientY: 136,
+    });
+    await screen.findByRole("button", { name: /● 1\s*issue$/ });
+    expect(container.querySelectorAll(".issue-tri.amber")).toHaveLength(1);
   });
 });
 

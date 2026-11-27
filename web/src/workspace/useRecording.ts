@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Calibration,
   type CalibrationOut,
@@ -47,11 +47,14 @@ export interface RecordingState {
   /** The last edit's hint, or a load error. */
   message: string | null;
   saveStatus: SaveStatus;
+  /** Save state for the inputs to Camera Motion and Player Tracking. */
+  trackingSaveStatus: SaveStatus;
   /**
-   * Each Calibration's fit as the server last returned it, keyed by `fitKey`. It lags an edit
-   * until that edit is saved; `currentFit` returns it only once it is current.
+   * Server fits keyed by `fitKey`. A segment edit hides off-reference fits until they are
+   * refreshed. `currentFit` also checks that the fitted Landmarks match the edit.
    */
   fits: Map<string, CalibrationOut>;
+  fitRefreshError: string | null;
 }
 
 export interface RecordingControls {
@@ -75,11 +78,18 @@ export interface RecordingControls {
   cancelPending(): void;
   /** Shows a hint in the status bar. */
   notify(message: string): void;
+  retryCalibrationFits(): void;
   undo(): void;
   redo(): void;
 }
 
 const VIEWS: CameraView[] = ["main", "sideline"];
+
+function hasOffReferenceLandmarks(calibration: Calibration): boolean {
+  return Object.values(calibration.landmarks).some(
+    (point) => point.frame !== calibration.reference_frame,
+  );
+}
 
 interface Queues {
   segments: SaveQueue<PlaySegment[]>;
@@ -97,8 +107,12 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
   const [history, setHistory] = useState<History<Recording> | null>(null);
   const [pending, setPending] = useState<PendingSegment | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ state: "saved" });
+  const [{ saveStatus, trackingSaveStatus }, setSaveStatuses] = useState<
+    Pick<RecordingState, "saveStatus" | "trackingSaveStatus">
+  >({ saveStatus: { state: "saved" }, trackingSaveStatus: { state: "saved" } });
   const [fits, setFits] = useState<Map<string, CalibrationOut>>(() => new Map());
+  const [fitsMatchSegments, setFitsMatchSegments] = useState(true);
+  const [fitRefreshError, setFitRefreshError] = useState<string | null>(null);
   // Key handlers run outside render, so they read the latest state from refs.
   const historyRef = useRef<History<Recording> | null>(null);
   const pendingRef = useRef<PendingSegment | null>(null);
@@ -106,18 +120,14 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
 
   useEffect(() => {
     let cancelled = false;
-    const statuses = new Map<string, SaveStatus>();
     // This editor's saves, as seen by a Rally Log switch waiting for them (lib/unsavedChanges).
     const owner = {};
-    const options = (key: string) => ({
-      retryable: isRetryable,
-      onStatus: (status: SaveStatus) => {
-        statuses.set(key, status);
-        const combined = combineStatus([...statuses.values()]);
-        reportSaveStatus(owner, combined);
-        if (!cancelled) setSaveStatus(combined);
-      },
-    });
+    const onStatus = () => {
+      const trackingStatus = combineStatus(trackingQueues.map((q) => q.status()));
+      const combined = combineStatus(allQueues.map((q) => q.status()));
+      reportSaveStatus(owner, combined);
+      if (!cancelled) setSaveStatuses({ saveStatus: combined, trackingSaveStatus: trackingStatus });
+    };
     // A view's saved Calibrations come back fitted; their fits replace that view's.
     const saveCalibrations = async (view: CameraView, list: Calibration[]) => {
       const saved = await replaceCalibrations(matchId, view, list);
@@ -128,22 +138,26 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         return next;
       });
     };
-    const queue = <T>(key: string, save: (value: T) => Promise<unknown>) =>
-      createSaveQueue(save, options(key));
+    const queue = <T>(save: (value: T) => Promise<unknown>) =>
+      createSaveQueue(save, { retryable: isRetryable, onStatus });
     const queues: Queues = {
-      segments: queue("segments", (segments: PlaySegment[]) =>
-        replacePlaySegments(matchId, segments),
-      ),
+      segments: queue((segments: PlaySegment[]) => replacePlaySegments(matchId, segments)),
       calibrations: {
-        main: queue("main", (list: Calibration[]) => saveCalibrations("main", list)),
-        sideline: queue("sideline", (list: Calibration[]) => saveCalibrations("sideline", list)),
+        main: queue((list: Calibration[]) => saveCalibrations("main", list)),
+        sideline: queue((list: Calibration[]) => saveCalibrations("sideline", list)),
       },
-      anchors: queue("anchors", (anchors: PlayerAnchor[]) =>
-        replacePlayerAnchors(matchId, anchors),
-      ),
-      teamEnds: queue("teamEnds", (teamEnds: TeamEnd[]) => replaceTeamEnds(matchId, teamEnds)),
-      games: queue("games", (games: Game[]) => replaceGames(matchId, games)),
+      anchors: queue((anchors: PlayerAnchor[]) => replacePlayerAnchors(matchId, anchors)),
+      teamEnds: queue((teamEnds: TeamEnd[]) => replaceTeamEnds(matchId, teamEnds)),
+      games: queue((games: Game[]) => replaceGames(matchId, games)),
     };
+    const trackingQueues = [
+      queues.segments,
+      ...VIEWS.map((view) => queues.calibrations[view]),
+      queues.anchors,
+      queues.teamEnds,
+    ];
+    // Games save the Rally Log's manually recorded facts, including Shot snapshots.
+    const allQueues = [...trackingQueues, queues.games];
     queuesRef.current = queues;
 
     // The Rally Log answers 503 while another request holds the file; that passes, so retry.
@@ -170,6 +184,8 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
         historyRef.current = start;
         setHistory(start);
         setFits(new Map(calibrations.map((fit) => [fitKey(fit), fit])));
+        setFitsMatchSegments(true);
+        setFitRefreshError(null);
       },
       (error: unknown) => {
         if (!cancelled) setMessage(`Couldn't load the Rally Log: ${errorMessage(error)}`);
@@ -177,19 +193,12 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     );
     return () => {
       cancelled = true;
-      const all = [
-        queues.segments,
-        ...VIEWS.map((view) => queues.calibrations[view]),
-        queues.anchors,
-        queues.teamEnds,
-        queues.games,
-      ];
-      for (const q of all) q.close();
+      for (const q of allQueues) q.close();
       // A closing queue still sends its latest value; a switch waits for that too.
-      if (all.some((q) => q.status().state !== "saved")) {
+      if (allQueues.some((q) => q.status().state !== "saved")) {
         reportSaveStatus(owner, { state: "saving" });
       }
-      void Promise.all(all.map((q) => q.settled())).then(() => reportSaveStatus(owner, null));
+      void Promise.all(allQueues.map((q) => q.settled())).then(() => reportSaveStatus(owner, null));
     };
   }, [matchId]);
 
@@ -201,6 +210,58 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [saveStatus.state]);
 
+  const { segments: currentSegments, calibrations: currentCalibrations } = history?.present ?? {};
+  // A segment boundary can change which off-reference Landmarks register to the reference frame.
+  useEffect(() => {
+    if (
+      fitsMatchSegments ||
+      fitRefreshError !== null ||
+      trackingSaveStatus.state !== "saved" ||
+      !currentCalibrations?.some(hasOffReferenceLandmarks)
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const isCurrent = () => {
+      const current = historyRef.current?.present;
+      return (
+        !cancelled &&
+        current?.segments === currentSegments &&
+        current?.calibrations === currentCalibrations
+      );
+    };
+    void withRetries(() => getCalibrations(matchId), { retryable: isRetryable }).then(
+      (updated) => {
+        if (!isCurrent()) return;
+        setFits(new Map(updated.map((fit) => [fitKey(fit), fit])));
+        setFitsMatchSegments(true);
+      },
+      (error: unknown) => {
+        if (!isCurrent()) return;
+        const reason = `Couldn't refresh Calibration fits (${errorMessage(error)})`;
+        setFitRefreshError(reason);
+        setMessage(reason);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    matchId,
+    currentSegments,
+    currentCalibrations,
+    fitsMatchSegments,
+    fitRefreshError,
+    trackingSaveStatus.state,
+  ]);
+  const currentFits = useMemo(
+    () =>
+      fitsMatchSegments
+        ? fits
+        : new Map([...fits].filter(([, fit]) => !hasOffReferenceLandmarks(fit))),
+    [fits, fitsMatchSegments],
+  );
+
   const update = useCallback((next: History<Recording>) => {
     const previous = historyRef.current;
     historyRef.current = next;
@@ -209,7 +270,12 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     if (!previous || !queues) return;
     const before = previous.present;
     const after = next.present;
-    if (before.segments !== after.segments) queues.segments.push(after.segments);
+    const segmentsChanged = before.segments !== after.segments;
+    if (segmentsChanged || before.calibrations !== after.calibrations) setFitRefreshError(null);
+    if (segmentsChanged) {
+      setFitsMatchSegments(false);
+      queues.segments.push(after.segments);
+    }
     for (const view of VIEWS) {
       const list = ofView(after.calibrations, view);
       if (JSON.stringify(ofView(before.calibrations, view)) !== JSON.stringify(list)) {
@@ -339,11 +405,26 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
     editRecording,
     cancelPending,
     notify: setMessage,
+    retryCalibrationFits: () => {
+      setFitRefreshError(null);
+      setMessage((current) => (current === fitRefreshError ? null : current));
+    },
     undo: undoEdit,
     redo: redoEdit,
   };
 
-  return [{ recording: history?.present ?? null, pending, message, saveStatus, fits }, controls];
+  return [
+    {
+      recording: history?.present ?? null,
+      pending,
+      message,
+      saveStatus,
+      trackingSaveStatus,
+      fits: currentFits,
+      fitRefreshError,
+    },
+    controls,
+  ];
 }
 
 function ofView(calibrations: Calibration[], view: CameraView): Calibration[] {

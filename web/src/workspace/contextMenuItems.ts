@@ -2,6 +2,7 @@ import type { MouseEvent } from "react";
 import type { Game, PlaySegment, Rally, RallyEntry } from "../api/client";
 import { rallyStartTarget, splitRallyReason } from "../lib/annotate";
 import type { AnnotateAction, SegmentAction } from "../lib/keymap";
+import { segmentSplitBlocker } from "../lib/segments";
 import type { Workspace } from "../lib/workspaces";
 
 export type ContextMenuTarget =
@@ -21,6 +22,7 @@ export type MenuCommand =
 export interface MenuItem {
   label: string;
   command: MenuCommand;
+  /** Space-separated ARIA key shortcuts. */
   shortcut?: string;
   disabledReason?: string;
 }
@@ -96,7 +98,7 @@ export function contextMenuItems(
         annotate("Rally end at playhead", "Shift+O", { type: "rallyEnd" }, noVideo ?? unframed),
         annotate(
           "Split Rally at playhead",
-          "⌘K",
+          "Meta+K Control+K",
           { type: "splitRally" },
           noVideo ??
             splitRallyReason(
@@ -151,6 +153,12 @@ export function contextMenuItems(
           frame < target.segment.start_frame
             ? "Move the playhead to or after this Play Segment’s start"
             : undefined,
+        ),
+        segment(
+          "Split Play Segment at playhead",
+          "Meta+K Control+K",
+          { type: "split" },
+          segmentSplitBlocker(target.segment, frame),
         ),
       ];
     case "lane":

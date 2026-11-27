@@ -127,6 +127,7 @@ import {
   removeAt,
   segmentAt,
   setCameraView,
+  splitPlaySegmentAt,
   VIEW_LABELS,
 } from "../lib/segments";
 import { fitRange, type FrameRange, fullView, reconcileView, zoomView } from "../lib/timeline";
@@ -336,7 +337,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const cameraMotion = useCameraMotion(
     match.id,
     (calibrating || annotating) && match.video_status === "ready",
-    recordingState.saveStatus,
+    recordingState.trackingSaveStatus,
     segments,
     calibrations,
     frame,
@@ -345,7 +346,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const playerTracking = usePlayerTracking(
     match.id,
     (calibrating || annotating) && match.video_status === "ready",
-    recordingState.saveStatus,
+    recordingState.trackingSaveStatus,
     segments,
     calibrations,
     anchors,
@@ -859,6 +860,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
 
   // The keyboard follows the playhead and pending segment. A clip menu targets that clip.
   const runSegment = (action: SegmentAction, target?: PlaySegment) => {
+    if (action.type === "split") {
+      if (!calibrating) {
+        return recording.notify(
+          "Split Rally is available in Annotate; Split Play Segment is available in Calibrate",
+        );
+      }
+      if (totalFrames === 0) return recording.notify("Load the video first");
+      if (!segments) return recording.notify("Wait for Play Segments to load");
+    }
     if (action.type === "cancel") {
       setSegmentSelection(null);
       return recording.cancelPending();
@@ -872,6 +882,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           return markIn(list, pending, frame, target);
         case "markOut":
           return markOut(list, pending, frame, target);
+        case "split":
+          return splitPlaySegmentAt(list, pending, frame, target);
         case "setView":
           return setCameraView(list, pending, frame, action.view, target);
         case "remove":
@@ -1112,11 +1124,15 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return;
       }
     }
-    if (annotating && recordingState.recording) {
+    if (annotating) {
       const annotateAction = annotateKeyAction(event);
-      if (annotateAction) {
+      if (annotateAction && (annotateAction.type === "splitRally" || recordingState.recording)) {
         event.preventDefault();
         if (event.repeat && annotateAction.type !== "shot" && annotateAction.type !== "cursor") {
+          return;
+        }
+        if (!recordingState.recording) {
+          recording.notify("Wait for Rallies to load");
           return;
         }
         runAnnotate(annotateAction);
@@ -1138,20 +1154,18 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       if (!event.repeat) handleEscape();
       return;
     }
-    if (calibrating && totalFrames > 0) {
-      const segmentAction = segmentKeyAction(event);
-      if (segmentAction) {
+    const segmentAction = segmentKeyAction(event);
+    if (segmentAction && (segmentAction.type === "split" || (calibrating && totalFrames > 0))) {
+      event.preventDefault();
+      if (!event.repeat) runSegment(segmentAction);
+      return;
+    }
+    if (calibrating && totalFrames > 0 && calibrateTab === "landmarks") {
+      const calibrationAction = calibrationKeyAction(event);
+      if (calibrationAction) {
         event.preventDefault();
-        if (!event.repeat) runSegment(segmentAction);
+        if (!event.repeat) calibrate(calibrationAction);
         return;
-      }
-      if (calibrateTab === "landmarks") {
-        const calibrationAction = calibrationKeyAction(event);
-        if (calibrationAction) {
-          event.preventDefault();
-          if (!event.repeat) calibrate(calibrationAction);
-          return;
-        }
       }
     }
     const zoomDirection = zoomKeyAction(event);
@@ -1619,6 +1633,11 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       <StatusBar
         message={edgeDragHint || recordingState.message || defaultMessage}
         saveStatus={recordingState.saveStatus}
+        calibrationFitRetry={
+          recordingState.fitRefreshError === null
+            ? undefined
+            : { message: recordingState.fitRefreshError, onRetry: recording.retryCalibrationFits }
+        }
         match={match}
         workspace={workspace}
         issueCounts={showRuleChecks ? issueCounts : undefined}
