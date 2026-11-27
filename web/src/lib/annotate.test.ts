@@ -644,7 +644,7 @@ describe("Split Rally at playhead", () => {
           ...newShot(300),
           hitter_id: inferred("a1"),
           contact_kind: UNKNOWN,
-          positions: snapshot,
+          positions: { ...snapshot, b1: at(4, 14) },
           contact_zone: observed("backcourt"),
           error: { kind: observed("net"), player_id: inferred("a1") },
         },
@@ -678,10 +678,11 @@ describe("Split Rally at playhead", () => {
     expect(s2!.error).toEqual({ kind: observed("out"), player_id: observed("a2") });
 
     // New Shot 3 alternates from Observed Shot 2 (Team A -> Team B = b1), gets Inferred Bounce,
-    // updates its position-derived Contact Zone and Inferred Error player.
+    // updates its position-derived Contact Zone (backcourt -> midcourt) and Inferred Error player.
     expect(s3!.shot_number).toEqual(observed(3));
     expect(s3!.hitter_id).toEqual(inferred("b1"));
     expect(s3!.contact_kind).toEqual(inferred("bounce"));
+    expect(s3!.contact_zone).toEqual(observed("midcourt"));
     expect(s3!.error).toEqual({ kind: observed("net"), player_id: inferred("b1") });
 
     // Rule checks flag the Observed Volley on Shot 2 (two-bounce rule) and wrong-Team Shot 2!
@@ -715,6 +716,104 @@ describe("Split Rally at playhead", () => {
     const [s1, s2] = r2!.entries as Shot[];
     expect(s1!.hitter_id).toEqual(inferred("b1"));
     expect(s2!.hitter_id).toEqual(observed("a2"));
+  });
+
+  it("recomputes Inferred Body Hit, Unknown next hitter, and unrelated Inferred Error Players on split", () => {
+    // 1) Inferred body_hit: hitter changes from a1 to b1, so opponent nearest landing (a2) is picked;
+    //    without a landing, falls back to the first opponent (a1).
+    const bodyHitRally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      entries: [
+        // Team A loses (a1 error) -> side out to Team B serving (b1) at 0-0-1.
+        {
+          ...newShot(120),
+          hitter_id: observed("a1"),
+          error: { kind: observed("net"), player_id: observed("a1") },
+        },
+        // New Shot 1: hitter flips from inferred("a1") -> inferred("b1"); landing near a2 (5, -20).
+        {
+          ...newShot(200),
+          hitter_id: inferred("a1"),
+          landing: observed({ x: 5, y: -19 }),
+          positions: snapshot,
+          error: { kind: observed("body_hit"), player_id: inferred("b2") },
+        },
+        // New Shot 2: hitter flips from inferred("b1") -> inferred("a1"); landing Unknown -> first opponent b1.
+        {
+          ...newShot(250),
+          hitter_id: inferred("b1"),
+          error: { kind: observed("body_hit"), player_id: inferred("a2") },
+        },
+      ],
+    });
+    const bodySplit = splitRally(
+      ctx([{ number: 1, rallies: [bodyHitRally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const bodyShots = bodySplit.games[0]!.rallies[1]!.entries as Shot[];
+    expect(bodyShots[0]!.hitter_id).toEqual(inferred("b1"));
+    expect(bodyShots[0]!.error!.player_id).toEqual(inferred("a2"));
+    expect(bodyShots[1]!.hitter_id).toEqual(inferred("a1"));
+    expect(bodyShots[1]!.error!.player_id).toEqual(inferred("b1"));
+
+    // 2) nextHitter === null (Shot follows an Unknown-hitter Shot after a Gap): Inferred Error
+    //    matching previous hitter becomes Unknown.
+    // 3) Unrelated Inferred Error Player (e.g. partner a2 on Kitchen Fault when hitter was a1):
+    //    stays unchanged even when the hitter flips.
+    const edgeErrorRally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 500,
+      entries: [
+        { ...newShot(120), hitter_id: observed("a1") },
+        // New Shot 1 (observed a1)
+        { ...newShot(200), hitter_id: observed("a1") },
+        // New Shot 2: hitter flips from inferred("a1") -> inferred("b1"), unrelated partner a2 kept.
+        {
+          ...newShot(240),
+          hitter_id: inferred("a1"),
+          error: { kind: observed("kitchen_fault"), player_id: inferred("a2") },
+        },
+        // Shot with an Observed non-roster hitter: teamOf returns null, so the following Shot's
+        // defaultHitter returns null and its Inferred Error matching previous hitter becomes UNKNOWN.
+        { type: "gap", missing: "odd" },
+        { ...newShot(280), hitter_id: observed("non-roster-player") },
+        {
+          ...newShot(320),
+          hitter_id: inferred("b1"),
+          error: { kind: observed("out"), player_id: inferred("b1") },
+        },
+      ],
+    });
+    const edgeSplit = splitRally(
+      ctx([{ number: 1, rallies: [edgeErrorRally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const edgeEntries = edgeSplit.games[0]!.rallies[1]!.entries;
+    const kitchenShot = edgeEntries[1] as Shot;
+    expect(kitchenShot.hitter_id).toEqual(inferred("b1"));
+    expect(kitchenShot.error!.player_id).toEqual(inferred("a2"));
+    const nullNextShot = edgeEntries[4] as Shot;
+    expect(nullNextShot.hitter_id).toEqual(UNKNOWN);
+    expect(nullNextShot.error!.player_id).toEqual(UNKNOWN);
+  });
+
+  it("keeps Unknown-frame Shots with the side of their preceding known-frame Shot on split", () => {
+    const unknownBefore: Shot = { ...newShot(0), contact_frame: UNKNOWN };
+    const unknownAfter: Shot = { ...newShot(0), contact_frame: UNKNOWN };
+    const rally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      entries: [newShot(120), unknownBefore, newShot(250), unknownAfter],
+    });
+    const split = splitRally(
+      ctx([{ number: 1, rallies: [rally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const [first, second] = split.games[0]!.rallies;
+    expect((first!.entries as Shot[]).map((s) => s.contact_frame.value)).toEqual([120, null]);
+    expect((second!.entries as Shot[]).map((s) => s.contact_frame.value)).toEqual([250, null]);
   });
 
   it("restores the original Rally exactly in a single undo step without mutating prior state", () => {
@@ -766,6 +865,52 @@ describe("Shot entry", () => {
     expect(shots[0]!.positions.a1).toEqual(snapshot.a1);
     expect(shots[0]!.contact_zone).toEqual(observed("backcourt"));
     expect(edit.selection.entry).toBe(3);
+  });
+
+  it("M derives Serving Team from Server when Unknown and ignores a Server or Returner on the wrong Team", () => {
+    // Serving Team Unknown, Server a1 -> Shot 1 is a1 and Shot 2 is B's first Player (b1).
+    const unknownServing: Game[] = [
+      { number: 1, rallies: [{ ...newRally(1, 100), server_id: observed("a1") }] },
+    ];
+    let state = addShot(ctx(unknownServing, { game: 0, rally: 0, entry: null }, 120), null);
+    state = addShot(ctx(state.games, state.selection, 160), null);
+    expect((state.games[0]!.rallies[0]!.entries as Shot[]).map((s) => s.hitter_id)).toEqual([
+      inferred("a1"),
+      inferred("b1"),
+    ]);
+
+    // Serving Team B, Server a1 (wrong Team) -> Shot 1 defaults to B's first Player (b1).
+    const wrongServer: Game[] = [
+      {
+        number: 1,
+        rallies: [
+          { ...newRally(1, 100), serving_team_id: observed("B"), server_id: observed("a1") },
+        ],
+      },
+    ];
+    const s1 = addShot(ctx(wrongServer, { game: 0, rally: 0, entry: null }, 120), null);
+    expect(selectedShot(s1.games, s1.selection)!.hitter_id).toEqual(inferred("b1"));
+
+    // Serving Team A, Returner a2 (wrong Team) -> Shot 2 defaults to B's first Player (b1).
+    const wrongReturner: Game[] = [
+      {
+        number: 1,
+        rallies: [
+          {
+            ...newRally(1, 100),
+            serving_team_id: observed("A"),
+            server_id: observed("a1"),
+            returner_id: observed("a2"),
+          },
+        ],
+      },
+    ];
+    let r = addShot(ctx(wrongReturner, { game: 0, rally: 0, entry: null }, 120), null);
+    r = addShot(ctx(r.games, r.selection, 160), null);
+    expect((r.games[0]!.rallies[0]!.entries as Shot[]).map((s) => s.hitter_id)).toEqual([
+      inferred("a1"),
+      inferred("b1"),
+    ]);
   });
 
   it("leaves positions Unknown without Player Tracking, and refuses bad frames", () => {

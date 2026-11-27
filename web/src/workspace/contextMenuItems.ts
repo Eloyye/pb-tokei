@@ -48,7 +48,7 @@ export function contextMenuItems(
     workspace: Workspace;
     hasVideo: boolean;
     frame: number;
-    games?: readonly Game[];
+    games: readonly Game[];
     rally: Rally | undefined;
     entry: RallyEntry | undefined;
   },
@@ -101,13 +101,7 @@ export function contextMenuItems(
           "Meta+K Control+K",
           { type: "splitRally" },
           noVideo ??
-            splitRallyReason(
-              games ?? (rally ? [{ number: 1, rallies: [rally] }] : []),
-              games
-                ? { game: target.game, rally: target.rally, entry: null }
-                : { game: 0, rally: rally ? 0 : null, entry: null },
-              frame,
-            ),
+            splitRallyReason(games, { game: target.game, rally: target.rally, entry: null }, frame),
         ),
         annotate("Insert Unseen Rally after", "Shift+U", { type: "unseenRally" }),
         annotate("Delete Rally", "Shift+Backspace", { type: "deleteRally" }),

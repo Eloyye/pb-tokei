@@ -544,8 +544,7 @@ function recomputeSplitShots(roster: Roster, rally: Rally): Rally {
     }
 
     if (shot.contact_kind.certainty !== "observed") {
-      const nextKind: Fact<ContactKind> =
-        number === 2 || number === 3 ? inferred<ContactKind>("bounce") : UNKNOWN;
+      const nextKind = defaultContactKind(number);
       if (!sameFact(shot.contact_kind, nextKind)) {
         shot = { ...shot, contact_kind: nextKind };
       }
@@ -609,8 +608,13 @@ export function splitRally(ctx: AnnotateContext): AnnotateEdit {
 
   const rallies = [...game.rallies];
   rallies.splice(rallyIndex, 1, first, second);
-  // First normalize: renumber Rallies and Shots, resolve first's winner, and pre-fill second
-  // from side-out rules (plus Observed Shot 1/2 hitters) before recomputing second's Shots.
+  // Two passes are needed because side-out pre-fill and Shot-default recomputation depend on each
+  // other in opposite directions:
+  // 1. Normalize from `rallyIndex` so `first` resolves its winner (e.g. from its last Shot's Error)
+  //    and `second` gets its side-out start facts (and Observed Shot 1/2 sync) before recomputing
+  //    `second`'s non-Observed hitters and Contact Kinds.
+  // 2. If recomputing `second`'s Shots updated an Inferred Error's Player on `second`'s last Shot,
+  //    normalize from `rallyIndex + 1` so `second`'s `play` winner and all later Rallies stay in sync.
   const prefilled = normalizeGame(
     { ...game, rallies: renumberRallies(rallies) },
     roster,
@@ -814,6 +818,11 @@ export function setChallenge(ctx: AnnotateContext, challenge: Challenge | null):
 
 // --- Shots --------------------------------------------------------------------------------
 
+/** Two-bounce rule: the Return and third Shot default to Inferred Bounce, others to Unknown. */
+function defaultContactKind(shotNumber: number | null): Fact<ContactKind> {
+  return shotNumber === 2 || shotNumber === 3 ? inferred<ContactKind>("bounce") : UNKNOWN;
+}
+
 /** The hitter a new Shot at `index` defaults to, and why. */
 function defaultHitter(roster: Roster, rally: Rally, index: number): string | null {
   const entries = rally.entries;
@@ -827,6 +836,8 @@ function defaultHitter(roster: Roster, rally: Rally, index: number): string | nu
     rally.serving_team_id.value ??
     serverTeam ??
     (returnerTeam === null ? null : otherTeam(roster, returnerTeam));
+  // Ignore a Server or Returner who disagrees with the Serving Team (for example, when an
+  // Observed Shot 1 flipped the Serving Team while Returner was still pre-filled from before).
   if (!gapBefore && shotsBefore === 0) {
     const server =
       rally.server_id.value !== null && (serving === null || serverTeam === serving)
@@ -895,8 +906,7 @@ export function addShot(
   const filled: Shot = {
     ...shot,
     hitter_id: hitter === null ? UNKNOWN : inferred(hitter),
-    // Two-bounce rule: the Return and the third Shot bounce.
-    contact_kind: number === 2 || number === 3 ? inferred<ContactKind>("bounce") : UNKNOWN,
+    contact_kind: defaultContactKind(number),
   };
   const withZone: Shot = { ...filled, contact_zone: contactZoneFor(filled) };
   entries[index] = withZone;

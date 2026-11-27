@@ -21,11 +21,13 @@ it.each(targets)("matches the displayed $kind shortcuts to the keymap", (target)
         ]
       : [undefined];
   for (const entry of entries) {
+    const rally = newRally(1, 10);
     const items = contextMenuItems(target, {
       workspace: target.kind === "segment" ? "calibrate" : "annotate",
       hasVideo: true,
       frame: 20,
-      rally: newRally(1, 10),
+      games: [{ number: 1, rallies: [rally] }],
+      rally,
       entry,
     });
     for (const { command, shortcut } of items) {
@@ -109,5 +111,28 @@ describe("Split Rally menu item availability", () => {
         entry: undefined,
       }).disabledReason,
     ).toBe("Rallies can't overlap: G1 R2 starts at frame 500");
+  });
+
+  it("evaluates Split Rally bounds against a non-zero Game and Rally target", () => {
+    const g2r2 = newRally(2, 400);
+    const g2r3 = { ...newRally(3, 600), end_frame: 750 };
+    const games: Game[] = [
+      { number: 1, rallies: [{ ...newRally(1, 10), end_frame: 100 }] },
+      { number: 2, rallies: [{ ...newRally(1, 200), end_frame: 300 }, g2r2, g2r3] },
+    ];
+    const g2r2Target: ContextMenuTarget = { kind: "rally", game: 1, rally: 1 };
+    const at = (frame: number) =>
+      contextMenuItems(g2r2Target, {
+        workspace: "annotate",
+        hasVideo: true,
+        frame,
+        games,
+        rally: g2r2,
+        entry: undefined,
+      }).find((item) => item.label === "Split Rally at playhead")!;
+
+    expect(at(400).disabledReason).toBe("Move the playhead past this Rally’s start (frame 400)");
+    expect(at(500).disabledReason).toBeUndefined();
+    expect(at(600).disabledReason).toBe("Rallies can't overlap: G2 R3 starts at frame 600");
   });
 });

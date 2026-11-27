@@ -68,6 +68,7 @@ import {
   setRefereeCall,
   setShotClass,
   splitRally,
+  splitRallyReason,
   startNextGame,
   swapHitterToPartner,
   swapShotTeammates,
@@ -744,13 +745,9 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return edit(markRallyEnd);
       case "splitRally": {
         if (totalFrames === 0) return recording.notify("Load the video first");
-        let changed = false;
-        const result = edit((c) => {
-          const next = splitRally(c);
-          changed = next.games !== c.games;
-          return next;
-        });
-        if (changed) {
+        const canSplit = splitRallyReason(games, activeSelection, at) === undefined;
+        const result = edit(splitRally);
+        if (result && canSplit) {
           setForm(null);
           focusField("rally", "frames");
         }
@@ -1126,13 +1123,17 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     }
     if (annotating) {
       const annotateAction = annotateKeyAction(event);
-      if (annotateAction && (annotateAction.type === "splitRally" || recordingState.recording)) {
-        event.preventDefault();
-        if (event.repeat && annotateAction.type !== "shot" && annotateAction.type !== "cursor") {
+      if (annotateAction) {
+        if (!recordingState.recording) {
+          // Only `⌘K` is intercepted before Rallies load so it doesn't fall through to the browser
+          // or Calibrate's Play Segment split handler; other Annotate keys stay ignored.
+          if (annotateAction.type !== "splitRally") return;
+          event.preventDefault();
+          if (!event.repeat) recording.notify("Wait for Rallies to load");
           return;
         }
-        if (!recordingState.recording) {
-          recording.notify("Wait for Rallies to load");
+        event.preventDefault();
+        if (event.repeat && annotateAction.type !== "shot" && annotateAction.type !== "cursor") {
           return;
         }
         runAnnotate(annotateAction);
