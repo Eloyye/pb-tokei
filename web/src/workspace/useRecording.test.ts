@@ -18,7 +18,7 @@ import {
 } from "../api/client";
 import { clearLandmark, currentFit, fitKey, placeLandmark } from "../lib/calibrations";
 import { addShot, markRallyStart, NO_SELECTION, swapShotTeammates } from "../lib/annotate";
-import { markIn, markOut } from "../lib/segments";
+import { markIn, markOut, splitPlaySegmentAt } from "../lib/segments";
 import { ROSTER } from "../lib/testRoster";
 import { tabSaveStatus, waitUntilSaved } from "../lib/unsavedChanges";
 import { useRecording } from "./useRecording";
@@ -148,6 +148,41 @@ describe("useRecording with a Rally Log switch", () => {
 });
 
 describe("useRecording", () => {
+  it("waits for a split save and retries a failed off-reference Calibration fit refresh", async () => {
+    const fit = calibrationOut("main", 100);
+    fit.landmarks.near_baseline_left = { x: 0.2, y: 0.8, frame: 155 };
+    fit.resolved_landmarks.near_baseline_left = { x: 0.25, y: 0.8 };
+    const nextFit: CalibrationOut = {
+      ...fit,
+      resolved_landmarks: {},
+      unmapped_landmarks: ["near_baseline_left"],
+    };
+    vi.mocked(getCalibrations)
+      .mockResolvedValueOnce([fit])
+      .mockRejectedValueOnce(new ApiError(409, "Rally Log unavailable"))
+      .mockResolvedValueOnce([nextFit]);
+    const { result } = await loaded();
+    const finishSave = holdNextSegmentsSave();
+    expect(result.current[0].fits.get(fitKey(fit))).toBe(fit);
+
+    act(() =>
+      result.current[1].editSegments((list, pending) => splitPlaySegmentAt(list, pending, 150)),
+    );
+    expect(result.current[0].fits.has(fitKey(fit))).toBe(false);
+    expect(getCalibrations).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishSave());
+    const message = "Couldn't refresh Calibration fits (Rally Log unavailable)";
+    await waitFor(() => expect(result.current[0].fitRefreshError).toBe(message));
+    expect(result.current[0].message).toBe(message);
+    expect(result.current[0].fits.has(fitKey(fit))).toBe(false);
+
+    act(() => result.current[1].retryCalibrationFits());
+    await waitFor(() => expect(result.current[0].fits.get(fitKey(fit))).toBe(nextFit));
+    expect(result.current[0].fitRefreshError).toBeNull();
+    expect(replaceCalibrations).not.toHaveBeenCalled();
+  });
+
   it("loads segments and Calibrations without the server's fit", async () => {
     const { result } = await loaded();
 
@@ -405,6 +440,8 @@ describe("useRecording", () => {
     act(() => {
       started = result.current[1].editGames((games) => markRallyStart(ctx(games)));
     });
+    expect(result.current[0].saveStatus.state).toBe("saving");
+    expect(result.current[0].trackingSaveStatus.state).toBe("saved");
     await flush();
     expect(result.current[0].recording?.games).toHaveLength(1);
     expect(vi.mocked(replaceGames).mock.calls.at(-1)?.[1]).toHaveLength(1);

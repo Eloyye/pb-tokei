@@ -10,6 +10,7 @@ import {
   removeAt,
   segmentAt,
   setCameraView,
+  splitPlaySegmentAt,
 } from "./segments";
 
 function seg(start: number, end: number, view: CameraView = "main"): PlaySegment {
@@ -39,6 +40,43 @@ describe("segmentAt", () => {
     expect(segmentAt(SEGMENTS, 100)).toBe(MAIN);
     expect(segmentAt(SEGMENTS, 199)).toBe(MAIN);
     expect(segmentAt(SEGMENTS, 200)).toBeUndefined();
+  });
+});
+
+describe("splitPlaySegmentAt", () => {
+  it.each([301, 350, 399])("keeps both inclusive halves in Sideline View at frame %i", (frame) => {
+    const open = pending(450);
+    const edit = splitPlaySegmentAt(SEGMENTS, open, frame);
+
+    expect(edit.segments).toEqual([
+      MAIN,
+      seg(300, frame - 1, "sideline"),
+      seg(frame, 399, "sideline"),
+    ]);
+    expect(edit.segments[0]).toBe(MAIN);
+    expect(edit.pending).toBe(open);
+    expect(edit.startMoved).toBeNull();
+  });
+
+  it.each([
+    [100, undefined, "Move the playhead past this Play Segment’s first frame"],
+    [250, undefined, "Move the playhead inside a Play Segment"],
+    [150, SIDE, "Move the playhead inside this Play Segment"],
+    [400, SIDE, "Move the playhead inside this Play Segment"],
+  ] as const)(
+    "leaves the segments unchanged at frame %i for this target",
+    (frame, target, message) => {
+      const edit = splitPlaySegmentAt(SEGMENTS, null, frame, target);
+      expect(edit.segments).toBe(SEGMENTS);
+      expect(edit.message).toBe(message);
+    },
+  );
+
+  it("leaves a single-frame Play Segment intact", () => {
+    const segments = [seg(0, 0)];
+    const edit = splitPlaySegmentAt(segments, null, 0);
+    expect(edit.segments).toBe(segments);
+    expect(edit.message).toBe("This Play Segment has only one frame");
   });
 });
 

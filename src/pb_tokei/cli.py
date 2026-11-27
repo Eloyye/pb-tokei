@@ -616,7 +616,9 @@ def _run_track(
     try:
         motion_cache = CameraMotionCache(default_cache_dir(db_path))
         reg_map = motion_cache.landmark_frame_to_ref(video_path, segments, calibrations)
-        motion = motion_cache.track_match(video_path, segments, calibrations)
+        motion = motion_cache.track_match(
+            video_path, segments, calibrations, landmark_frame_to_ref=reg_map
+        )
         mapping = CourtMapping(
             segments, calibrations, camera_motion=motion, landmark_frame_to_ref=reg_map
         )

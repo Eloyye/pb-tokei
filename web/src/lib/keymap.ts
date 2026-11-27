@@ -89,17 +89,24 @@ export function isPanelSwapKey(event: KeyInput): boolean {
 export type SegmentAction =
   | { type: "markIn" }
   | { type: "markOut" }
+  | { type: "split" }
   | { type: "setView"; view: "main" | "sideline" }
   | { type: "remove" }
   | { type: "cancel" };
 
 /**
- * Calibrate's Play Segment keys: `Shift+I`/`Shift+O` set a segment's bounds, `1`/`2` its Camera
- * View, `Backspace` removes it and `Esc` drops one not yet ended. `null` for anything else.
+ * Calibrate's Play Segment keys. `Shift+I`/`Shift+O` set a segment's bounds, `⌘K` or `Ctrl+K`
+ * splits at the playhead, `1`/`2` set its Camera View, and `Backspace` removes it. `Esc` drops a
+ * pending segment.
  */
 export function segmentKeyAction(event: KeyInput): SegmentAction | null {
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
+  if (event.altKey) return null;
   const key = event.key.toLowerCase();
+  if (event.metaKey || event.ctrlKey) {
+    return !event.shiftKey && event.metaKey !== event.ctrlKey && key === "k"
+      ? { type: "split" }
+      : null;
+  }
   if (event.shiftKey) {
     if (key === "i") return { type: "markIn" };
     if (key === "o") return { type: "markOut" };

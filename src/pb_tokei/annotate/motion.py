@@ -164,7 +164,9 @@ class CameraMotionService:
             )
         sig = _match_signature(video_path, segments, calibrations)
         reg_map = self._cache.landmark_frame_to_ref(video_path, segments, calibrations)
-        cached, missing = self._cache.load_cached(video_path, segments, calibrations)
+        cached, missing = self._cache.load_cached(
+            video_path, segments, calibrations, landmark_frame_to_ref=reg_map
+        )
         cached_by_bounds = {(s.start_frame, s.end_frame): s for s in cached.spans}
 
         span_outs: list[CameraMotionSpanOut] = []
@@ -334,7 +336,9 @@ class CameraMotionService:
             )
 
         reg_map = self._cache.landmark_frame_to_ref(video_path, segments, calibrations)
-        cached, _ = self._cache.load_cached(video_path, segments, calibrations)
+        cached, _ = self._cache.load_cached(
+            video_path, segments, calibrations, landmark_frame_to_ref=reg_map
+        )
         mapping = CourtMapping(
             segments, calibrations, camera_motion=cached, landmark_frame_to_ref=reg_map
         )

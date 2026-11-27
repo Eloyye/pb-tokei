@@ -189,6 +189,8 @@ class PlayerTrackingFramesOut(BaseModel):
 
 @dataclass
 class _PlayerJobState:
+    video_path: Path
+    segments: tuple[PlaySegment, ...]
     running: bool = False
     error: str | None = None
     device: DeviceKind | None = None
@@ -283,7 +285,7 @@ class PlayerTrackingService:
         video_path: Path | None,
         segments: Sequence[PlaySegment],
     ) -> PlayerTrackingOut:
-        ordered = sorted(segments, key=lambda s: s.start_frame)
+        ordered = tuple(sorted(segments, key=lambda s: s.start_frame))
         if video_path is None or not video_path.is_file():
             return PlayerTrackingOut(
                 status=PlayerTrackingStatus.NO_VIDEO,
@@ -306,6 +308,8 @@ class PlayerTrackingService:
 
         with self._lock:
             job = self._jobs.get(match_id)
+            if job is not None and (job.video_path != video_path or job.segments != ordered):
+                job = None
             running = bool(job is not None and job.running)
             job_error = None if job is None else job.error
             job_device = None if job is None else job.device
@@ -372,7 +376,7 @@ class PlayerTrackingService:
         wait: bool = False,
     ) -> PlayerTrackingOut:
         """Starts background Layer 1 inference for uncached segments, prioritising playhead."""
-        ordered = sorted(segments, key=lambda s: s.start_frame)
+        ordered = tuple(sorted(segments, key=lambda s: s.start_frame))
         if video_path is None or not video_path.is_file() or not ordered:
             return self.status(match_id, video_path, ordered)
 
@@ -388,12 +392,17 @@ class PlayerTrackingService:
             with self._lock:
                 existing = self._jobs.get(match_id)
                 if existing is not None and existing.running:
-                    if not existing.cancel.is_set():
+                    if (
+                        not existing.cancel.is_set()
+                        and existing.video_path == video_path
+                        and existing.segments == ordered
+                    ):
                         reused = existing
                     else:
+                        existing.cancel.set()
                         wait_cancelled = existing
                 elif not self._closed:
-                    started = _PlayerJobState(running=True)
+                    started = _PlayerJobState(video_path, ordered, running=True)
                     self._jobs[match_id] = started
 
             if wait_cancelled is not None:
@@ -536,7 +545,9 @@ class PlayerTrackingService:
             else {}
         )
         motion = (
-            self._motion_cache.load_cached(video_path, segments, calibrations)[0]
+            self._motion_cache.load_cached(
+                video_path, segments, calibrations, landmark_frame_to_ref=reg_map
+            )[0]
             if video_path is not None and video_path.is_file()
             else None
         )
