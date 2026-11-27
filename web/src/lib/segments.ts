@@ -39,8 +39,8 @@ export function defaultView(segments: PlaySegment[], frame: number): CameraView 
 }
 
 /**
- * `Shift+I`: moves a selected segment's start to the frame. With no selection, it trims the
- * segment under the playhead or starts a pending segment.
+ * Moves a clip menu target's start to the frame. The shortcut trims the segment under the
+ * playhead or starts a pending segment.
  */
 export function markIn(
   segments: PlaySegment[],
@@ -60,8 +60,8 @@ export function markIn(
 }
 
 /**
- * `Shift+O`: moves a selected segment's end to the frame. With no selection, it closes a
- * pending segment or trims the segment under the playhead.
+ * Moves a clip menu target's end to the frame. The shortcut closes a pending segment or
+ * trims the segment under the playhead.
  */
 export function markOut(
   segments: PlaySegment[],
@@ -138,7 +138,7 @@ export function moveEdge(
   };
 }
 
-/** `1`/`2`: sets the view of the selected, pending, or playhead segment, in that order. */
+/** Sets a clip menu target's view, or uses the pending or playhead segment for `1`/`2`. */
 export function setCameraView(
   segments: PlaySegment[],
   pending: PendingSegment | null,
@@ -161,7 +161,7 @@ export function setCameraView(
   };
 }
 
-/** `Backspace`: removes the selected segment or the one under the playhead. */
+/** Removes a clip menu target, or the segment under the playhead for `Backspace`. */
 export function removeAt(
   segments: PlaySegment[],
   pending: PendingSegment | null,

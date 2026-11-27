@@ -49,10 +49,10 @@ const GROUPS: [string, [string[], string][]][] = [
   [
     "Calibrate: Play Segments",
     [
-      [["⇧I"], "Start a segment, or move the selected segment’s start here"],
-      [["⇧O"], "End a pending segment, or move the selected segment’s end here"],
+      [["⇧I"], "Start a segment, or move the start of the segment under the playhead"],
+      [["⇧O"], "End a pending segment, or move the end of the segment under the playhead"],
       [["1", "2"], "Main View / Sideline View"],
-      [["⌫"], "Remove the selected segment or the one under the playhead"],
+      [["⌫"], "Remove the segment under the playhead"],
       [["Esc"], "Clear Play Segment selection and drop any pending segment"],
       [["⌘Z", "⇧⌘Z"], "Undo / redo"],
     ],

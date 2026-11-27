@@ -565,6 +565,22 @@ describe("Workspace context menus", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("explains why an open Rally's start can't move past its first Shot", async () => {
+    const games = sampleGames();
+    games[0]!.rallies[0]!.end_frame = null;
+    renderAnnotateWorkspace(games);
+    const clip = await screen.findByTitle("Game 1 Rally 1: frames 100–open");
+    for (let step = 0; step < 3; step++) {
+      fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    }
+    const menu = openContextMenu(clip, "Rally actions");
+    const start = menu.getByRole("menuitem", { name: "Rally start at playhead" });
+    expect(start.getAttribute("aria-disabled")).toBe("true");
+    expect(start.title).toBe("A Rally must start at or before its first Shot (frame 120)");
+    fireEvent.click(start);
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+  });
+
   it("selects a Shot or Observation Gap and flips its parity with the existing command", async () => {
     const games = sampleGames();
     const rally = games[0]!.rallies[0]!;
@@ -686,7 +702,7 @@ describe("Workspace context menus", () => {
     await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, edited));
   });
 
-  it("relabels the selected Play Segment away from the playhead through the menu or 2", async () => {
+  it("relabels a Play Segment from its clip menu or with 2 over the segment", async () => {
     const segments: PlaySegment[] = [
       { start_frame: 0, end_frame: 299, camera_view: "main" },
       { start_frame: 400, end_frame: 600, camera_view: "main" },
@@ -698,6 +714,9 @@ describe("Workspace context menus", () => {
       name: "Main View Play Segment, frames 400–600",
     });
     const menu = openContextMenu(target, "Play Segment actions");
+    const markOut = menu.getByRole("menuitem", { name: "Play Segment end at playhead" });
+    expect(markOut.getAttribute("aria-disabled")).toBe("true");
+    expect(markOut.title).toBe("Move the playhead to or after this Play Segment’s start");
     fireEvent.click(menu.getByRole("menuitem", { name: "Set Sideline View" }));
     const changed = [segments[0]!, { ...segments[1]!, camera_view: "sideline" }];
     expect(screen.getByText("Sideline View Play Segment, frames 400–600")).toBeTruthy();
@@ -710,14 +729,50 @@ describe("Workspace context menus", () => {
     await waitFor(() =>
       expect(apiMocks.replacePlaySegments).toHaveBeenLastCalledWith(MATCH.id, segments),
     );
-    const restored = screen.getByRole("button", { name: "Main View Play Segment, frames 400–600" });
-    openContextMenu(restored, "Play Segment actions");
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+    const keyFrame = video.currentTime;
     fireEvent.keyDown(window, { key: "2" });
     expect(screen.getByText("Sideline View Play Segment, frames 400–600")).toBeTruthy();
-    expect(video.currentTime).toBe(playhead);
+    expect(video.currentTime).toBe(keyFrame);
     await waitFor(() =>
       expect(apiMocks.replacePlaySegments).toHaveBeenLastCalledWith(MATCH.id, changed),
+    );
+  });
+
+  it("keeps Play Segment shortcuts tied to the playhead and pending segment after clip clicks", async () => {
+    const first: PlaySegment = { start_frame: 100, end_frame: 200, camera_view: "main" };
+    const second: PlaySegment = { start_frame: 450, end_frame: 650, camera_view: "main" };
+    apiMocks.getPlaySegments.mockResolvedValue([first, second]);
+    const { container } = renderWorkspace("calibrate");
+    vi.spyOn(container.querySelector(".ruler")!, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ width: 1200 }),
+    );
+    const clip = await screen.findByTitle("Main View Play Segment, frames 100–200");
+    fireEvent.pointerDown(clip, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerUp(clip, { pointerId: 1, clientX: 150 });
+    expect(clip.getAttribute("aria-pressed")).toBe("true");
+    for (let step = 0; step < 3; step++) {
+      fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    }
+    fireEvent.keyDown(window, { key: "I", shiftKey: true });
+    expect(
+      screen.getByText("Main View Play Segment from frame 330: Shift+O on its last frame"),
+    ).toBeTruthy();
+    expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+
+    const laterClip = screen.getByTitle("Main View Play Segment, frames 450–650");
+    fireEvent.pointerDown(laterClip, { pointerId: 2, clientX: 500 });
+    fireEvent.pointerUp(laterClip, { pointerId: 2, clientX: 500 });
+    expect(laterClip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "2" });
+    expect(screen.getByText("Pending: Sideline View")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "O", shiftKey: true });
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenCalledExactlyOnceWith(MATCH.id, [
+        first,
+        { start_frame: 330, end_frame: 449, camera_view: "sideline" },
+        second,
+      ]),
     );
   });
 });

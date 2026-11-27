@@ -1,5 +1,6 @@
 import type { MouseEvent } from "react";
 import type { PlaySegment, Rally, RallyEntry } from "../api/client";
+import { rallyStartTarget } from "../lib/annotate";
 import type { AnnotateAction, SegmentAction } from "../lib/keymap";
 import type { Workspace } from "../lib/workspaces";
 
@@ -33,7 +34,7 @@ export const CONTEXT_MENU_LABELS: Record<ContextMenuTarget["kind"], string> = {
 };
 
 export function contextMenuItems(
-  target: ContextMenuTarget["kind"],
+  target: ContextMenuTarget,
   {
     workspace,
     hasVideo,
@@ -69,22 +70,26 @@ export function contextMenuItems(
     command: { kind: "annotate", action },
     disabledReason: annotateOnly ?? reason,
   });
-  const segment = (label: string, shortcut: string, action: SegmentAction): MenuItem => ({
+  const segment = (
+    label: string,
+    shortcut: string,
+    action: SegmentAction,
+    reason?: string,
+  ): MenuItem => ({
     label,
     shortcut,
     command: { kind: "segment", action },
-    disabledReason: segmentOnly,
+    disabledReason: segmentOnly ?? reason,
   });
 
-  switch (target) {
-    case "rally": {
-      const pastEnd = rally?.end_frame != null && frame > rally.end_frame;
+  switch (target.kind) {
+    case "rally":
       return [
         annotate(
           "Rally start at playhead",
           "Shift+I",
           { type: "rallyStart" },
-          noVideo ?? (pastEnd ? "Move the playhead to or before this Rally’s end" : undefined),
+          noVideo ?? (rally && rallyStartTarget(rally, frame).disabledReason),
         ),
         annotate("Rally end at playhead", "Shift+O", { type: "rallyEnd" }, noVideo ?? unframed),
         annotate("Insert Unseen Rally after", "Shift+U", { type: "unseenRally" }),
@@ -93,7 +98,6 @@ export function contextMenuItems(
         fitRally,
         annotate("Rally details", "Shift+S", { type: "rallyForm" }),
       ];
-    }
     case "shot":
       return [
         annotate("Delete Shot", "Backspace", { type: "deleteEntry" }),
@@ -117,8 +121,22 @@ export function contextMenuItems(
         segment("Set Main View", "1", { type: "setView", view: "main" }),
         segment("Set Sideline View", "2", { type: "setView", view: "sideline" }),
         segment("Delete Play Segment", "Backspace", { type: "remove" }),
-        segment("Play Segment start at playhead", "Shift+I", { type: "markIn" }),
-        segment("Play Segment end at playhead", "Shift+O", { type: "markOut" }),
+        segment(
+          "Play Segment start at playhead",
+          "Shift+I",
+          { type: "markIn" },
+          frame > target.segment.end_frame
+            ? "Move the playhead to or before this Play Segment’s end"
+            : undefined,
+        ),
+        segment(
+          "Play Segment end at playhead",
+          "Shift+O",
+          { type: "markOut" },
+          frame < target.segment.start_frame
+            ? "Move the playhead to or after this Play Segment’s start"
+            : undefined,
+        ),
       ];
     case "lane":
       return [

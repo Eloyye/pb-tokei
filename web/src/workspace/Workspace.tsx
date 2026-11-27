@@ -748,14 +748,16 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       return result;
     });
 
-  const runSegment = (action: SegmentAction) => {
+  // The keyboard follows the playhead and pending segment. A clip menu targets that clip.
+  const runSegment = (action: SegmentAction, target?: PlaySegment) => {
     if (action.type === "cancel") {
       setSegmentSelection(null);
       return recording.cancelPending();
     }
     editPlaySegments((list, pending) => {
-      const target =
-        selectedSegment && list.includes(selectedSegment) ? selectedSegment : undefined;
+      if (target && !list.includes(target)) {
+        return { segments: list, pending, startMoved: null, message: "That Play Segment is gone" };
+      }
       switch (action.type) {
         case "markIn":
           return markIn(list, pending, frame, target);
@@ -808,7 +810,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       case "annotate":
         return runAnnotate(command.action, frame, menu.selection);
       case "segment":
-        return runSegment(command.action);
+        if (menu.target.kind === "segment") return runSegment(command.action, menu.target.segment);
+        return;
       case "fitRally":
         return fitRally();
       case "fitVideo":
@@ -1508,7 +1511,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         <ContextMenu
           label={CONTEXT_MENU_LABELS[menu.target.kind]}
           position={menu.position}
-          items={contextMenuItems(menu.target.kind, {
+          items={contextMenuItems(menu.target, {
             workspace,
             hasVideo: totalFrames > 0,
             frame,
