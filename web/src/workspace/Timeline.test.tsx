@@ -18,7 +18,7 @@ type Playback = Pick<TimelineProps, "frame" | "playing">;
 
 function renderTimeline(
   playback: Playback = { frame: 800, playing: false },
-  rallyLog?: TimelineRallies,
+  { rallyLog, totalFrames = 3000 }: Partial<Pick<TimelineProps, "rallyLog" | "totalFrames">> = {},
 ) {
   const onViewChange = vi.fn<TimelineProps["onViewChange"]>();
   const onPanningChange = vi.fn<NonNullable<TimelineProps["onPanningChange"]>>();
@@ -39,7 +39,7 @@ function renderTimeline(
         }}
         onPanningChange={onPanningChange}
         frame={frame}
-        totalFrames={3000}
+        totalFrames={totalFrames}
         playing={playing}
         onSeek={onSeek}
         onZoom={onZoom}
@@ -56,12 +56,15 @@ function renderTimeline(
 
   const { container, rerender } = render(<TimelineHarness {...playback} />);
   const ruler = container.querySelector<HTMLElement>(".ruler")!;
+  const overview = container.querySelector<HTMLElement>(".overview")!;
   vi.spyOn(ruler, "getBoundingClientRect").mockReturnValue(
     DOMRect.fromRect({ x: 100, width: 600, height: 22 }),
   );
+  vi.spyOn(overview, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 300 }));
   return {
     container,
     ruler,
+    overview,
     scrubLayer: ruler,
     endHandle: container.querySelector<HTMLElement>(".seg-handle.end")!,
     onViewChange,
@@ -219,7 +222,7 @@ function renderRallies(selection = NO_SELECTION) {
     onMoveContact,
     onFitRally: vi.fn<TimelineRallies["onFitRally"]>(),
   };
-  const timeline = renderTimeline(undefined, log);
+  const timeline = renderTimeline(undefined, { rallyLog: log });
   const clip = screen.getByTitle("Game 1 Rally 1: frames 450–600");
   return { ...timeline, clip, onSelectRally, onMoveRallyEdge, onSelectEntry, onMoveContact };
 }
@@ -264,10 +267,8 @@ describe("Timeline middle-button pan", () => {
   });
 
   it("moves the Overview window with the cursor at the full-video scale", () => {
-    const { onViewChange, onSeek } = renderTimeline();
+    const { overview, onViewChange, onSeek } = renderTimeline();
     const button = screen.getByRole("button", { name: "Centre the Timeline view here" });
-    const overview = button.closest<HTMLElement>(".overview")!;
-    vi.spyOn(overview, "getBoundingClientRect").mockReturnValue(DOMRect.fromRect({ width: 300 }));
 
     fireEvent.pointerDown(button, press);
     expect(overview.hasPointerCapture(press.pointerId)).toBe(true);
@@ -276,6 +277,28 @@ describe("Timeline middle-button pan", () => {
 
     expect(onViewChange).toHaveBeenCalledExactlyOnceWith({ start: 1000, end: 1600 });
     expect(onSeek).not.toHaveBeenCalled();
+  });
+
+  it("reveals later frames when dragging a lane to the left", () => {
+    const { container, onViewChange } = renderTimeline();
+    const lane = container.querySelector<HTMLElement>(".lane.segments")!;
+    fireEvent.pointerDown(lane, press);
+    fireEvent.pointerMove(lane, { ...move, clientX: 140 });
+    expect(onViewChange).toHaveBeenCalledExactlyOnceWith({ start: 460, end: 1060 });
+  });
+
+  it.each([
+    { selector: ".lane.segments", pastStartX: 700, pastEndX: -2300 },
+    { selector: ".overview", pastStartX: 100, pastEndX: 800 },
+  ])("clamps a pan on $selector to both video bounds", ({ selector, pastStartX, pastEndX }) => {
+    const { container, onViewChange } = renderTimeline();
+    const surface = container.querySelector<HTMLElement>(selector)!;
+
+    fireEvent.pointerDown(surface, press);
+    fireEvent.pointerMove(surface, { ...move, clientX: pastStartX });
+    expect(onViewChange).toHaveBeenLastCalledWith({ start: 0, end: 600 });
+    fireEvent.pointerMove(surface, { ...move, clientX: pastEndX });
+    expect(onViewChange).toHaveBeenLastCalledWith({ start: 2400, end: 3000 });
   });
 
   it("cancels middle-click defaults and leaves the view alone without horizontal motion", () => {
@@ -306,6 +329,37 @@ describe("Timeline middle-button pan", () => {
       fireEvent.pointerMove(ruler, { ...move, clientX: 320 });
     });
     expect(onViewChange).toHaveBeenLastCalledWith({ start: 280, end: 880 });
+  });
+
+  it("preserves an active scrub when a second pointer presses the middle button", () => {
+    const { ruler, onPanningChange, onSeek, onViewChange } = renderTimeline();
+    fireEvent.pointerDown(ruler, { pointerId: 2, buttons: 1, clientX: 200 });
+
+    const middleDown = createEvent.pointerDown(ruler, press);
+    fireEvent(ruler, middleDown);
+    fireEvent.pointerMove(ruler, move);
+    expect(middleDown.defaultPrevented).toBe(true);
+    expect(ruler.hasPointerCapture(press.pointerId)).toBe(false);
+    expect(onPanningChange).not.toHaveBeenCalled();
+    expect(onViewChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerMove(ruler, { pointerId: 2, buttons: 1, clientX: 260 });
+    expect(onSeek.mock.calls).toEqual([[500], [560]]);
+  });
+
+  it("prevents the middle-click default with no video loaded", () => {
+    const { ruler, onPanningChange, onSeek, onViewChange } = renderTimeline(undefined, {
+      totalFrames: 0,
+    });
+    const middleDown = createEvent.pointerDown(ruler, press);
+
+    fireEvent(ruler, middleDown);
+    fireEvent.pointerMove(ruler, move);
+    expect(middleDown.defaultPrevented).toBe(true);
+    expect(ruler.hasPointerCapture(press.pointerId)).toBe(false);
+    expect(onPanningChange).not.toHaveBeenCalled();
+    expect(onSeek).not.toHaveBeenCalled();
+    expect(onViewChange).not.toHaveBeenCalled();
   });
 
   it.each(["pointerUp", "pointerCancel", "lostPointerCapture"] as const)(

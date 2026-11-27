@@ -166,7 +166,8 @@ export function Timeline({
     return queued?.from === view ? queued.to : view;
   };
 
-  const queueViewChange = (previous: FrameRange, next: FrameRange) => {
+  const queueViewChange = (next: FrameRange) => {
+    const previous = currentView();
     if (next.start === previous.start && next.end === previous.end) return false;
     queuedView.current = { from: view, to: next };
     onViewChange(next);
@@ -255,8 +256,9 @@ export function Timeline({
       if (width <= 0) return;
       const previous = currentView();
       // The lanes move with the cursor. The Overview moves the window over the full video.
-      const framesAcross = drag.overview ? whole.end : previous.start - previous.end;
-      queueViewChange(previous, panView(previous, (deltaX / width) * framesAcross, totalFrames));
+      const framesAcross = drag.overview ? whole.end : previous.end - previous.start;
+      const viewDeltaX = drag.overview ? deltaX : -deltaX;
+      queueViewChange(panView(previous, (viewDeltaX / width) * framesAcross, totalFrames));
       return;
     }
     const rect = rulerRef.current?.getBoundingClientRect();
@@ -422,7 +424,7 @@ export function Timeline({
       wheelLock.current,
     );
     wheelLock.current = lock;
-    if (!queueViewChange(previous, next)) return;
+    if (!queueViewChange(next)) return;
     const drag = activeDrag.current;
     if (drag) applyDrag(drag.clientX, next, rect, true);
   });
