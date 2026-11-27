@@ -14,6 +14,7 @@ from pb_tokei.events import (
     RallyRole,
     ShotType,
     Stat,
+    StatKind,
     StatRow,
     SubjectKind,
     TeamStatus,
@@ -111,14 +112,17 @@ def rally(
     winner: TeamId | None = None,
     challenge: Challenge | None = None,
     status: RallyStatus = RallyStatus.IN_PROGRESS,
+    serving_team: TeamId | None = TEAM_A,
+    server: Player | None = A1,
+    returner: Player | None = B1,
 ) -> Rally:
     return Rally(
         number=1,
         entries=entries,
         winner_id=UNKNOWN if winner is None else observed(winner),
-        serving_team_id=observed(TEAM_A),
-        server_id=observed(A1.id),
-        returner_id=observed(B1.id),
+        serving_team_id=UNKNOWN if serving_team is None else observed(serving_team),
+        server_id=UNKNOWN if server is None else observed(server.id),
+        returner_id=UNKNOWN if returner is None else observed(returner.id),
         challenge=challenge,
         status=status,
     )
@@ -150,6 +154,7 @@ def row(
     kind: SubjectKind | None = None,
     category: StatCategory | None = None,
     role: RallyRole | None = None,
+    end_shot_number: int | None = None,
     shot_type: ShotType | None = None,
     number: int | None = None,
     shot_group: bool = False,
@@ -164,6 +169,7 @@ def row(
         and r.subject.kind is (kind or (SubjectKind.PLAYER if player else SubjectKind.TEAM))
         and r.breakdown.category == category
         and r.breakdown.rally_role is role
+        and r.breakdown.end_shot_number == end_shot_number
         and r.breakdown.shot_type is shot_type
         and (
             phase is None
@@ -186,6 +192,7 @@ def tally(result: StatRow) -> tuple[int, int | None, int]:
 def test_wilson_interval() -> None:
     assert wilson_interval(0, 0) is None
     assert wilson_interval(1, 2) == pytest.approx((0.1208663, 0.8791337))
+    assert wilson_interval(50, 100) == pytest.approx((0.4188478, 0.5811522), abs=1e-5)
     low = wilson_interval(0, 2)
     high = wilson_interval(2, 2)
     assert low is not None and high is not None
@@ -243,6 +250,53 @@ def test_missing_error_facts_exclude_the_rate_but_keep_the_attempt() -> None:
     assert tally(row(rows, Stat.SERVES, player=A1)) == (1, None, 0)
     assert tally(row(rows, Stat.SERVE_IN, player=A1)) == (0, 0, 1)
     assert row(rows, Stat.SERVE_IN, player=A1).interval is None
+
+
+def test_known_team_stats_survive_an_unknown_server_or_returner() -> None:
+    unseen_server = replace(SERVE, hitter_id=UNKNOWN)
+    unseen_returner = replace(RETURN, hitter_id=UNKNOWN)
+    rows = stats(
+        rally(unseen_server, RETURN, server=None, winner=TEAM_B),
+        rally(replace(unseen_server, error=Error(kind=observed(ErrorKind.NET))), server=None),
+        rally(SERVE, unseen_returner, hit(A2), returner=None, winner=TEAM_A),
+    )
+    assert tally(row(rows, Stat.SERVES)) == (3, None, 0)
+    assert tally(row(rows, Stat.SERVE_IN)) == (2, 3, 0)
+    assert tally(row(rows, Stat.SERVES, kind=SubjectKind.PLAYER)) == (0, None, 2)
+    assert tally(row(rows, Stat.SHOT_TYPE_ATTEMPTS, shot_type=ShotType.SERVE)) == (3, None, 0)
+    assert tally(row(rows, Stat.SHOT_DISADVANTAGE, shot_type=ShotType.SERVE)) == (1, 2, 1)
+    assert tally(
+        row(
+            rows, Stat.OUTCOME_REASON, shot_type=ShotType.SERVE, category=OutcomeReason.REPLY_WINNER
+        )
+    ) == (1, None, 0)
+    assert tally(row(rows, Stat.RETURN_IN, team=TEAM_B)) == (2, 2, 0)
+    assert tally(row(rows, Stat.RETURNS, team=TEAM_B, kind=SubjectKind.PLAYER)) == (0, None, 1)
+    assert tally(
+        row(
+            rows, Stat.RETURNER_ZONE, team=TEAM_B, kind=SubjectKind.PLAYER, category=Zone.FRONTCOURT
+        )
+    ) == (0, 0, 1)
+
+
+def test_serving_team_falls_back_to_the_server_or_returner() -> None:
+    rows = stats(
+        rally(*START, hit(A2), serving_team=None, server=None, returner=None, winner=TEAM_A),
+        rally(ODD, hit(A2, number=3), serving_team=None, server=None, winner=TEAM_A),
+    )
+    assert tally(row(rows, Stat.OPENING_END, role=RallyRole.SERVING)) == (2, 2, 0)
+    assert tally(row(rows, Stat.OPENING_END, team=TEAM_B, role=RallyRole.RECEIVING)) == (2, 2, 0)
+    assert tally(row(rows, Stat.SERVES)) == (1, None, 1)
+
+
+def test_rally_with_unknown_roles_reports_unattributed_opportunities() -> None:
+    rows = stats(rally(serving_team=None, server=None, returner=None))
+    assert tally(row(rows, Stat.SERVES, team=None)) == (0, None, 1)
+    assert tally(row(rows, Stat.RETURNS, team=None)) == (0, None, 1)
+    assert tally(row(rows, Stat.OPENING_END)) == (0, 0, 1)
+    assert tally(
+        row(rows, Stat.RETURNER_ZONE, team=None, kind=SubjectKind.PLAYER, category=Zone.BACKCOURT)
+    ) == (0, 0, 2)
 
 
 def test_shot_types_tally_attempts_outcomes_and_reasons_separately() -> None:
@@ -362,6 +416,30 @@ def test_speedup_exchanges_are_mirrored_for_the_target_and_exclude_unknown_resul
         assert tally(success) == tally(initiated)
 
 
+def test_speedup_team_record_survives_an_unknown_hitter() -> None:
+    speedup = replace(hit(None, HARD), contact_zone=observed(Zone.FRONTCOURT))
+    rows = stats(rally(*START, hit(A1, positions=BACK), speedup, hit(A2, HARD), winner=TEAM_A))
+    assert tally(row(rows, Stat.SPEEDUP_INITIATED, team=TEAM_B, category=ExchangeOutcome.LOST)) == (
+        1,
+        1,
+        0,
+    )
+    assert tally(
+        row(
+            rows,
+            Stat.SPEEDUP_INITIATED,
+            team=TEAM_B,
+            kind=SubjectKind.PLAYER,
+            category=ExchangeOutcome.LOST,
+        )
+    ) == (0, 0, 1)
+    assert tally(row(rows, Stat.SPEEDUP_RECEIVED, player=A2, category=ExchangeOutcome.WON)) == (
+        1,
+        1,
+        0,
+    )
+
+
 def test_initiative_only_credits_dinks_that_do_the_work() -> None:
     rows = stats(
         rally(*START, hit(A2), winner=TEAM_A),
@@ -467,7 +545,7 @@ def test_opening_ending_stats_are_by_rally_role_and_use_gap_bounds() -> None:
     role = RallyRole.SERVING
     assert tally(row(rows, Stat.OPENING_END, role=role)) == (3, 5, 1)
     assert tally(row(rows, Stat.OPENING_WIN, role=role)) == (1, 2, 2)
-    assert tally(row(rows, Stat.OPENING_END_SHOT, role=role, category=4)) == (2, None, 0)
+    assert tally(row(rows, Stat.OPENING_END_SHOT, role=role, end_shot_number=4)) == (2, None, 0)
     assert tally(row(rows, Stat.OPENING_WIN, role=RallyRole.RECEIVING)) == (1, 1, 0)
 
 
@@ -533,6 +611,7 @@ def test_body_hits_and_challenge_success_use_the_final_call_and_correct_subject(
     body = hit(A2, HARD, error=fault(ErrorKind.BODY_HIT, B2))
     rows = stats(
         rally(*START, body),
+        rally(*START, replace(body, hitter_id=UNKNOWN)),
         rally(
             *START,
             body,
@@ -546,7 +625,9 @@ def test_body_hits_and_challenge_success_use_the_final_call_and_correct_subject(
         rally(*START, hit(A2), challenge=Challenge(ruling=observed(Ruling.UPHELD))),
     )
     assert tally(row(rows, Stat.BODY_HIT_WINNERS, player=A2)) == (1, None, 0)
-    assert tally(row(rows, Stat.BODY_HIT_RECEIVED, team=TEAM_B, player=B2)) == (1, None, 0)
+    assert tally(row(rows, Stat.BODY_HIT_WINNERS)) == (2, None, 0)
+    assert tally(row(rows, Stat.BODY_HIT_WINNERS, kind=SubjectKind.PLAYER)) == (0, None, 1)
+    assert tally(row(rows, Stat.BODY_HIT_RECEIVED, team=TEAM_B, player=B2)) == (2, None, 0)
     assert tally(row(rows, Stat.CHALLENGE_SUCCESS, team=TEAM_B)) == (1, 2, 1)
     assert tally(row(rows, Stat.CHALLENGE_SUCCESS, team=TEAM_B, player=B2)) == (1, 2, 1)
     assert tally(row(rows, Stat.CHALLENGE_SUCCESS, team=None, kind=SubjectKind.PLAYER)) == (0, 0, 1)
@@ -557,6 +638,19 @@ def test_unknown_hitter_is_reported_without_attributing_a_shot_to_either_partner
     assert tally(row(rows, Stat.SHOT_TYPE_ATTEMPTS, kind=SubjectKind.PLAYER)) == (0, None, 1)
     assert tally(row(rows, Stat.HIT_SHARE, player=A1)) == (0, 0, 1)
     assert tally(row(rows, Stat.HIT_SHARE, player=A2)) == (0, 0, 1)
+
+
+def test_kitchen_fault_defaults_to_hitter_when_error_player_is_unknown() -> None:
+    kitchen_fault = Error(kind=observed(ErrorKind.KITCHEN_FAULT))
+    rows = stats(
+        rally(*START, hit(A2, error=kitchen_fault)),
+        rally(*START, hit(None, error=kitchen_fault)),
+        rally(*START, hit(A1, error=fault(ErrorKind.KITCHEN_FAULT, A2))),
+    )
+    assert tally(row(rows, Stat.KITCHEN_FAULTS_PER_MATCH, player=A2)) == (2, 1, 0)
+    assert tally(row(rows, Stat.KITCHEN_FAULTS_PER_MATCH, player=A1)) == (0, 1, 0)
+    assert tally(row(rows, Stat.KITCHEN_FAULTS_PER_MATCH)) == (3, 1, 0)
+    assert tally(row(rows, Stat.KITCHEN_FAULTS_PER_MATCH, kind=SubjectKind.PLAYER)) == (0, None, 1)
 
 
 def test_aggregation_pools_matching_teams_and_keeps_a_players_partners_distinct() -> None:
@@ -627,8 +721,32 @@ def test_full_match_computes_every_stat_and_shot_type() -> None:
         r.breakdown.shot_type for r in rows if r.stat is Stat.SHOT_TYPE_ATTEMPTS and r.count
     } == set(ShotType)
     assert len({(r.stat, r.subject, r.breakdown) for r in rows}) == len(rows)
-    assert all(
-        r.interval == wilson_interval(r.count, r.total)
-        for r in rows
-        if r.interval is not None and r.total is not None
+    assert tally(row(rows, Stat.SERVE_IN, player=A1)) == (6, 6, 0)
+    assert tally(row(rows, Stat.ARRIVAL_RATE)) == (3, 4, 0)
+    assert tally(row(rows, Stat.SHOT_TYPE_ATTEMPTS, shot_type=ShotType.DRIVE, number=3)) == (
+        1,
+        None,
+        0,
     )
+    assert tally(row(rows, Stat.BODY_HIT_RECEIVED, team=TEAM_B, player=B2)) == (1, None, 0)
+
+    plain_counts = {
+        Stat.SERVES,
+        Stat.RETURNS,
+        Stat.SHOT_TYPE_ATTEMPTS,
+        Stat.OUTCOME_REASON,
+        Stat.OPENING_END_SHOT,
+        Stat.BODY_HIT_WINNERS,
+        Stat.BODY_HIT_RECEIVED,
+    }
+    for result in rows:
+        if result.stat in plain_counts:
+            assert result.stat.kind is StatKind.COUNT
+            assert result.total is None and result.interval is None
+        elif result.stat is Stat.KITCHEN_FAULTS_PER_MATCH:
+            assert result.stat.kind is StatKind.PER_MATCH
+            assert result.total == 1 and result.interval is None
+        else:
+            assert result.stat.kind is StatKind.RATE
+            assert result.total is not None
+            assert (result.interval is not None) == (result.total > 0)

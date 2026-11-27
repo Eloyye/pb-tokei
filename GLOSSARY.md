@@ -232,7 +232,7 @@ The share of the opponents' Shots from the Return on, among those that have a Ta
 Of the Rallies a Team served that reached Shot 4, the share in which the Team arrived.
 
 **Lost Before Arrival**:
-A Rally the Serving Team lost without ever being Established.
+A Rally that reached Shot 4 and that the Serving Team lost without ever being Established.
 
 ### Recording
 

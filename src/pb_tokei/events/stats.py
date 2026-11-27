@@ -37,45 +37,60 @@ from .derived import (
     ShotType,
     TeamStatus,
     derive_match,
+    resolve_attack_exchange,
     resolve_rally_winner,
 )
 from .outcomes import OutcomeReason, ShotJudgment, ShotOutcome, judge_rally
 
 
+class StatKind(StrEnum):
+    COUNT = "count"
+    RATE = "rate"
+    PER_MATCH = "per_match"
+
+
 class Stat(StrEnum):
-    SERVES = "serves"
-    SERVE_IN = "serve_in"
-    RETURNS = "returns"
-    RETURN_IN = "return_in"
-    SHOT_TYPE_ATTEMPTS = "shot_type_attempts"
-    SHOT_ADVANTAGE = "shot_advantage"
-    SHOT_DISADVANTAGE = "shot_disadvantage"
-    OUTCOME_REASON = "outcome_reason"
-    WON_BEFORE_ARRIVAL = "won_before_arrival"
-    ARRIVAL_RATE = "arrival_rate"
-    LOST_BEFORE_ARRIVAL = "lost_before_arrival"
-    LOST_WHEN_NEVER_ARRIVED = "lost_when_never_arrived"
-    DINK_ERRORS = "dink_errors"
-    DINK_POPUPS = "dink_popups"
-    KITCHEN_FAULTS_PER_MATCH = "kitchen_faults_per_match"
-    SPEEDUP_INITIATED = "speedup_initiated"
-    SPEEDUP_RECEIVED = "speedup_received"
-    DINK_ANSWERED_WITH_POPUP = "dink_answered_with_popup"
-    POPUP_PUT_AWAY = "popup_put_away"
-    HIT_SHARE = "hit_share"
-    TARGETED_SHARE = "targeted_share"
-    CROSSOVER = "crossover"
-    INITIATIVE_SHARE = "initiative_share"
-    SUCCESSFUL_INITIATIVE_SHARE = "successful_initiative_share"
-    SPEEDUP_SUCCESS = "speedup_success"
-    OPENING_END = "opening_end"
-    OPENING_WIN = "opening_win"
-    OPENING_END_SHOT = "opening_end_shot"
-    RETURNER_ZONE = "returner_zone"
-    SERVING_TEAM_STATUS = "serving_team_status"
-    BODY_HIT_WINNERS = "body_hit_winners"
-    BODY_HIT_RECEIVED = "body_hit_received"
-    CHALLENGE_SUCCESS = "challenge_success"
+    kind: StatKind
+
+    def __new__(cls, value: str, kind: StatKind) -> Stat:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.kind = kind
+        return member
+
+    SERVES = "serves", StatKind.COUNT
+    SERVE_IN = "serve_in", StatKind.RATE
+    RETURNS = "returns", StatKind.COUNT
+    RETURN_IN = "return_in", StatKind.RATE
+    SHOT_TYPE_ATTEMPTS = "shot_type_attempts", StatKind.COUNT
+    SHOT_ADVANTAGE = "shot_advantage", StatKind.RATE
+    SHOT_DISADVANTAGE = "shot_disadvantage", StatKind.RATE
+    OUTCOME_REASON = "outcome_reason", StatKind.COUNT
+    WON_BEFORE_ARRIVAL = "won_before_arrival", StatKind.RATE
+    ARRIVAL_RATE = "arrival_rate", StatKind.RATE
+    LOST_BEFORE_ARRIVAL = "lost_before_arrival", StatKind.RATE
+    LOST_WHEN_NEVER_ARRIVED = "lost_when_never_arrived", StatKind.RATE
+    DINK_ERRORS = "dink_errors", StatKind.RATE
+    DINK_POPUPS = "dink_popups", StatKind.RATE
+    KITCHEN_FAULTS_PER_MATCH = "kitchen_faults_per_match", StatKind.PER_MATCH
+    SPEEDUP_INITIATED = "speedup_initiated", StatKind.RATE
+    SPEEDUP_RECEIVED = "speedup_received", StatKind.RATE
+    DINK_ANSWERED_WITH_POPUP = "dink_answered_with_popup", StatKind.RATE
+    POPUP_PUT_AWAY = "popup_put_away", StatKind.RATE
+    HIT_SHARE = "hit_share", StatKind.RATE
+    TARGETED_SHARE = "targeted_share", StatKind.RATE
+    CROSSOVER = "crossover", StatKind.RATE
+    INITIATIVE_SHARE = "initiative_share", StatKind.RATE
+    SUCCESSFUL_INITIATIVE_SHARE = "successful_initiative_share", StatKind.RATE
+    SPEEDUP_SUCCESS = "speedup_success", StatKind.RATE
+    OPENING_END = "opening_end", StatKind.RATE
+    OPENING_WIN = "opening_win", StatKind.RATE
+    OPENING_END_SHOT = "opening_end_shot", StatKind.COUNT
+    RETURNER_ZONE = "returner_zone", StatKind.RATE
+    SERVING_TEAM_STATUS = "serving_team_status", StatKind.RATE
+    BODY_HIT_WINNERS = "body_hit_winners", StatKind.COUNT
+    BODY_HIT_RECEIVED = "body_hit_received", StatKind.COUNT
+    CHALLENGE_SUCCESS = "challenge_success", StatKind.RATE
 
 
 class SubjectKind(StrEnum):
@@ -113,7 +128,7 @@ class ShotBreakdown:
     court_half: CourtHalf | None = None
 
 
-type StatCategory = OutcomeReason | ExchangeOutcome | Zone | TeamStatus | int
+type StatCategory = OutcomeReason | ExchangeOutcome | Zone | TeamStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +139,7 @@ class StatBreakdown:
     shot_type: ShotType | None = None  # Shot Type table, including the overall rows
     category: StatCategory | None = None
     rally_role: RallyRole | None = None
+    end_shot_number: int | None = None  # Rallies ending in the Opening
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,18 +159,6 @@ class StatRow:
     interval: tuple[float, float] | None
 
 
-_COUNT_STATS = frozenset(
-    {
-        Stat.SERVES,
-        Stat.RETURNS,
-        Stat.SHOT_TYPE_ATTEMPTS,
-        Stat.OUTCOME_REASON,
-        Stat.KITCHEN_FAULTS_PER_MATCH,
-        Stat.OPENING_END_SHOT,
-        Stat.BODY_HIT_WINNERS,
-        Stat.BODY_HIT_RECEIVED,
-    }
-)
 _OVERALL = StatBreakdown()
 _Z_90 = NormalDist().inv_cdf(0.95)
 _FIRST_TRANSITION_SHOT = 4
@@ -186,9 +190,9 @@ def compute_stats(matches: Iterable[tuple[Match, MatchRoster]]) -> tuple[StatRow
     """Aggregate any number of Matches by roster IDs, keeping each Player's Teams distinct.
 
     Each Shot stat has an overall row and rows keyed by exact Shot Number, Rally Phase, Opening,
-    Shot Type and (for Players) Court Half. Category counts are sparse. An Observation Gap does
-    not supply a count of missing Shots. It can exclude a specific opportunity, such as an unseen
-    Serve or a Speedup Exchange whose result was missed.
+    Shot Type and (for Players) Court Half. Known Team results contribute to Team rows even
+    when the Player is Unknown. Category counts are sparse. An Observation Gap can exclude
+    specific opportunities, such as an unseen Serve or a Speedup Exchange whose result was missed.
     """
     tallies = _Tallies()
     for match, roster in matches:
@@ -242,11 +246,12 @@ class _Tallies:
 
     def rows(self) -> Iterable[StatRow]:
         for (stat, subject, breakdown), tally in self.values.items():
-            if stat is Stat.KITCHEN_FAULTS_PER_MATCH:
+            total, interval = None, None
+            if stat.kind is StatKind.PER_MATCH:
                 total = self.matches_played.get(subject)
-            else:
-                total = None if stat in _COUNT_STATS else tally.total
-            interval = None if stat in _COUNT_STATS else wilson_interval(tally.count, tally.total)
+            elif stat.kind is StatKind.RATE:
+                total = tally.total
+                interval = wilson_interval(tally.count, total)
             yield StatRow(stat, subject, breakdown, tally.count, total, tally.excluded, interval)
 
 
@@ -361,15 +366,14 @@ class _RallyStats:
         team_id: TeamId | None = None,
         team_row: bool = True,
     ) -> None:
-        if player_id is None:
-            result = None
-        else:
+        if player_id is not None:
             team_id = self.roster.team_id_for(player_id)
         if team_row:
             self._team(stat, team_id, result, shot, breakdown)
         subject = StatSubject(SubjectKind.PLAYER, team_id, player_id)
         player_shot = None if shot is None else replace(shot, court_half=self.halves.get(player_id))
-        self.tallies.add(stat, subject, result, breakdown, player_shot)
+        player_result = None if player_id is None else result
+        self.tallies.add(stat, subject, player_result, breakdown, player_shot)
 
     def _share(
         self,
@@ -435,8 +439,8 @@ class _RallyStats:
         return shot.shot.error if self._is_last(shot) and not self.overturned else None
 
     def _own_error(self, shot: DerivedShot, player: PlayerId | None) -> bool | None:
+        team = self._hitter_team(shot)
         if self._is_last(shot) and self.overturned:
-            team = self._hitter_team(shot)
             if team is not None and self.winner is not None:
                 return team != self.winner
             error = shot.shot.error
@@ -446,10 +450,17 @@ class _RallyStats:
         error = self._effective_error(shot)
         if error is None:
             return False
-        if error.player_id.value is not None and player is not None:
-            return error.player_id.value == player
-        # Net, Out, Kitchen Fault and Double Hit on the Shot are hitter Errors.
-        return True if error.kind.value not in (None, ErrorKind.BODY_HIT) else None
+        erring = error.player_id.value
+        if erring is not None:
+            if player is not None:
+                return erring == player
+            if team is not None and self.roster.team_id_for(erring) != team:
+                return False
+        # Net, Out and Double Hit belong to the hitter. A recorded Kitchen Fault
+        # without an Error Player also defaults to the hitter.
+        if error.kind.value in _DINK_ERRORS:
+            return True
+        return True if error.kind.value is ErrorKind.KITCHEN_FAULT and erring is None else None
 
     def _arrival(self) -> None:
         if self.length is not None and self.length < _FIRST_TRANSITION_SHOT:
@@ -491,7 +502,7 @@ class _RallyStats:
                     Stat.OPENING_END_SHOT,
                     team,
                     result,
-                    breakdown=replace(group, category=self.length if result else None),
+                    breakdown=replace(group, end_shot_number=self.length if result else None),
                 )
 
         for number in (3, OPENING_LAST_SHOT_NUMBER):
@@ -555,13 +566,12 @@ class _RallyStats:
             shot = self.by_entry[exchange.start_entry_index]
             key = _shot_breakdown(shot)
             team = self._hitter_team(shot)
-            self._exchange_record(
-                Stat.SPEEDUP_INITIATED, exchange.outcome, shot.hitter_id, team, key
-            )
+            outcome = self._speedup_outcome(shot, team)
+            self._exchange_record(Stat.SPEEDUP_INITIATED, outcome, shot.hitter_id, team, key)
             if not self._without_target(shot):
                 self._exchange_record(
                     Stat.SPEEDUP_RECEIVED,
-                    _OPPOSITE_EXCHANGE[exchange.outcome],
+                    _OPPOSITE_EXCHANGE[outcome],
                     shot.target_id,
                     self._opponent(team),
                     key,
@@ -725,11 +735,16 @@ class _RallyStats:
             self._share(Stat.SUCCESSFUL_INITIATIVE_SHARE, team, player, successful is True, key)
 
     def _speedup_outcome(self, shot: DerivedShot, team: TeamId | None) -> ExchangeOutcome | None:
-        if shot.speedup_exchange_index is None or team is None:
+        if shot.speedup_exchange_index is None:
             return None
         exchange = self.derived.speedup_exchanges[shot.speedup_exchange_index]
+        if exchange.outcome is ExchangeOutcome.NEUTRAL or team is None:
+            return exchange.outcome
         if exchange.initiating_team_id is None:
-            return None
+            # The Shot Number can identify the Team even when the initiating Player is Unknown.
+            return resolve_attack_exchange(
+                self.rally, self.roster, self.derived.shots, shot.entry_index, team
+            ).outcome
         if exchange.initiating_team_id == team:
             return exchange.outcome
         return _OPPOSITE_EXCHANGE[exchange.outcome]
@@ -740,17 +755,26 @@ class _RallyStats:
         kind = error.kind.value
         erring = error.player_id.value
         if kind in (ErrorKind.KITCHEN_FAULT, None):
+            fault_player = erring
+            if fault_player is None and kind is ErrorKind.KITCHEN_FAULT:
+                fault_player = self._hitter(shot)
             self._player(
                 Stat.KITCHEN_FAULTS_PER_MATCH,
-                erring,
+                fault_player,
                 _is_category(kind, ErrorKind.KITCHEN_FAULT),
                 key,
                 team_id=team,
             )
-        if kind in (ErrorKind.BODY_HIT, None) and shot.is_winner is not False:
-            won = True if kind is ErrorKind.BODY_HIT and shot.is_winner is True else None
-            self._player(Stat.BODY_HIT_WINNERS, self._hitter(shot), won, key, team_id=team)
-            self._player(Stat.BODY_HIT_RECEIVED, erring, won, key, team_id=self._opponent(team))
+        if kind in (ErrorKind.BODY_HIT, None):
+            won = shot.is_winner
+            if won is None and team is not None and erring is not None:
+                won = self.roster.team_id_for(erring) != team
+            if won is not False:
+                result = won if kind is ErrorKind.BODY_HIT else None
+                self._player(Stat.BODY_HIT_WINNERS, self._hitter(shot), result, key, team_id=team)
+                self._player(
+                    Stat.BODY_HIT_RECEIVED, erring, result, key, team_id=self._opponent(team)
+                )
 
 
 def _is_category[T](value: T | None, category: T) -> bool | None:
