@@ -80,6 +80,10 @@ _Avoid_: transition zone, no man's land
 The Zone from 18 ft from the net to beyond the baseline.
 _Avoid_: baseline (that is the line, not the Zone)
 
+**Court Half**:
+The half of their court, Left or Right as the Team faces the net, that a Player covers in a Rally, taken from where the two Players stand at their Team's Arrival.
+_Avoid_: side (that is a Team), even court, odd court (those are serving positions set by the score)
+
 ### Shots
 
 **Shot**:
@@ -179,6 +183,13 @@ _Avoid_: Bert
 A flag on a Shot that passes around the net post rather than over the net.
 _Avoid_: around the post
 
+**Crossover**:
+A Shot a Player hits from their partner's part of the court: past the point halfway between the two Players where they stood at the opponents' Shot before it.
+_Avoid_: poach (that is the intent; a Crossover is what is measured)
+
+**Initiative**:
+A Shot that breaks a soft exchange: a Speedup, or a Dink that is a Winner, draws an Error or draws a Popup.
+
 ### Rally Phases
 
 **Team Status**:
@@ -208,6 +219,20 @@ _Avoid_: frontcourt conflict, kitchen battle, dink battle
 
 **Scramble**:
 The Rally Phase in which a Team that was Established earlier in the Rally no longer is; it takes precedence over Transition.
+
+### Stats
+
+**Hit Share**:
+A Player's Shots from Shot 3 on, as a share of their Team's Shots in the same Rallies.
+
+**Targeted Share**:
+The share of the opponents' Shots from the Return on, among those that have a Target, whose Target is this Player; it adds the Winners hit at a Player to the balls they played.
+
+**Arrival Rate**:
+Of the Rallies a Team served that reached Shot 4, the share in which the Team arrived.
+
+**Lost Before Arrival**:
+A Rally the Serving Team lost without ever being Established.
 
 ### Recording
 
