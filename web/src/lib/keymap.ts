@@ -86,6 +86,16 @@ export function isPanelSwapKey(event: KeyInput): boolean {
   return event.key === "`" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
 }
 
+/** `⌘K` or `Ctrl+K` splits at the playhead (Play Segment in Calibrate, Rally in Annotate). */
+export function isSplitKey(event: KeyInput): boolean {
+  return (
+    !event.altKey &&
+    !event.shiftKey &&
+    event.metaKey !== event.ctrlKey &&
+    event.key.toLowerCase() === "k"
+  );
+}
+
 export type SegmentAction =
   | { type: "markIn" }
   | { type: "markOut" }
@@ -100,13 +110,9 @@ export type SegmentAction =
  * pending segment.
  */
 export function segmentKeyAction(event: KeyInput): SegmentAction | null {
-  if (event.altKey) return null;
+  if (isSplitKey(event)) return { type: "split" };
+  if (event.ctrlKey || event.metaKey || event.altKey) return null;
   const key = event.key.toLowerCase();
-  if (event.metaKey || event.ctrlKey) {
-    return !event.shiftKey && event.metaKey !== event.ctrlKey && key === "k"
-      ? { type: "split" }
-      : null;
-  }
   if (event.shiftKey) {
     if (key === "i") return { type: "markIn" };
     if (key === "o") return { type: "markOut" };
@@ -174,6 +180,7 @@ export function calibrationKeyAction(event: KeyInput): CalibrationAction | null 
 export type AnnotateAction =
   | { type: "rallyStart" }
   | { type: "rallyEnd" }
+  | { type: "splitRally" }
   | { type: "refereeCall"; call: "point" | "second_server" | "side_out" }
   | { type: "rallyForm" }
   | { type: "challengeForm" }
@@ -213,6 +220,7 @@ const ERROR_KEYS = {
  * else, including playback keys.
  */
 export function annotateKeyAction(event: KeyInput): AnnotateAction | null {
+  if (isSplitKey(event)) return { type: "splitRally" };
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
   const code = event.code ?? "";
   const key = event.key;

@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import type { RallyEntry } from "../api/client";
+import { describe, expect, it } from "vitest";
+import type { Game, RallyEntry } from "../api/client";
 import { annotateKeyAction, segmentKeyAction } from "../lib/keymap";
 import { newRally } from "../lib/rallyLog";
 import { contextMenuItems, type ContextMenuTarget } from "./contextMenuItems";
@@ -21,11 +21,13 @@ it.each(targets)("matches the displayed $kind shortcuts to the keymap", (target)
         ]
       : [undefined];
   for (const entry of entries) {
+    const rally = newRally(1, 10);
     const items = contextMenuItems(target, {
       workspace: target.kind === "segment" ? "calibrate" : "annotate",
       hasVideo: true,
       frame: 20,
-      rally: newRally(1, 10),
+      games: [{ number: 1, rallies: [rally] }],
+      rally,
       entry,
     });
     for (const { command, shortcut } of items) {
@@ -48,4 +50,89 @@ it.each(targets)("matches the displayed $kind shortcuts to the keymap", (target)
       }
     }
   }
+});
+
+describe("Split Rally menu item availability", () => {
+  const target: ContextMenuTarget = { kind: "rally", game: 0, rally: 0 };
+  const splitItem = (options: Parameters<typeof contextMenuItems>[1]) =>
+    contextMenuItems(target, options).find((item) => item.label === "Split Rally at playhead")!;
+
+  it("enables Split Rally in Annotate when start < frame <= end and explains why otherwise", () => {
+    const rally = { ...newRally(1, 100), end_frame: 300 };
+    const games: Game[] = [{ number: 1, rallies: [rally] }];
+    const at = (frame: number, overrides: Partial<Parameters<typeof contextMenuItems>[1]> = {}) =>
+      splitItem({
+        workspace: "annotate",
+        hasVideo: true,
+        frame,
+        games,
+        rally,
+        entry: undefined,
+        ...overrides,
+      });
+
+    expect(at(101).disabledReason).toBeUndefined();
+    expect(at(300).disabledReason).toBeUndefined();
+    expect(at(100).disabledReason).toBe("Move the playhead past this Rally’s start (frame 100)");
+    expect(at(301).disabledReason).toBe(
+      "Move the playhead to or before this Rally’s end (frame 300)",
+    );
+    expect(at(200, { hasVideo: false }).disabledReason).toBe("Load the video first");
+    expect(at(200, { workspace: "review" }).disabledReason).toBe("Available in Annotate");
+    expect(at(200, { workspace: "calibrate" }).disabledReason).toBe("Available in Annotate");
+
+    const unseen = newRally(1);
+    expect(
+      at(200, { games: [{ number: 1, rallies: [unseen] }], rally: unseen }).disabledReason,
+    ).toBe("An Unseen Rally has no frames");
+  });
+
+  it("checks later Rallies when splitting an open-ended Rally", () => {
+    const open = newRally(1, 100);
+    const next = { ...newRally(2, 500), end_frame: 700 };
+    const games: Game[] = [{ number: 1, rallies: [open, next] }];
+    expect(
+      splitItem({
+        workspace: "annotate",
+        hasVideo: true,
+        frame: 499,
+        games,
+        rally: open,
+        entry: undefined,
+      }).disabledReason,
+    ).toBeUndefined();
+    expect(
+      splitItem({
+        workspace: "annotate",
+        hasVideo: true,
+        frame: 500,
+        games,
+        rally: open,
+        entry: undefined,
+      }).disabledReason,
+    ).toBe("Rallies can't overlap: G1 R2 starts at frame 500");
+  });
+
+  it("evaluates Split Rally bounds against a non-zero Game and Rally target", () => {
+    const g2r2 = newRally(2, 400);
+    const g2r3 = { ...newRally(3, 600), end_frame: 750 };
+    const games: Game[] = [
+      { number: 1, rallies: [{ ...newRally(1, 10), end_frame: 100 }] },
+      { number: 2, rallies: [{ ...newRally(1, 200), end_frame: 300 }, g2r2, g2r3] },
+    ];
+    const g2r2Target: ContextMenuTarget = { kind: "rally", game: 1, rally: 1 };
+    const at = (frame: number) =>
+      contextMenuItems(g2r2Target, {
+        workspace: "annotate",
+        hasVideo: true,
+        frame,
+        games,
+        rally: g2r2,
+        entry: undefined,
+      }).find((item) => item.label === "Split Rally at playhead")!;
+
+    expect(at(400).disabledReason).toBe("Move the playhead past this Rally’s start (frame 400)");
+    expect(at(500).disabledReason).toBeUndefined();
+    expect(at(600).disabledReason).toBe("Rallies can't overlap: G2 R3 starts at frame 600");
+  });
 });

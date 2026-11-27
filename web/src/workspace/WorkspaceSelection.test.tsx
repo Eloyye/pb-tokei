@@ -564,6 +564,9 @@ describe("Workspace Shot and Rally deselection", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText("Cancel Player placement in Annotate")).toBeTruthy();
+    expect(
+      screen.getByText("Split Rally at playhead (when strictly inside the selected Rally)"),
+    ).toBeTruthy();
   });
 });
 
@@ -1000,9 +1003,10 @@ function expectMenuItems(menu: ReturnType<typeof within>, items: [string, string
   }
 }
 
-const rallyActions: [string, string?][] = [
+const rallyActions: [string, string?, string?][] = [
   ["Rally start at playhead", "Shift+I"],
   ["Rally end at playhead", "Shift+O"],
+  ["Split Rally at playhead", "Meta+K Control+K", "⌘K / Ctrl+K"],
   ["Insert Unseen Rally after", "Shift+U"],
   ["Delete Rally", "Shift+Backspace"],
   ["Mark Done", "Enter"],
@@ -1298,6 +1302,172 @@ describe("Workspace context menus", () => {
       ]),
     );
   });
+
+  it("splits a Rally via ⌘K and context menu, autosaves, shows reasons when unavailable, and undoes in one step", async () => {
+    const games = sampleGames();
+    const { container } = renderAnnotateWorkspace(games);
+    const rallyList = container.querySelector<HTMLElement>(".rally-list")!;
+    const rallyRow = await within(rallyList).findByRole("button", { name: /R1/ });
+
+    // With no Rally selected, ⌘K is a no-op with a status-bar reason.
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByText("Select a Rally first")).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    // Right-click Rally 1 while playhead is at frame 0 (before start 100): Split Rally is disabled with reason.
+    const menuAtZero = openContextMenu(rallyRow, "Rally actions");
+    const splitDisabled = menuAtZero.getByRole("menuitem", { name: "Split Rally at playhead" });
+    expect(splitDisabled.getAttribute("aria-disabled")).toBe("true");
+    expect(splitDisabled.title).toBe("Move the playhead past this Rally’s start (frame 100)");
+    fireEvent.keyDown(splitDisabled, { key: "Escape" });
+
+    // Select Rally 1 (seeks to Shot 1 at frame 120) and step +60 frames to Shot 2 at frame 180.
+    fireEvent.click(rallyRow);
+    fireEvent.click(rallyRow); // click once to deselect, then once to select & seek to 120
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+
+    // Split with ⌘K at frame 180 (repeat press must not cascade into a second split):
+    // R1 is 100–179 (Shot 120), R2 is 180–300 (Shot 180).
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    fireEvent.keyDown(window, { key: "k", metaKey: true, repeat: true });
+    expect(screen.getByText("Split Rally: G1 R1 (100–179) and G1 R2 (180–300)")).toBeTruthy();
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalledTimes(1));
+    const afterSplit = apiMocks.replaceGames.mock.lastCall![1];
+    expect(afterSplit[0]!.rallies.map((r) => [r.number, r.start_frame, r.end_frame])).toEqual([
+      [1, 100, 179],
+      [2, 180, 300],
+    ]);
+
+    // One undo step restores the original Rally exactly.
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, games));
+    expect(within(rallyList).getAllByRole("button", { name: /R\d/ })).toHaveLength(1);
+
+    // Split from the Rally clip context menu at frame 180 produces the same result and undoes cleanly.
+    const clip = await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    const menuInside = openContextMenu(clip, "Rally actions");
+    const splitEnabled = menuInside.getByRole("menuitem", { name: "Split Rally at playhead" });
+    expect(splitEnabled.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(splitEnabled);
+    expect(screen.getByText("Split Rally: G1 R1 (100–179) and G1 R2 (180–300)")).toBeTruthy();
+    await waitFor(() =>
+      expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, afterSplit),
+    );
+
+    // Undo and split from the Rallies panel row context menu (enabled state).
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, games));
+    const restoredRow = within(rallyList).getByRole("button", { name: /R1/ });
+    const rowMenu = openContextMenu(restoredRow, "Rally actions");
+    const rowSplit = rowMenu.getByRole("menuitem", { name: "Split Rally at playhead" });
+    expect(rowSplit.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(rowSplit);
+    await waitFor(() =>
+      expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, afterSplit),
+    );
+  });
+
+  it("splits a non-G1-R1 Rally (G2 R2) from its context menu without touching earlier Rallies", async () => {
+    const g1r1 = sampleGames()[0]!.rallies[0]!;
+    const g2r1 = { ...newRally(1, 350), end_frame: 420 };
+    const g2r2 = { ...newRally(2, 450), end_frame: 650 };
+    const games: Game[] = [
+      { number: 1, rallies: [g1r1] },
+      { number: 2, rallies: [g2r1, g2r2] },
+    ];
+    const { container } = renderAnnotateWorkspace(games);
+    const clip = await screen.findByTitle("Game 2 Rally 2: frames 450–650");
+    // Click G2 R2 (seeks to frame 450), then step +60 frames to 510 (inside G2 R2).
+    fireEvent.click(clip);
+    fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+
+    const menu = openContextMenu(clip, "Rally actions");
+    fireEvent.click(menu.getByRole("menuitem", { name: "Split Rally at playhead" }));
+    expect(screen.getByText("Split Rally: G2 R2 (450–509) and G2 R3 (510–650)")).toBeTruthy();
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalledTimes(1));
+    const saved = apiMocks.replaceGames.mock.lastCall![1];
+    expect(saved[0]!.rallies).toHaveLength(1);
+    expect(saved[1]!.rallies.map((r) => [r.number, r.start_frame, r.end_frame])).toEqual([
+      [1, 350, 420],
+      [2, 450, 509],
+      [3, 510, 650],
+    ]);
+    expect(
+      within(container.querySelector<HTMLElement>(".rally-list")!).getAllByRole("button", {
+        name: /R\d/,
+      }),
+    ).toHaveLength(4);
+  });
+
+  it("handles ⌘K before Rallies load and without a video loaded, leaving other Annotate keys ignored while loading", async () => {
+    // 1) Before recording loads: ⌘K shows "Wait for Rallies to load", while other keys (e.g. M) stay ignored.
+    let resolveGames!: (value: Game[]) => void;
+    apiMocks.getGames.mockReturnValueOnce(
+      new Promise<Game[]>((resolve) => {
+        resolveGames = resolve;
+      }),
+    );
+    const view = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Workspace match={MATCH} workspace="annotate" />
+      </QueryClientProvider>,
+    );
+    const addShotEvent = new KeyboardEvent("keydown", { key: "m", cancelable: true });
+    window.dispatchEvent(addShotEvent);
+    expect(addShotEvent.defaultPrevented).toBe(false);
+
+    const splitWhileLoading = new KeyboardEvent("keydown", {
+      key: "k",
+      metaKey: true,
+      cancelable: true,
+    });
+    act(() => {
+      window.dispatchEvent(splitWhileLoading);
+    });
+    expect(splitWhileLoading.defaultPrevented).toBe(true);
+    expect(screen.getByText("Wait for Rallies to load")).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+
+    // 2) Once Rallies load, with no video metadata loaded (totalFrames === 0), ⌘K explains "Load the video first".
+    await act(async () => {
+      resolveGames(sampleGames());
+    });
+    await within(view.container.querySelector<HTMLElement>(".rally-list")!).findByRole("button", {
+      name: /R1/,
+    });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByText("Load the video first")).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+  });
+
+  it("does not split Rallies on ⌘K in Calibrate or Review and explains the no-op in Review", async () => {
+    const calibrate = renderWorkspace("calibrate");
+    const calibrateRow = await within(
+      calibrate.container.querySelector<HTMLElement>(".rally-list")!,
+    ).findByRole("button", { name: /R1/ });
+    // Select R1 (seeks to frame 120, inside both R1 and the Main View Play Segment 0–600).
+    fireEvent.click(calibrateRow);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+    await waitFor(() => expect(apiMocks.replacePlaySegments).toHaveBeenCalledTimes(1));
+
+    cleanup();
+    vi.clearAllMocks();
+
+    const review = renderWorkspace("review");
+    const reviewRow = await within(
+      review.container.querySelector<HTMLElement>(".rally-list")!,
+    ).findByRole("button", { name: /R1/ });
+    fireEvent.click(reviewRow);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(
+      screen.getByText(
+        "Split Rally is available in Annotate; Split Play Segment is available in Calibrate",
+      ),
+    ).toBeTruthy();
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+    expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+  });
 });
 
 describe("Split Play Segment shortcut", () => {
@@ -1334,12 +1504,16 @@ describe("Split Play Segment shortcut", () => {
     expect(apiMocks.replacePlaySegments).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["annotate", "review"] as const)("explains the no-op in %s", async (workspace) => {
-    renderWorkspace(workspace);
+  it("explains the no-op in review without changing Play Segments", async () => {
+    renderWorkspace("review");
     await screen.findByTitle("Main View Play Segment, frames 0–600");
     fireEvent.keyDown(window, { key: "ArrowRight" });
     fireEvent.keyDown(window, shortcut);
-    expect(screen.getByText("Split Play Segment is available in Calibrate")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Split Rally is available in Annotate; Split Play Segment is available in Calibrate",
+      ),
+    ).toBeTruthy();
     expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
   });
 });

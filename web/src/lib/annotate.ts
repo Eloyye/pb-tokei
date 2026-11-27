@@ -11,6 +11,7 @@ import type {
   Score,
   Shot,
   ShotClass,
+  ShotError,
   ShotPosition,
   Zone,
 } from "../api/client";
@@ -35,6 +36,7 @@ import {
   renumberGames,
   renumberRallies,
   type Roster,
+  sameFact,
   shotsOf,
   sortEntries,
   teamOf,
@@ -464,6 +466,180 @@ export function markRallyEnd(ctx: AnnotateContext): AnnotateEdit {
   };
 }
 
+/**
+ * Why the selected Rally can't be split at `frame`, or undefined when `start < frame ≤ end`
+ * (and for an open-ended Rally, before any later framed Rally).
+ */
+export function splitRallyReason(
+  games: readonly Game[],
+  selection: Selection,
+  frame: number,
+): string | undefined {
+  const rally = selectedRally(games, selection);
+  if (!rally || selection.rally === null) return "Select a Rally first";
+  if (rally.start_frame === null) return "An Unseen Rally has no frames";
+  if (rally.end_frame !== null && rally.end_frame <= rally.start_frame) {
+    return "This Rally is only one frame long";
+  }
+  let nextFramed: { value: Rally; gameNumber: number } | undefined;
+  if (rally.end_frame === null) {
+    for (const candidate of framedRallies(games)) {
+      if (candidate.game === selection.game && candidate.rally === selection.rally) continue;
+      if (candidate.value.start_frame! <= rally.start_frame) continue;
+      if (!nextFramed || candidate.value.start_frame! < nextFramed.value.start_frame!) {
+        nextFramed = candidate;
+      }
+    }
+    if (nextFramed && nextFramed.value.start_frame! <= rally.start_frame + 1) {
+      return `No room to Split Rally before G${nextFramed.gameNumber} R${nextFramed.value.number} (frame ${nextFramed.value.start_frame})`;
+    }
+  }
+  if (frame <= rally.start_frame) {
+    return `Move the playhead past this Rally’s start (frame ${rally.start_frame})`;
+  }
+  if (rally.end_frame !== null && frame > rally.end_frame) {
+    return `Move the playhead to or before this Rally’s end (frame ${rally.end_frame})`;
+  }
+  if (nextFramed && frame >= nextFramed.value.start_frame!) {
+    return `Rallies can't overlap: G${nextFramed.gameNumber} R${nextFramed.value.number} starts at frame ${nextFramed.value.start_frame}`;
+  }
+  return undefined;
+}
+
+/**
+ * Recomputes non-Observed hitters and Contact Kinds on the second Rally's Shots after a split,
+ * using its side-out pre-filled start facts and new Shot Numbers. Observed facts never change.
+ */
+function recomputeSplitShots(roster: Roster, rally: Rally): Rally {
+  const entries = [...rally.entries];
+  let changed = false;
+  let afterGap = false;
+  let shotNumber = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (isGap(entry)) {
+      afterGap = true;
+      continue;
+    }
+    shotNumber += 1;
+    const number = afterGap ? null : shotNumber;
+    let shot = entry;
+
+    if (shot.hitter_id.certainty !== "observed") {
+      const previousHitter = shot.hitter_id.value;
+      const hitter = defaultHitter(roster, { ...rally, entries }, i);
+      const nextHitter: Fact<string> = hitter === null ? UNKNOWN : inferred(hitter);
+      if (!sameFact(shot.hitter_id, nextHitter)) {
+        const error = recomputeInferredErrorPlayer(roster, shot, previousHitter, hitter);
+        const withNext = { ...shot, hitter_id: nextHitter, error };
+        let contact_zone = shot.contact_zone;
+        if (hitter !== previousHitter) {
+          const manualObservedZone =
+            shot.contact_zone.certainty === "observed" &&
+            !sameFact(shot.contact_zone, contactZoneFor(shot));
+          contact_zone = manualObservedZone ? shot.contact_zone : contactZoneFor(withNext);
+        }
+        shot = { ...withNext, contact_zone };
+      }
+    }
+
+    if (shot.contact_kind.certainty !== "observed") {
+      const nextKind = defaultContactKind(number);
+      if (!sameFact(shot.contact_kind, nextKind)) {
+        shot = { ...shot, contact_kind: nextKind };
+      }
+    }
+
+    if (shot !== entry) {
+      entries[i] = shot;
+      changed = true;
+    }
+  }
+  return changed ? { ...rally, entries } : rally;
+}
+
+/**
+ * `⌘K`: splits the selected Rally at the playhead (`start < T ≤ end`) into `[start, T−1]` and
+ * `[T, end]` (keeping an open-ended Rally's second part open-ended). Start-of-Rally facts stay
+ * with the first Rally, end-of-Rally facts move to the second, Shots go by contact frame (`≥ T`
+ * to the second; an Observation Gap at the split stays with the first), both become In progress,
+ * and non-Observed facts on the second Rally and every later Rally in the Game are recomputed.
+ */
+export function splitRally(ctx: AnnotateContext): AnnotateEdit {
+  const { frame, selection, roster } = ctx;
+  const reason = splitRallyReason(ctx.games, selection, frame);
+  if (reason) return unchanged(ctx, reason);
+  const rallyIndex = selection.rally!;
+  const game = ctx.games[selection.game]!;
+  const rally = game.rallies[rallyIndex]!;
+
+  const firstEntries: RallyEntry[] = [];
+  const secondEntries: RallyEntry[] = [];
+  let destination = firstEntries;
+  for (const entry of rally.entries) {
+    if (isShot(entry) && entry.contact_frame.value !== null) {
+      destination = entry.contact_frame.value < frame ? firstEntries : secondEntries;
+    }
+    destination.push(entry);
+  }
+
+  const first: Rally = {
+    ...rally,
+    end_frame: frame - 1,
+    status: "in_progress",
+    referee_call: UNKNOWN,
+    challenge: null,
+    winner_id: UNKNOWN,
+    winner_source: null,
+    scoreboard_winner_id: UNKNOWN,
+    entries: firstEntries,
+  };
+  const second: Rally = {
+    ...newRally(rally.number + 1, frame),
+    end_frame: rally.end_frame,
+    status: "in_progress",
+    referee_call: rally.referee_call,
+    challenge: rally.challenge,
+    winner_id: rally.winner_id,
+    winner_source: rally.winner_source,
+    scoreboard_winner_id: rally.scoreboard_winner_id,
+    entries: secondEntries,
+  };
+
+  const rallies = [...game.rallies];
+  rallies.splice(rallyIndex, 1, first, second);
+  // Two passes are needed because side-out pre-fill and Shot-default recomputation depend on each
+  // other in opposite directions:
+  // 1. Normalize from `rallyIndex` so `first` resolves its winner (e.g. from its last Shot's Error)
+  //    and `second` gets its side-out start facts (and Observed Shot 1/2 sync) before recomputing
+  //    `second`'s non-Observed hitters and Contact Kinds.
+  // 2. If recomputing `second`'s Shots updated an Inferred Error's Player on `second`'s last Shot,
+  //    normalize from `rallyIndex + 1` so `second`'s `play` winner and all later Rallies stay in sync.
+  const prefilled = normalizeGame(
+    { ...game, rallies: renumberRallies(rallies) },
+    roster,
+    rallyIndex,
+  );
+  const normalizedSecond = prefilled.rallies[rallyIndex + 1]!;
+  const recomputedSecond = recomputeSplitShots(roster, normalizedSecond);
+  let finalGame = prefilled;
+  if (recomputedSecond !== normalizedSecond) {
+    const updatedRallies = [...prefilled.rallies];
+    updatedRallies[rallyIndex + 1] = recomputedSecond;
+    finalGame = normalizeGame({ ...prefilled, rallies: updatedRallies }, roster, rallyIndex + 1);
+  }
+
+  const games = [...ctx.games];
+  games[selection.game] = finalGame;
+  const firstLabel = rallyLabel(finalGame, finalGame.rallies[rallyIndex]!);
+  const secondLabel = rallyLabel(finalGame, finalGame.rallies[rallyIndex + 1]!);
+  return {
+    games,
+    selection: selectRally(games, selection.game, rallyIndex + 1),
+    message: `Split Rally: ${firstLabel} (${rally.start_frame}–${frame - 1}) and ${secondLabel} (${frame}–${rally.end_frame ?? "…"})`,
+  };
+}
+
 /** `Shift+U`: inserts an Unseen Rally after the selected one (or at the end of the Game). */
 export function insertUnseenRally(input: AnnotateContext): AnnotateEdit {
   const ctx = ensureGame(input);
@@ -642,21 +818,40 @@ export function setChallenge(ctx: AnnotateContext, challenge: Challenge | null):
 
 // --- Shots --------------------------------------------------------------------------------
 
+/** Two-bounce rule: the Return and third Shot default to Inferred Bounce, others to Unknown. */
+function defaultContactKind(shotNumber: number | null): Fact<ContactKind> {
+  return shotNumber === 2 || shotNumber === 3 ? inferred<ContactKind>("bounce") : UNKNOWN;
+}
+
 /** The hitter a new Shot at `index` defaults to, and why. */
 function defaultHitter(roster: Roster, rally: Rally, index: number): string | null {
   const entries = rally.entries;
   const before = entries.slice(0, index);
   const gapBefore = before.some(isGap);
   const shotsBefore = before.filter(isShot).length;
-  const serving = rally.serving_team_id.value;
+  const serverTeam = rally.server_id.value === null ? null : teamOf(roster, rally.server_id.value);
+  const returnerTeam =
+    rally.returner_id.value === null ? null : teamOf(roster, rally.returner_id.value);
+  const serving =
+    rally.serving_team_id.value ??
+    serverTeam ??
+    (returnerTeam === null ? null : otherTeam(roster, returnerTeam));
+  // Ignore a Server or Returner who disagrees with the Serving Team (for example, when an
+  // Observed Shot 1 flipped the Serving Team while Returner was still pre-filled from before).
   if (!gapBefore && shotsBefore === 0) {
-    return rally.server_id.value ?? firstPlayer(roster, serving ?? roster.teamA);
+    const server =
+      rally.server_id.value !== null && (serving === null || serverTeam === serving)
+        ? rally.server_id.value
+        : null;
+    return server ?? firstPlayer(roster, serving ?? roster.teamA);
   }
   if (!gapBefore && shotsBefore === 1) {
-    return (
-      rally.returner_id.value ??
-      firstPlayer(roster, serving === null ? roster.teamB : otherTeam(roster, serving))
-    );
+    const receiving = serving === null ? roster.teamB : otherTeam(roster, serving);
+    const returner =
+      rally.returner_id.value !== null && returnerTeam === receiving
+        ? rally.returner_id.value
+        : null;
+    return returner ?? firstPlayer(roster, receiving);
   }
   // Teams alternate: count the odd Observation Gaps since the last Shot with a known hitter.
   let oddGaps = 0;
@@ -711,8 +906,7 @@ export function addShot(
   const filled: Shot = {
     ...shot,
     hitter_id: hitter === null ? UNKNOWN : inferred(hitter),
-    // Two-bounce rule: the Return and the third Shot bounce.
-    contact_kind: number === 2 || number === 3 ? inferred<ContactKind>("bounce") : UNKNOWN,
+    contact_kind: defaultContactKind(number),
   };
   const withZone: Shot = { ...filled, contact_zone: contactZoneFor(filled) };
   entries[index] = withZone;
@@ -845,6 +1039,43 @@ function distance(a: CourtPoint, b: CourtPoint): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+/** The default Player for a Body Hit Error: opponent nearest the landing, else first opponent. */
+function defaultBodyHitPlayer(roster: Roster, shot: Shot, hitter: string): string | null {
+  const team = teamOf(roster, hitter);
+  const opponents = team === null ? [] : teamPlayers(roster, otherTeam(roster, team));
+  const landing = shot.landing.value;
+  const nearest =
+    landing === null
+      ? undefined
+      : opponents
+          .map((p) => ({ id: p.id, at: shot.positions[p.id]?.position.value ?? null }))
+          .filter((p): p is { id: string; at: CourtPoint } => p.at !== null)
+          .toSorted((a, b) => distance(a.at, landing) - distance(b.at, landing))[0]?.id;
+  return nearest ?? opponents[0]?.id ?? null;
+}
+
+/** Keeps an Inferred Error's Player aligned when the Shot's Inferred hitter changes on split. */
+function recomputeInferredErrorPlayer(
+  roster: Roster,
+  shot: Shot,
+  previousHitter: string | null,
+  nextHitter: string | null,
+): ShotError | null {
+  const error = shot.error;
+  if (!error || error.player_id.certainty === "observed") return error;
+  if (nextHitter === null) {
+    return error.player_id.value === previousHitter ? { ...error, player_id: UNKNOWN } : error;
+  }
+  if (error.kind.value === "body_hit") {
+    const player = defaultBodyHitPlayer(roster, shot, nextHitter);
+    return { ...error, player_id: player === null ? UNKNOWN : inferred(player) };
+  }
+  if (error.player_id.value === previousHitter || error.player_id.value === null) {
+    return { ...error, player_id: inferred(nextHitter) };
+  }
+  return error;
+}
+
 /**
  * `1`–`5`: the Shot's Error. The Error's Player defaults to the hitter, or for a Body Hit to the
  * opponent nearest the landing; pressing `5` or `3` again cycles the Player. `0` (null) clears.
@@ -875,16 +1106,8 @@ export function setError(ctx: AnnotateContext, kind: ErrorKind | null): Annotate
             const other = opponents.find((p) => p.id !== current!.player_id.value);
             player = other ? observed(other.id) : current!.player_id;
           } else {
-            const landing = s.landing.value;
-            const nearest =
-              landing === null
-                ? undefined
-                : opponents
-                    .map((p) => ({ id: p.id, at: s.positions[p.id]?.position.value ?? null }))
-                    .filter((p): p is { id: string; at: CourtPoint } => p.at !== null)
-                    .toSorted((a, b) => distance(a.at, landing) - distance(b.at, landing))[0]?.id;
-            const fallback = nearest ?? opponents[0]?.id;
-            player = fallback === undefined ? UNKNOWN : inferred(fallback);
+            const fallback = defaultBodyHitPlayer(roster, s, hitter);
+            player = fallback === null ? UNKNOWN : inferred(fallback);
           }
         } else if (kind === "kitchen_fault" && repeat) {
           const other = current!.player_id.value === hitter ? partnerOf(roster, hitter) : hitter;

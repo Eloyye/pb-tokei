@@ -67,6 +67,8 @@ import {
   setRallyEdge,
   setRefereeCall,
   setShotClass,
+  splitRally,
+  splitRallyReason,
   startNextGame,
   swapHitterToPartner,
   swapShotTeammates,
@@ -85,6 +87,7 @@ import {
   calibrationKeyAction,
   historyKeyAction,
   isPanelSwapKey,
+  isSplitKey,
   isTextEntry,
   keyAction,
   type PlayerAction,
@@ -741,6 +744,16 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       case "rallyEnd":
         focusField("rally", "frames");
         return edit(markRallyEnd);
+      case "splitRally": {
+        if (totalFrames === 0) return recording.notify("Load the video first");
+        const canSplit = splitRallyReason(games, activeSelection, at) === undefined;
+        const result = edit(splitRally);
+        if (result && canSplit) {
+          setForm(null);
+          focusField("rally", "frames");
+        }
+        return result;
+      }
       case "refereeCall":
         focusField("rally", "referee_call");
         return edit((c) => setRefereeCall(c, action.call));
@@ -1105,6 +1118,24 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return;
       }
     }
+    if (isSplitKey(event)) {
+      event.preventDefault();
+      if (event.repeat) return;
+      switch (workspace) {
+        case "annotate":
+          if (!recordingState.recording) return recording.notify("Wait for Rallies to load");
+          runAnnotate({ type: "splitRally" });
+          return;
+        case "calibrate":
+          runSegment({ type: "split" });
+          return;
+        case "review":
+          recording.notify(
+            "Split Rally is available in Annotate; Split Play Segment is available in Calibrate",
+          );
+          return;
+      }
+    }
     if (annotating && recordingState.recording) {
       const annotateAction = annotateKeyAction(event);
       if (annotateAction) {
@@ -1131,18 +1162,20 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       if (!event.repeat) handleEscape();
       return;
     }
-    const segmentAction = segmentKeyAction(event);
-    if (segmentAction && (segmentAction.type === "split" || (calibrating && totalFrames > 0))) {
-      event.preventDefault();
-      if (!event.repeat) runSegment(segmentAction);
-      return;
-    }
-    if (calibrating && totalFrames > 0 && calibrateTab === "landmarks") {
-      const calibrationAction = calibrationKeyAction(event);
-      if (calibrationAction) {
+    if (calibrating && totalFrames > 0) {
+      const segmentAction = segmentKeyAction(event);
+      if (segmentAction) {
         event.preventDefault();
-        if (!event.repeat) calibrate(calibrationAction);
+        if (!event.repeat) runSegment(segmentAction);
         return;
+      }
+      if (calibrateTab === "landmarks") {
+        const calibrationAction = calibrationKeyAction(event);
+        if (calibrationAction) {
+          event.preventDefault();
+          if (!event.repeat) calibrate(calibrationAction);
+          return;
+        }
       }
     }
     const zoomDirection = zoomKeyAction(event);
@@ -1628,6 +1661,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
             workspace,
             hasVideo: totalFrames > 0,
             frame,
+            games,
             rally: currentRally,
             entry: selectedEntry(games, current),
           })}

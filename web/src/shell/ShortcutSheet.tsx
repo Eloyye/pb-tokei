@@ -75,6 +75,7 @@ const GROUPS: [string, [string[], string][]][] = [
     [
       [["⇧I"], "Start an open-ended Rally here, or move the selected Rally's start"],
       [["⇧O"], "End the selected Rally here"],
+      [["⌘K", "Ctrl+K"], "Split Rally at playhead (when strictly inside the selected Rally)"],
       [["⇧P", "⇧2", "⇧X"], "Referee Call: Point / Second server / Side out (again clears)"],
       [["⇧S"], "Rally details: score, Serving Team, Server, Returner, scoreboard, winner"],
       [["⇧C"], "Challenge: challenger, original call, ruling"],

@@ -6,6 +6,7 @@ import {
   changeSpeed,
   historyKeyAction,
   isPanelSwapKey,
+  isSplitKey,
   isTextEntry,
   keyAction,
   type KeyInput,
@@ -150,6 +151,19 @@ describe("isPanelSwapKey", () => {
   });
 });
 
+describe("isSplitKey", () => {
+  it("accepts Cmd+K or Ctrl+K regardless of case and rejects other combinations", () => {
+    expect(isSplitKey(press("k", { metaKey: true }))).toBe(true);
+    expect(isSplitKey(press("K", { metaKey: true }))).toBe(true);
+    expect(isSplitKey(press("k", { ctrlKey: true }))).toBe(true);
+    expect(isSplitKey(press("k"))).toBe(false);
+    expect(isSplitKey(press("k", { metaKey: true, ctrlKey: true }))).toBe(false);
+    expect(isSplitKey(press("k", { metaKey: true, shiftKey: true }))).toBe(false);
+    expect(isSplitKey(press("k", { metaKey: true, altKey: true }))).toBe(false);
+    expect(isSplitKey(press("z", { metaKey: true }))).toBe(false);
+  });
+});
+
 describe("segmentKeyAction", () => {
   it("splits a Play Segment with Command+K or Ctrl+K", () => {
     expect(segmentKeyAction(press("k", { metaKey: true }))).toEqual({ type: "split" });
@@ -259,6 +273,17 @@ describe("annotateKeyAction", () => {
     expect(annotateKeyAction(press("ArrowDown"))).toEqual({ type: "shot", direction: 1 });
     expect(annotateKeyAction(press("PageUp"))).toEqual({ type: "rally", direction: -1 });
     expect(annotateKeyAction(press("Tab"))).toEqual({ type: "cursor", direction: 1 });
+  });
+
+  it("maps Cmd+K and Ctrl+K to Split Rally, leaving plain and Shift/Alt K alone", () => {
+    expect(annotateKeyAction(press("k", { metaKey: true }))).toEqual({ type: "splitRally" });
+    expect(annotateKeyAction(press("K", { metaKey: true }))).toEqual({ type: "splitRally" });
+    expect(annotateKeyAction(press("k", { ctrlKey: true }))).toEqual({ type: "splitRally" });
+    expect(annotateKeyAction(press("k"))).toBeNull();
+    expect(annotateKeyAction(shift("KeyK", "K"))).toBeNull();
+    expect(annotateKeyAction(press("k", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(annotateKeyAction(press("k", { metaKey: true, ctrlKey: true }))).toBeNull();
+    expect(annotateKeyAction(press("k", { metaKey: true, altKey: true }))).toBeNull();
   });
 
   it("leaves playback keys and browser shortcuts alone", () => {

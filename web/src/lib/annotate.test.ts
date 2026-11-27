@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Game, Shot, ShotPosition } from "../api/client";
+import type { Game, Rally, Shot, ShotPosition } from "../api/client";
 import {
   type AnnotateContext,
   type AnnotateEdit,
@@ -27,6 +27,7 @@ import {
   setRallyDetails,
   setRallyEdge,
   setRefereeCall,
+  splitRally,
   startNextGame,
   swapHitterToPartner,
   swapShotTeammates,
@@ -35,7 +36,9 @@ import {
   toggleRally,
   toggleShot,
 } from "./annotate";
+import { commit, startHistory, undo } from "./history";
 import { inferred, newRally, newShot, numberShots, observed, UNKNOWN } from "./rallyLog";
+import { checkMatch } from "./ruleChecks";
 import { ROSTER } from "./testRoster";
 
 function ctx(games: Game[] = [], selection: Selection = NO_SELECTION, frame = 0): AnnotateContext {
@@ -336,6 +339,508 @@ describe("dragging Rally edges", () => {
   });
 });
 
+describe("Split Rally at playhead", () => {
+  it("cuts [start, end] into [start, T-1] and [T, end] (including T === end) and rejects invalid bounds", () => {
+    const base = run([
+      [100, markRallyStart],
+      [400, markRallyEnd],
+    ]);
+
+    // T <= start and T > end are no-ops with clear reasons.
+    for (const [frame, pattern] of [
+      [50, /past this Rally’s start \(frame 100\)/],
+      [100, /past this Rally’s start \(frame 100\)/],
+      [401, /to or before this Rally’s end \(frame 400\)/],
+    ] as const) {
+      const rejected = splitRally(ctx(base.games, base.selection, frame));
+      expect(rejected.games).toBe(base.games);
+      expect(rejected.selection).toEqual(base.selection);
+      expect(rejected.message).toMatch(pattern);
+    }
+
+    // No Rally selected or Unseen Rally or 1-frame Rally are no-ops.
+    expect(splitRally(ctx(base.games, NO_SELECTION, 250)).message).toBe("Select a Rally first");
+    const unseen: Game[] = [{ number: 1, rallies: [newRally(1)] }];
+    expect(splitRally(ctx(unseen, { game: 0, rally: 0, entry: null }, 250)).message).toBe(
+      "An Unseen Rally has no frames",
+    );
+    const singleFrame: Game[] = [{ number: 1, rallies: [{ ...newRally(1, 100), end_frame: 100 }] }];
+    expect(splitRally(ctx(singleFrame, { game: 0, rally: 0, entry: null }, 100)).message).toBe(
+      "This Rally is only one frame long",
+    );
+
+    // Mid-Rally split: [100, 249] and [250, 400], both In progress, selects the second Rally.
+    const mid = splitRally(ctx(base.games, base.selection, 250));
+    expect(
+      mid.games[0]!.rallies.map((r) => [r.number, r.start_frame, r.end_frame, r.status]),
+    ).toEqual([
+      [1, 100, 249, "in_progress"],
+      [2, 250, 400, "in_progress"],
+    ]);
+    expect(mid.selection).toEqual({ game: 0, rally: 1, entry: null });
+    expect(mid.message).toBe("Split Rally: G1 R1 (100–249) and G1 R2 (250–400)");
+
+    // Split at T === end: [100, 399] and 1-frame [400, 400].
+    const atEnd = splitRally(ctx(base.games, base.selection, 400));
+    expect(atEnd.games[0]!.rallies.map((r) => [r.start_frame, r.end_frame])).toEqual([
+      [100, 399],
+      [400, 400],
+    ]);
+  });
+
+  it("splits an open-ended Rally leaving the second open-ended and prevents overlapping a later Rally", () => {
+    const open = run([
+      [100, markRallyStart],
+      [120, (c) => addShot(c, null)],
+      [280, (c) => addShot(c, null)],
+    ]);
+    const split = splitRally(ctx(open.games, open.selection, 200));
+    expect(split.games[0]!.rallies.map((r) => [r.start_frame, r.end_frame, r.status])).toEqual([
+      [100, 199, "in_progress"],
+      [200, null, "in_progress"],
+    ]);
+    expect(split.games[0]!.rallies[0]!.entries).toHaveLength(1);
+    expect(split.games[0]!.rallies[1]!.entries).toHaveLength(1);
+    expect(split.message).toBe("Split Rally: G1 R1 (100–199) and G1 R2 (200–…)");
+
+    // With a later Rally at frame 500, splitting at >= 500 is refused while 499 succeeds.
+    const withNext: Game[] = [
+      {
+        number: 1,
+        rallies: [open.games[0]!.rallies[0]!, { ...newRally(2, 500), end_frame: 700 }],
+      },
+    ];
+    const overlap = splitRally(ctx(withNext, { game: 0, rally: 0, entry: null }, 500));
+    expect(overlap.games).toBe(withNext);
+    expect(overlap.message).toBe("Rallies can't overlap: G1 R2 starts at frame 500");
+
+    const tight: Game[] = [
+      {
+        number: 1,
+        rallies: [newRally(1, 100), { ...newRally(2, 101), end_frame: 200 }],
+      },
+    ];
+    expect(splitRally(ctx(tight, { game: 0, rally: 0, entry: null }, 100)).message).toBe(
+      "No room to Split Rally before G1 R2 (frame 101)",
+    );
+
+    const beforeNext = splitRally(ctx(withNext, { game: 0, rally: 0, entry: null }, 499));
+    expect(beforeNext.games[0]!.rallies.map((r) => [r.number, r.start_frame, r.end_frame])).toEqual(
+      [
+        [1, 100, 498],
+        [2, 499, null],
+        [3, 500, 700],
+      ],
+    );
+  });
+
+  it("assigns Shots by contact frame (>= T to second) and keeps Observation Gaps at the split with the first", () => {
+    const rally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      entries: [
+        newShot(120),
+        { type: "gap", missing: "odd" },
+        newShot(200),
+        { type: "gap", missing: "even" },
+        newShot(260),
+      ],
+    });
+    const games: Game[] = [{ number: 1, rallies: [rally] }];
+    const split = splitRally(ctx(games, { game: 0, rally: 0, entry: null }, 200));
+    const [first, second] = split.games[0]!.rallies;
+    // Shot 120 and the Gap sitting right at the split stay with the first Rally.
+    expect(
+      first!.entries.map((e) => (e.type === "shot" ? e.contact_frame.value : e.missing)),
+    ).toEqual([120, "odd"]);
+    // Shot at exactly T = 200 goes to the second Rally, along with the Gap after it and Shot 260.
+    expect(
+      second!.entries.map((e) => (e.type === "shot" ? e.contact_frame.value : e.missing)),
+    ).toEqual([200, "even", 260]);
+    // Shot 200 (previously after the odd gap -> Unknown number) becomes Shot 1; Shot 260 stays Unknown after the even gap.
+    const secondShots = second!.entries.filter((e) => e.type === "shot");
+    expect(secondShots.map((s) => s.shot_number)).toEqual([observed(1), UNKNOWN]);
+
+    // A leading Observation Gap stays with the first Rally when all Shots are >= T.
+    const leadGapRally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      entries: [{ type: "gap", missing: "odd" }, newShot(250), newShot(300)],
+    });
+    const leadSplit = splitRally(
+      ctx([{ number: 1, rallies: [leadGapRally] }], { game: 0, rally: 0, entry: null }, 200),
+    );
+    expect(leadSplit.games[0]!.rallies[0]!.entries).toEqual([{ type: "gap", missing: "odd" }]);
+    const leadSecondShots = leadSplit.games[0]!.rallies[1]!.entries as Shot[];
+    expect(leadSecondShots.map((s) => s.shot_number.value)).toEqual([1, 2]);
+  });
+
+  it("distributes start and end facts, marks both In progress, fills second via side-out, and cascades later Rallies", () => {
+    const challenge = {
+      challenger_id: observed("b1"),
+      original_call: observed("Out"),
+      ruling: observed("upheld" as const),
+    };
+    const combined = numberShots({
+      ...newRally(1, 100),
+      end_frame: 500,
+      status: "done",
+      score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      referee_call: observed("side_out"),
+      challenge,
+      scoreboard_winner_id: observed("B"),
+      winner_id: observed("B"),
+      winner_source: "challenge",
+      entries: [
+        { ...newShot(120), hitter_id: inferred("a1") },
+        {
+          ...newShot(160),
+          hitter_id: inferred("b1"),
+          contact_kind: inferred("bounce"),
+          // Rally 1 actually ended here with b1's Net Error -> Team A won a Point (0-0-2 -> 1-0-2).
+          error: { kind: observed("net"), player_id: observed("b1") },
+        },
+        { ...newShot(260), hitter_id: inferred("a1"), contact_kind: inferred("bounce") },
+        { ...newShot(310), hitter_id: inferred("b1") },
+        { ...newShot(360), hitter_id: inferred("a1") },
+      ],
+    });
+    const laterInferred: Rally = {
+      ...newRally(2, 600),
+      end_frame: 800,
+      status: "done",
+      score: inferred({ serving: 0, receiving: 0, server_number: 1 }),
+      serving_team_id: inferred("B"),
+      server_id: inferred("b1"),
+      returner_id: inferred("a1"),
+      referee_call: observed("point"),
+    };
+    const laterObserved: Rally = {
+      ...newRally(3, 900),
+      end_frame: 1100,
+      status: "done",
+      score: observed({ serving: 5, receiving: 5, server_number: 1 }),
+      serving_team_id: inferred("B"),
+      server_id: observed("b2"),
+      returner_id: inferred("a2"),
+    };
+    const games: Game[] = [{ number: 1, rallies: [combined, laterInferred, laterObserved] }];
+
+    const split = splitRally(ctx(games, { game: 0, rally: 0, entry: 0 }, 260));
+    const [r1, r2, r3, r4] = split.games[0]!.rallies;
+    expect(split.games[0]!.rallies.map((r) => r.number)).toEqual([1, 2, 3, 4]);
+
+    // First Rally keeps start facts, clears end facts, becomes In progress, resolves winner from Shot 2 Error.
+    expect(r1).toMatchObject({
+      number: 1,
+      start_frame: 100,
+      end_frame: 259,
+      status: "in_progress",
+      score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      referee_call: UNKNOWN,
+      challenge: null,
+      scoreboard_winner_id: UNKNOWN,
+      winner_id: inferred("A"),
+      winner_source: "play",
+    });
+
+    // Second Rally gets end facts, becomes In progress, and side-out pre-fills 1-0-2 A a1->b2 (Inferred).
+    expect(r2).toMatchObject({
+      number: 2,
+      start_frame: 260,
+      end_frame: 500,
+      status: "in_progress",
+      score: inferred({ serving: 1, receiving: 0, server_number: 2 }),
+      serving_team_id: inferred("A"),
+      server_id: inferred("a1"),
+      returner_id: inferred("b2"),
+      referee_call: observed("side_out"),
+      challenge,
+      scoreboard_winner_id: observed("B"),
+      winner_id: observed("B"),
+      winner_source: "challenge",
+    });
+
+    // Second Rally's Shots renumber 1..3 and recompute Inferred hitters (b2 Returner!) & Contact Kinds.
+    const r2Shots = r2!.entries as Shot[];
+    expect(r2Shots.map((s) => s.shot_number.value)).toEqual([1, 2, 3]);
+    expect(r2Shots.map((s) => s.hitter_id)).toEqual([
+      inferred("a1"),
+      inferred("b2"),
+      inferred("a1"),
+    ]);
+    expect(r2Shots.map((s) => s.contact_kind)).toEqual([
+      UNKNOWN,
+      inferred("bounce"),
+      inferred("bounce"),
+    ]);
+
+    // Later Rallies renumber and cascade from r2 (1-0-2 side out -> 0-1-1 B b1->a2), preserving Observed facts.
+    expect(r3).toMatchObject({
+      number: 3,
+      status: "done",
+      score: inferred({ serving: 0, receiving: 1, server_number: 1 }),
+      serving_team_id: inferred("B"),
+      server_id: inferred("b1"),
+      returner_id: inferred("a2"),
+    });
+    expect(r4).toMatchObject({
+      number: 4,
+      status: "done",
+      // Observed score and server survive; non-Observed facts recompute from r3's Point (B wins -> 1-1-1, Returner flips a2 -> a1).
+      score: observed({ serving: 5, receiving: 5, server_number: 1 }),
+      serving_team_id: inferred("B"),
+      server_id: observed("b2"),
+      returner_id: inferred("a1"),
+    });
+  });
+
+  it("moves a manual Observed play winner to the second Rally and keeps Observed Shot facts untouched for rule checks", () => {
+    const manualRally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      winner_id: observed("A"),
+      winner_source: "play",
+      entries: [
+        // Shot 1 ends the first Rally with b1's Body Hit -> Team A wins a Point, so second Rally pre-fills Serving Team A (Server a1).
+        {
+          ...newShot(120),
+          hitter_id: observed("a1"),
+          error: { kind: observed("body_hit"), player_id: observed("b1") },
+        },
+        // Old Shot 2 (Inferred Bounce) becomes new Shot 1 -> Contact Kind becomes Unknown, hitter flips to Server a1.
+        {
+          ...newShot(200),
+          hitter_id: inferred("b1"),
+          contact_kind: inferred("bounce"),
+          positions: snapshot,
+          contact_zone: observed("backcourt"),
+        },
+        // Old Shot 3 with Observed Volley and Observed wrong-Team hitter (a2) becomes new Shot 2 -> preserved so rule checks flag both!
+        {
+          ...newShot(250),
+          hitter_id: observed("a2"),
+          contact_kind: observed("volley"),
+          shot_class: observed("hard"),
+          erne: observed(true),
+          atp: observed(true),
+          landing: observed({ x: 3, y: 12 }),
+          positions: snapshot,
+          contact_zone: observed("midcourt"),
+          error: { kind: observed("out"), player_id: observed("a2") },
+        },
+        // Old Shot 4 with Inferred hitter and Inferred Error player aligns to new alternating hitter.
+        {
+          ...newShot(300),
+          hitter_id: inferred("a1"),
+          contact_kind: UNKNOWN,
+          positions: { ...snapshot, b1: at(4, 14) },
+          contact_zone: observed("backcourt"),
+          error: { kind: observed("net"), player_id: inferred("a1") },
+        },
+      ],
+    });
+    const games: Game[] = [{ number: 1, rallies: [manualRally] }];
+    const split = splitRally(ctx(games, { game: 0, rally: 0, entry: 0 }, 200));
+    const [r1, r2] = split.games[0]!.rallies;
+
+    expect(r1!.winner_id).toEqual(inferred("A"));
+    expect(r1!.winner_source).toBe("play");
+    // Manual Observed play winner moved to r2 and survived normalizeGame (outranks r2's last-Shot Error).
+    expect(r2!.winner_id).toEqual(observed("A"));
+    expect(r2!.winner_source).toBe("play");
+
+    const [s1, s2, s3] = r2!.entries as Shot[];
+    expect(s1!.shot_number).toEqual(observed(1));
+    expect(s1!.hitter_id).toEqual(inferred("a1"));
+    expect(s1!.contact_kind).toEqual(UNKNOWN);
+    expect(s1!.contact_zone).toEqual(observed("backcourt"));
+
+    // All Observed facts on new Shot 2 survive untouched.
+    expect(s2!.shot_number).toEqual(observed(2));
+    expect(s2!.hitter_id).toEqual(observed("a2"));
+    expect(s2!.contact_kind).toEqual(observed("volley"));
+    expect(s2!.shot_class).toEqual(observed("hard"));
+    expect(s2!.erne).toEqual(observed(true));
+    expect(s2!.atp).toEqual(observed(true));
+    expect(s2!.landing).toEqual(observed({ x: 3, y: 12 }));
+    expect(s2!.contact_zone).toEqual(observed("midcourt"));
+    expect(s2!.error).toEqual({ kind: observed("out"), player_id: observed("a2") });
+
+    // New Shot 3 alternates from Observed Shot 2 (Team A -> Team B = b1), gets Inferred Bounce,
+    // updates its position-derived Contact Zone (backcourt -> midcourt) and Inferred Error player.
+    expect(s3!.shot_number).toEqual(observed(3));
+    expect(s3!.hitter_id).toEqual(inferred("b1"));
+    expect(s3!.contact_kind).toEqual(inferred("bounce"));
+    expect(s3!.contact_zone).toEqual(observed("midcourt"));
+    expect(s3!.error).toEqual({ kind: observed("net"), player_id: inferred("b1") });
+
+    // Rule checks flag the Observed Volley on Shot 2 (two-bounce rule) and wrong-Team Shot 2!
+    const issues = checkMatch(split.games, ROSTER).filter((i) => i.rallyIndex === 1);
+    expect(issues.some((i) => i.code === "two_bounce_rule" && i.entryIndex === 1)).toBe(true);
+    expect(issues.some((i) => i.code === "team_alternation" && i.entryIndex === 1)).toBe(true);
+  });
+
+  it("clears first Rally's manual winner when no Error remains and infers opposite Server from Observed Shot 2 when Serving Team is Unknown", () => {
+    const rally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      winner_id: observed("B"),
+      winner_source: "play",
+      entries: [
+        { ...newShot(120), hitter_id: inferred("a1") },
+        { ...newShot(200), hitter_id: inferred("a1") },
+        { ...newShot(250), hitter_id: observed("a2") },
+      ],
+    });
+    const split = splitRally(
+      ctx([{ number: 1, rallies: [rally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const [r1, r2] = split.games[0]!.rallies;
+    expect(r1!.winner_id).toEqual(UNKNOWN);
+    expect(r1!.winner_source).toBeNull();
+    expect(r2!.winner_id).toEqual(observed("B"));
+    expect(r2!.winner_source).toBe("play");
+    expect(r2!.score).toEqual(UNKNOWN);
+    expect(r2!.returner_id).toEqual(inferred("a2"));
+    const [s1, s2] = r2!.entries as Shot[];
+    expect(s1!.hitter_id).toEqual(inferred("b1"));
+    expect(s2!.hitter_id).toEqual(observed("a2"));
+  });
+
+  it("recomputes Inferred Body Hit, Unknown next hitter, and unrelated Inferred Error Players on split", () => {
+    // 1) Inferred body_hit: hitter changes from a1 to b1, so opponent nearest landing (a2) is picked;
+    //    without a landing, falls back to the first opponent (a1).
+    const bodyHitRally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      score: observed({ serving: 0, receiving: 0, server_number: 2 }),
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      entries: [
+        // Team A loses (a1 error) -> side out to Team B serving (b1) at 0-0-1.
+        {
+          ...newShot(120),
+          hitter_id: observed("a1"),
+          error: { kind: observed("net"), player_id: observed("a1") },
+        },
+        // New Shot 1: hitter flips from inferred("a1") -> inferred("b1"); landing near a2 (5, -20).
+        {
+          ...newShot(200),
+          hitter_id: inferred("a1"),
+          landing: observed({ x: 5, y: -19 }),
+          positions: snapshot,
+          error: { kind: observed("body_hit"), player_id: inferred("b2") },
+        },
+        // New Shot 2: hitter flips from inferred("b1") -> inferred("a1"); landing Unknown -> first opponent b1.
+        {
+          ...newShot(250),
+          hitter_id: inferred("b1"),
+          error: { kind: observed("body_hit"), player_id: inferred("a2") },
+        },
+      ],
+    });
+    const bodySplit = splitRally(
+      ctx([{ number: 1, rallies: [bodyHitRally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const bodyShots = bodySplit.games[0]!.rallies[1]!.entries as Shot[];
+    expect(bodyShots[0]!.hitter_id).toEqual(inferred("b1"));
+    expect(bodyShots[0]!.error!.player_id).toEqual(inferred("a2"));
+    expect(bodyShots[1]!.hitter_id).toEqual(inferred("a1"));
+    expect(bodyShots[1]!.error!.player_id).toEqual(inferred("b1"));
+
+    // 2) nextHitter === null (Shot follows an Unknown-hitter Shot after a Gap): Inferred Error
+    //    matching previous hitter becomes Unknown.
+    // 3) Unrelated Inferred Error Player (e.g. partner a2 on Kitchen Fault when hitter was a1):
+    //    stays unchanged even when the hitter flips.
+    const edgeErrorRally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 500,
+      entries: [
+        { ...newShot(120), hitter_id: observed("a1") },
+        // New Shot 1 (observed a1)
+        { ...newShot(200), hitter_id: observed("a1") },
+        // New Shot 2: hitter flips from inferred("a1") -> inferred("b1"), unrelated partner a2 kept.
+        {
+          ...newShot(240),
+          hitter_id: inferred("a1"),
+          error: { kind: observed("kitchen_fault"), player_id: inferred("a2") },
+        },
+        // Shot with an Observed non-roster hitter: teamOf returns null, so the following Shot's
+        // defaultHitter returns null and its Inferred Error matching previous hitter becomes UNKNOWN.
+        { type: "gap", missing: "odd" },
+        { ...newShot(280), hitter_id: observed("non-roster-player") },
+        {
+          ...newShot(320),
+          hitter_id: inferred("b1"),
+          error: { kind: observed("out"), player_id: inferred("b1") },
+        },
+      ],
+    });
+    const edgeSplit = splitRally(
+      ctx([{ number: 1, rallies: [edgeErrorRally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const edgeEntries = edgeSplit.games[0]!.rallies[1]!.entries;
+    const kitchenShot = edgeEntries[1] as Shot;
+    expect(kitchenShot.hitter_id).toEqual(inferred("b1"));
+    expect(kitchenShot.error!.player_id).toEqual(inferred("a2"));
+    const nullNextShot = edgeEntries[4] as Shot;
+    expect(nullNextShot.hitter_id).toEqual(UNKNOWN);
+    expect(nullNextShot.error!.player_id).toEqual(UNKNOWN);
+  });
+
+  it("keeps Unknown-frame Shots with the side of their preceding known-frame Shot on split", () => {
+    const unknownBefore: Shot = { ...newShot(0), contact_frame: UNKNOWN };
+    const unknownAfter: Shot = { ...newShot(0), contact_frame: UNKNOWN };
+    const rally = numberShots({
+      ...newRally(1, 100),
+      end_frame: 400,
+      entries: [newShot(120), unknownBefore, newShot(250), unknownAfter],
+    });
+    const split = splitRally(
+      ctx([{ number: 1, rallies: [rally] }], { game: 0, rally: 0, entry: 0 }, 200),
+    );
+    const [first, second] = split.games[0]!.rallies;
+    expect((first!.entries as Shot[]).map((s) => s.contact_frame.value)).toEqual([120, null]);
+    expect((second!.entries as Shot[]).map((s) => s.contact_frame.value)).toEqual([250, null]);
+  });
+
+  it("restores the original Rally exactly in a single undo step without mutating prior state", () => {
+    const initial = run([
+      [100, markRallyStart],
+      [120, (c) => addShot(c, snapshot)],
+      [170, (c) => addShot(c, snapshot)],
+      [250, (c) => addShot(c, snapshot)],
+      [300, (c) => addShot(c, snapshot)],
+      [400, markRallyEnd],
+      [400, (c) => setRefereeCall(c, "point")],
+      [400, markRallyDone],
+    ]);
+    const beforeSnapshot = structuredClone(initial.games);
+    const history = startHistory(initial.games);
+    const split = splitRally(ctx(history.present, { game: 0, rally: 0, entry: 0 }, 250));
+    const afterSplit = commit(history, split.games);
+    expect(afterSplit.present[0]!.rallies).toHaveLength(2);
+    // Original state was not mutated.
+    expect(history.present).toEqual(beforeSnapshot);
+    // One undo step restores the original Rally exactly (including status "done", frames, Shots, facts).
+    const undone = undo(afterSplit);
+    expect(undone.present).toEqual(beforeSnapshot);
+    expect(undone.past).toHaveLength(0);
+  });
+});
+
 describe("Shot entry", () => {
   it("M snapshots positions, defaults hitters by alternating Teams and infers Bounce", () => {
     const edit = run([
@@ -360,6 +865,52 @@ describe("Shot entry", () => {
     expect(shots[0]!.positions.a1).toEqual(snapshot.a1);
     expect(shots[0]!.contact_zone).toEqual(observed("backcourt"));
     expect(edit.selection.entry).toBe(3);
+  });
+
+  it("M derives Serving Team from Server when Unknown and ignores a Server or Returner on the wrong Team", () => {
+    // Serving Team Unknown, Server a1 -> Shot 1 is a1 and Shot 2 is B's first Player (b1).
+    const unknownServing: Game[] = [
+      { number: 1, rallies: [{ ...newRally(1, 100), server_id: observed("a1") }] },
+    ];
+    let state = addShot(ctx(unknownServing, { game: 0, rally: 0, entry: null }, 120), null);
+    state = addShot(ctx(state.games, state.selection, 160), null);
+    expect((state.games[0]!.rallies[0]!.entries as Shot[]).map((s) => s.hitter_id)).toEqual([
+      inferred("a1"),
+      inferred("b1"),
+    ]);
+
+    // Serving Team B, Server a1 (wrong Team) -> Shot 1 defaults to B's first Player (b1).
+    const wrongServer: Game[] = [
+      {
+        number: 1,
+        rallies: [
+          { ...newRally(1, 100), serving_team_id: observed("B"), server_id: observed("a1") },
+        ],
+      },
+    ];
+    const s1 = addShot(ctx(wrongServer, { game: 0, rally: 0, entry: null }, 120), null);
+    expect(selectedShot(s1.games, s1.selection)!.hitter_id).toEqual(inferred("b1"));
+
+    // Serving Team A, Returner a2 (wrong Team) -> Shot 2 defaults to B's first Player (b1).
+    const wrongReturner: Game[] = [
+      {
+        number: 1,
+        rallies: [
+          {
+            ...newRally(1, 100),
+            serving_team_id: observed("A"),
+            server_id: observed("a1"),
+            returner_id: observed("a2"),
+          },
+        ],
+      },
+    ];
+    let r = addShot(ctx(wrongReturner, { game: 0, rally: 0, entry: null }, 120), null);
+    r = addShot(ctx(r.games, r.selection, 160), null);
+    expect((r.games[0]!.rallies[0]!.entries as Shot[]).map((s) => s.hitter_id)).toEqual([
+      inferred("a1"),
+      inferred("b1"),
+    ]);
   });
 
   it("leaves positions Unknown without Player Tracking, and refuses bad frames", () => {
