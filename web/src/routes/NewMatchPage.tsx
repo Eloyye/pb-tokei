@@ -13,8 +13,9 @@ import {
   subscribeTabRallyLog,
 } from "../api/client";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
+import { isValidMatchDate } from "./matchDate";
 import { NameField } from "./NameField";
-import { isValidMatchDate, teamsLabel } from "./teams";
+import { teamsLabel } from "./teams";
 
 type Tour = CreateMatchIn["tour"];
 type RosterTeam = CreateMatchIn["team_a"];

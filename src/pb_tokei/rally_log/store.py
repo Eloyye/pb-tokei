@@ -405,9 +405,7 @@ class RallyLog:
 
     def set_match_date(self, match_id: MatchId, match_date: datetime.date) -> None:
         """Sets or changes the day a Match was played."""
-        if match_date is None:
-            raise ValueError("Match date cannot be cleared")
-        check_match_date(match_date)
+        check_match_date(match_date, required=True)
         self._require_match(match_id)
         self._db.execute("UPDATE matches SET date = ? WHERE id = ?", [match_date, match_id])
 

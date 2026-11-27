@@ -613,6 +613,10 @@ def test_match_date_round_trips_and_set_match_date_preserves_rallies(log: RallyL
         log.set_match_date(match.id, invalid_none)
     with pytest.raises(ValueError, match="calendar date"):
         log.set_match_date(match.id, datetime(2026, 4, 15, tzinfo=UTC))
+    with pytest.raises(ValueError, match="1000 or later"):
+        log.set_match_date(match.id, date(999, 12, 31))
+    with pytest.raises(ValueError, match="1000 or later"):
+        replace(match, date=date(26, 4, 12))
 
 
 def test_list_matches_orders_newest_date_first_nulls_last_then_tournament(log: RallyLog) -> None:
@@ -646,10 +650,21 @@ def test_list_matches_orders_newest_date_first_nulls_last_then_tournament(log: R
 
 @pytest.mark.parametrize(
     "bad",
-    ["", "2026-02-30", "2025-02-29", "2026-13-01", "20260412", "2026-4-5", "2026-04-12T00:00:00"],
+    [
+        "",
+        "2026-02-30",
+        "2025-02-29",
+        "2026-13-01",
+        "0999-12-31",
+        "0002-04-12",
+        "20260412",
+        "2026-4-5",
+        "2026-04-12T00:00:00",
+    ],
 )
 def test_parse_match_date_rejects_malformed_dates(bad: str) -> None:
     assert parse_match_date("2024-02-29") == date(2024, 2, 29)
+    assert parse_match_date("1000-01-01") == date(1000, 1, 1)
     with pytest.raises(ValueError):
         parse_match_date(bad)
 

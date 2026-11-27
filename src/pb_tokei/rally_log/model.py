@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, NewType
+from typing import Any, Literal, NewType, TypeGuard
 from uuid import UUID, uuid4
 
 PlayerId = NewType("PlayerId", UUID)
@@ -571,23 +571,36 @@ class SourceVideo:
 
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MIN_MATCH_YEAR = 1000
+"""Minimum valid Match year, matching the UI's inline date input (which ignores partial years)."""
 
 
-def check_match_date(value: datetime.date | None) -> None:
-    if value is not None and (
-        not isinstance(value, datetime.date) or isinstance(value, datetime.datetime)
-    ):
+def is_calendar_date(value: object) -> TypeGuard[datetime.date]:
+    """Whether `value` is a `datetime.date` and not a `datetime.datetime`."""
+    return isinstance(value, datetime.date) and not isinstance(value, datetime.datetime)
+
+
+def check_match_date(value: datetime.date | None, *, required: bool = False) -> None:
+    if value is None:
+        if required:
+            raise ValueError("Match date cannot be cleared")
+        return
+    if not is_calendar_date(value):
         raise ValueError("Match date must be a calendar date")
+    if value.year < MIN_MATCH_YEAR:
+        raise ValueError(f"Match date year must be {MIN_MATCH_YEAR} or later, not {value.year}")
 
 
 def parse_match_date(value: str) -> datetime.date:
-    """Parses a calendar date in strict YYYY-MM-DD format."""
+    """Parses a calendar date in strict YYYY-MM-DD format (4-digit year >= 1000)."""
     if not isinstance(value, str) or not _ISO_DATE_RE.fullmatch(value):
         raise ValueError(f"Match date must be YYYY-MM-DD, not {value!r}")
     try:
-        return datetime.date.fromisoformat(value)
+        parsed = datetime.date.fromisoformat(value)
     except ValueError:
         raise ValueError(f"Invalid Match date: {value!r}") from None
+    check_match_date(parsed, required=True)
+    return parsed
 
 
 def check_video_frames(frames: int | None) -> None:

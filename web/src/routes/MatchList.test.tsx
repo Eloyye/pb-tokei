@@ -193,7 +193,7 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
 });
 
 describe("MatchList editable date", () => {
-  it("shows — for an empty date, saves immediately on change, and reorders newest first", async () => {
+  it("shows — for an empty date, saves immediately on change, and refreshes server order", async () => {
     const dated = makeMatch("m1", {
       date: "2026-04-10",
       tournament: "Older Open",
@@ -204,8 +204,11 @@ describe("MatchList editable date", () => {
       tournament: "Undated Open",
       team_a: ["Anna Bright", "Ben Johns"],
     });
-    vi.mocked(listMatches).mockResolvedValue([dated, undated]);
-    vi.mocked(updateMatch).mockResolvedValue({ ...undated, date: "2026-05-01" });
+    const updatedUndated = { ...undated, date: "2026-05-01" };
+    vi.mocked(listMatches)
+      .mockResolvedValueOnce([dated, undated])
+      .mockResolvedValueOnce([updatedUndated, dated]);
+    vi.mocked(updateMatch).mockResolvedValue(updatedUndated);
 
     renderList();
 
@@ -229,12 +232,10 @@ describe("MatchList editable date", () => {
     );
     fireEvent.blur(input);
 
-    const updatedButton = await screen.findByRole("button", {
-      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    await waitFor(() => {
+      const buttons = screen.getAllByRole("button");
+      expect(buttons.map((b) => b.textContent)).toEqual(["2026-05-01", "2026-04-10"]);
     });
-    expect(updatedButton.textContent).toBe("2026-05-01");
-    const buttons = screen.getAllByRole("button");
-    expect(buttons.map((b) => b.textContent)).toEqual(["2026-05-01", "2026-04-10"]);
   });
 
   it("refuses clearing a date and ignores partial years while editing", async () => {
@@ -263,10 +264,11 @@ describe("MatchList editable date", () => {
 
   it("shows a save error, reverts the displayed date, and clears the error on retry", async () => {
     const match = makeMatch("m1", { date: null });
-    vi.mocked(listMatches).mockResolvedValue([match]);
+    const updated = { ...match, date: "2026-04-18" };
+    vi.mocked(listMatches).mockResolvedValueOnce([match]).mockResolvedValueOnce([updated]);
     vi.mocked(updateMatch)
       .mockRejectedValueOnce(new ApiError(503, "Rally Log unavailable"))
-      .mockResolvedValueOnce({ ...match, date: "2026-04-18" });
+      .mockResolvedValueOnce(updated);
 
     renderList();
 

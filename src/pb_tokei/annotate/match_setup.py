@@ -14,6 +14,8 @@ from pb_tokei.rally_log import (
     RallyLog,
     Tour,
     Tournament,
+    check_match_date,
+    is_calendar_date,
     new_id,
     parse_match_date,
 )
@@ -21,7 +23,8 @@ from pb_tokei.roster import Roster, RosterFranchiseMatch, RosterPlayer
 
 
 def _validate_match_date(value: object) -> datetime.date:
-    if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+    if is_calendar_date(value):
+        check_match_date(value, required=True)
         return value
     if isinstance(value, str):
         return parse_match_date(value)

@@ -289,6 +289,7 @@ it.each([
   { error: "Enter a Tournament name.", adjust: () => changeTournament(" ") },
   { error: "Choose a Tour.", adjust: () => changeTournament("New Tournament") },
   { error: "Enter a Match date.", adjust: () => changeDate("") },
+  { error: "Enter a valid Match date (YYYY-MM-DD).", adjust: () => changeDate("0002-04-12") },
   { error: "Enter all four Player names.", adjust: () => change(teamFields("A").player2, " ") },
   {
     error: "A Player can't appear twice in a Match.",

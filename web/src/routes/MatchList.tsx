@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import {
@@ -17,13 +17,13 @@ import {
   ratioClassName,
 } from "../lib/operatorTime";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
-import { compareMatches, franchisesLabel, isValidMatchDate, teamsLabel, videoPill } from "./teams";
+import { isValidMatchDate } from "./matchDate";
+import { franchisesLabel, teamsLabel, videoPill } from "./teams";
 
 const POLL_MS = 1000;
 
 export function MatchList() {
   const openPicker = useOpenRallyLogPicker();
-  const queryClient = useQueryClient();
   const [dateError, setDateError] = useState<{ matchId: string; message: string } | null>(null);
   const matches = useQuery({
     queryKey: ["matches"],
@@ -57,17 +57,6 @@ export function MatchList() {
           </>
         )}
       </p>
-    );
-  }
-
-  function handleDateSaved(updated: Match) {
-    setDateError((current) => (current?.matchId === updated.id ? null : current));
-    queryClient.setQueryData<Match[]>(["matches"], (current) =>
-      current?.map((item) => (item.id === updated.id ? updated : item)).toSorted(compareMatches),
-    );
-    queryClient.setQueryData<MatchDetail>(
-      ["matches", updated.id],
-      (current) => current && { ...current, ...updated },
     );
   }
 
@@ -119,12 +108,7 @@ export function MatchList() {
             const rowError = activeDateError?.matchId === match.id ? activeDateError.message : null;
             return (
               <div key={match.id} className="tr">
-                <MatchDateCell
-                  match={match}
-                  error={rowError}
-                  onSaved={handleDateSaved}
-                  onError={handleDateError}
-                />
+                <MatchDateCell match={match} error={rowError} onError={handleDateError} />
                 <Link
                   to="/matches/$matchId/$workspace"
                   params={{ matchId: match.id, workspace: "annotate" }}
@@ -184,124 +168,77 @@ export function MatchList() {
   );
 }
 
-type QueuedDateEdit = { date: string; rallyLog: string | null };
-
-function takeQueued(ref: { current: QueuedDateEdit | null }): QueuedDateEdit | null {
-  const next = ref.current;
-  ref.current = null;
-  return next;
+/** Saves a Match's date serially per Match, updates the row in place, then refreshes server order. */
+function useMatchDateSave(
+  matchId: string,
+  onError: (matchId: string, message: string | null) => void,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    scope: { id: `match-date-${matchId}` },
+    mutationFn: ({ date, rallyLog }: { date: string; rallyLog: string | null }) =>
+      updateMatch(matchId, { date }, { rallyLog }),
+    onMutate: () => {
+      onError(matchId, null);
+    },
+    onSuccess: (updated, { rallyLog }) => {
+      if (getTabRallyLog() !== rallyLog) return;
+      onError(matchId, null);
+      queryClient.setQueryData<Match[]>(["matches"], (current) =>
+        current?.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      queryClient.setQueryData<MatchDetail>(
+        ["matches", updated.id],
+        (current) => current && { ...current, ...updated },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["matches"], exact: true });
+    },
+    onError: (error, { rallyLog }) => {
+      if (getTabRallyLog() !== rallyLog) return;
+      onError(matchId, error instanceof Error ? error.message : "Could not save Match date.");
+    },
+  });
 }
 
 /** Inline date display ("—" when empty) that opens a date input and saves immediately on change. */
 function MatchDateCell({
   match,
   error,
-  onSaved,
   onError,
 }: {
   match: Match;
   error: string | null;
-  onSaved: (updated: Match) => void;
   onError: (matchId: string, message: string | null) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(match.date ?? "");
-  const [saving, setSaving] = useState(false);
-  const [pendingDate, setPendingDate] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const inFlightRef = useRef(false);
-  const pendingDateRef = useRef<string | null>(null);
-  const queuedRef = useRef<QueuedDateEdit | null>(null);
-  const latestSavedRef = useRef(match.date);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    latestSavedRef.current = match.date;
-  }, [match.date]);
+  const save = useMatchDateSave(match.id, onError);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
-  useEffect(() => {
-    if (!editing && !inFlightRef.current) {
-      setDraft(match.date ?? "");
-    }
-  }, [editing, match.date]);
-
-  async function saveDate(nextDate: string, rallyLog: string | null) {
-    pendingDateRef.current = nextDate;
-    setPendingDate(nextDate);
-    if (inFlightRef.current) {
-      queuedRef.current = { date: nextDate, rallyLog };
-      return;
-    }
-    inFlightRef.current = true;
-    setSaving(true);
-    onError(match.id, null);
-    let target: QueuedDateEdit | null = { date: nextDate, rallyLog };
-    let activeRallyLog = rallyLog;
-    try {
-      while (target !== null) {
-        const current = target;
-        activeRallyLog = current.rallyLog;
-        const updated = await updateMatch(
-          match.id,
-          { date: current.date },
-          { rallyLog: current.rallyLog },
-        );
-        if (mountedRef.current && getTabRallyLog() === current.rallyLog) {
-          latestSavedRef.current = updated.date;
-          onSaved(updated);
-        }
-        target = takeQueued(queuedRef);
-        if (target !== null && mountedRef.current) {
-          pendingDateRef.current = target.date;
-          setPendingDate(target.date);
-        }
-      }
-    } catch (err) {
-      queuedRef.current = null;
-      if (mountedRef.current && getTabRallyLog() === activeRallyLog) {
-        setDraft(latestSavedRef.current ?? "");
-        onError(match.id, err instanceof Error ? err.message : "Could not save Match date.");
-      }
-    } finally {
-      inFlightRef.current = false;
-      pendingDateRef.current = null;
-      if (mountedRef.current) {
-        setSaving(false);
-        setPendingDate(null);
-      }
-    }
-  }
+  const pendingDate = save.isPending ? save.variables.date : null;
+  const displayed = pendingDate ?? match.date;
+  const inputValue = draft ?? displayed ?? "";
 
   function startEditing() {
-    setDraft(pendingDateRef.current ?? latestSavedRef.current ?? "");
+    setDraft(null);
     setEditing(true);
+  }
+
+  function finishEditing() {
+    setEditing(false);
+    setDraft(null);
   }
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
     const value = event.target.value;
     setDraft(value);
     // Clearing a Match's date is not allowed; wait for a full YYYY-MM-DD date or revert on blur.
-    if (!value || !isValidMatchDate(value)) return;
-    if (value === (pendingDateRef.current ?? latestSavedRef.current)) return;
-    void saveDate(value, getTabRallyLog());
-  }
-
-  function finishEditing() {
-    setEditing(false);
-    if (!inFlightRef.current) {
-      setDraft(latestSavedRef.current ?? "");
-    }
+    if (!value || !isValidMatchDate(value) || value === displayed) return;
+    save.mutate({ date: value, rallyLog: getTabRallyLog() }, { onError: () => setDraft(null) });
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -321,8 +258,8 @@ function MatchDateCell({
           className={`match-date-input mono${error ? " error" : ""}`}
           aria-label={`Date for ${label}`}
           aria-invalid={error ? true : undefined}
-          aria-busy={saving || undefined}
-          value={draft}
+          aria-busy={save.isPending || undefined}
+          value={inputValue}
           required
           onChange={handleChange}
           onBlur={finishEditing}
@@ -332,7 +269,6 @@ function MatchDateCell({
     );
   }
 
-  const displayed = pendingDate ?? match.date;
   return (
     <span className="match-date-cell">
       <button
@@ -340,7 +276,7 @@ function MatchDateCell({
         className={`match-date-button mono${displayed === null ? " dimmed" : ""}${error ? " error" : ""}`}
         aria-label={`Date for ${label}`}
         title={error ?? (displayed === null ? "Set Match date" : "Edit Match date")}
-        aria-busy={saving || undefined}
+        aria-busy={save.isPending || undefined}
         onClick={startEditing}
       >
         {displayed ?? "—"}

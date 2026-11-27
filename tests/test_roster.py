@@ -658,9 +658,17 @@ def test_failed_write_rolls_back_the_whole_setup(
         (roster_toml(match_date=None), "missing date"),
         (roster_toml(match_date=""), "date must be YYYY-MM-DD"),
         (roster_toml(match_date="2026-02-30"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="0999-12-31"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="0026-04-12"), "date must be YYYY-MM-DD"),
         (roster_toml(match_date="20260412"), "date must be YYYY-MM-DD"),
         (roster_toml(match_date="2026/04/12"), "date must be YYYY-MM-DD"),
         (roster_toml(match_date="not-a-date"), "date must be YYYY-MM-DD"),
+        (
+            roster_toml(match_date=None).replace(
+                "\n[tournament]", "\ndate = 0026-04-12\n\n[tournament]", 1
+            ),
+            "1000 or later",
+        ),
         (
             roster_toml(match_date=None).replace(
                 "\n[tournament]", "\ndate = 2026-04-12T10:00:00\n\n[tournament]", 1

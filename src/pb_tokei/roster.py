@@ -38,6 +38,8 @@ from pb_tokei.rally_log import (
     Tour,
     Tournament,
     TournamentId,
+    check_match_date,
+    is_calendar_date,
     new_id,
     parse_match_date,
 )
@@ -85,8 +87,10 @@ class Roster:
     video: SourceVideo | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.date, datetime.date) or isinstance(self.date, datetime.datetime):
-            raise RosterError("Match date must be a calendar date")
+        try:
+            check_match_date(self.date, required=True)
+        except ValueError as exc:
+            raise RosterError(str(exc)) from None
         team_a, team_b = _trim_team(self.team_a), _trim_team(self.team_b)
         names = [p.name for p in (*team_a, *team_b)]
         if not all(names):
@@ -256,7 +260,11 @@ def _uuid(table: dict[str, Any], key: str, where: str) -> UUID:
 
 def _date(table: dict[str, Any], key: str, where: str) -> datetime.date:
     value = table.get(key)
-    if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+    if is_calendar_date(value):
+        try:
+            check_match_date(value, required=True)
+        except ValueError as exc:
+            raise RosterError(f"{where} {key}: {exc}") from None
         return value
     if not isinstance(value, str) or not value.strip():
         raise RosterError(f"{where} {key} must be YYYY-MM-DD")

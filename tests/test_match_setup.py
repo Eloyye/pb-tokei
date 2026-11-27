@@ -212,7 +212,8 @@ def test_footage_enqueue_failure_keeps_the_match_and_shows_the_error(
 
 
 @pytest.mark.parametrize(
-    "bad_date", [None, "", "2026-02-30", "20260412", "2026-04-12T00:00:00Z", 0]
+    "bad_date",
+    [None, "", "2026-02-30", "0026-04-12", "20260412", "2026-04-12T00:00:00Z", 0],
 )
 def test_match_creation_rejects_missing_or_malformed_date(
     client: TestClient, db: Path, bad_date: object
@@ -258,6 +259,7 @@ def test_patch_match_date_updates_summary_and_persists(client: TestClient, db: P
         {"date": None},
         {"date": ""},
         {"date": "2026-02-30"},
+        {"date": "0026-04-12"},
         {"date": "20260412"},
         {"date": "2026-04-12T10:00:00Z"},
         {"date": 1700000000},
