@@ -569,10 +569,8 @@ def _team_at_fault(roster: MatchRoster, error: Error) -> TeamId | None:
     return None if erring is None else roster.team_id_for(erring)
 
 
-def _rally_outcome_for(
-    rally: Rally, roster: MatchRoster, team_id: TeamId | None
-) -> ExchangeOutcome | None:
-    """Won or Lost for `team_id`, from the Rally's winner or else its last Shot's Error."""
+def resolve_rally_winner(rally: Rally, roster: MatchRoster) -> TeamId | None:
+    """The Rally's winner, falling back to its last Shot's Error when the call stands."""
     winner = rally.winner_id.value
     if winner is None and not _overturned(rally):
         last = rally.entries[-1] if rally.entries else None
@@ -580,6 +578,14 @@ def _rally_outcome_for(
             at_fault = _team_at_fault(roster, last.error)
             if at_fault is not None:
                 winner = roster.other_team_id(at_fault)
+    return winner
+
+
+def _rally_outcome_for(
+    rally: Rally, roster: MatchRoster, team_id: TeamId | None
+) -> ExchangeOutcome | None:
+    """Won or Lost for `team_id`, from the Rally's winner or else its last Shot's Error."""
+    winner = resolve_rally_winner(rally, roster)
     if winner is None or team_id is None:
         return None
     return ExchangeOutcome.WON if winner == team_id else ExchangeOutcome.LOST
