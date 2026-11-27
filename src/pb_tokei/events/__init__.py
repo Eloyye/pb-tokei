@@ -23,6 +23,7 @@ from .derived import (
     derive_rally,
     resolve_attack_exchange,
 )
+from .outcomes import OutcomeReason, ShotJudgment, ShotOutcome, judge_rally, judge_shot
 
 __all__ = [
     "ESTABLISHED_KEEP_MAX_Y_FT",
@@ -37,7 +38,10 @@ __all__ = [
     "DerivedRally",
     "DerivedShot",
     "ExchangeOutcome",
+    "OutcomeReason",
     "RallyPhase",
+    "ShotJudgment",
+    "ShotOutcome",
     "ShotType",
     "SpeedupExchange",
     "TeamArrival",
@@ -45,5 +49,7 @@ __all__ = [
     "derive_game",
     "derive_match",
     "derive_rally",
+    "judge_rally",
+    "judge_shot",
     "resolve_attack_exchange",
 ]
