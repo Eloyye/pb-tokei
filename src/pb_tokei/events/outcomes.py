@@ -64,8 +64,11 @@ class OutcomeReason(StrEnum):
     POPUP = "popup"
     # Check 4: the mirror of the reply's attack exchange
     ATTACK_WON = "attack_won"
+    """Disadvantage: the opponents' attacking reply won its exchange."""
     ATTACK_NEUTRALISED = "attack_neutralised"
+    """Neutral: the opponents' attacking reply was neutralised."""
     ATTACK_LOST = "attack_lost"
+    """Advantage: the opponents' attacking reply lost its exchange."""
     LOB_PUSHED_BACK = "lob_pushed_back"
     """A Lob whose attacking reply came from the Midcourt or Backcourt and was neutralised."""
     # Check 5: Serve and Return depth
@@ -98,8 +101,10 @@ class OutcomeReason(StrEnum):
     """An Overhead answered by a Defensive Lob or Reset from the opponents' Backcourt."""
     # Check 5: Speedup and Counter
     EXCHANGE_WON = "exchange_won"
+    """Advantage: the Speedup's or Counter's own exchange was won by its Team."""
     EXCHANGE_NEUTRAL = "exchange_neutral"
     EXCHANGE_LOST = "exchange_lost"
+    """Disadvantage: the Speedup's or Counter's own exchange was lost by its Team."""
 
 
 @dataclass(frozen=True)
@@ -117,15 +122,37 @@ class ShotJudgment:
 
 def judge_rally(derived: DerivedRally, roster: MatchRoster) -> tuple[ShotJudgment, ...]:
     """The Shot Outcome of every Shot in a Derived Rally, in `DerivedRally.shots` order."""
-    return tuple(judge_shot(derived, roster, s.shot_index) for s in derived.shots)
+    by_entry = _by_entry(derived)
+    return tuple(_judge(derived, roster, s, by_entry) for s in derived.shots)
 
 
 def judge_shot(derived: DerivedRally, roster: MatchRoster, shot_index: int) -> ShotJudgment:
     """The Shot Outcome of the Shot at `shot_index` of `DerivedRally.shots`."""
-    shot = derived.shots[shot_index]
-    by_entry = {s.entry_index: s for s in derived.shots}
+    return _judge(derived, roster, derived.shots[shot_index], _by_entry(derived))
+
+
+def _by_entry(derived: DerivedRally) -> dict[int, DerivedShot]:
+    return {s.entry_index: s for s in derived.shots}
+
+
+def _judge(
+    derived: DerivedRally,
+    roster: MatchRoster,
+    shot: DerivedShot,
+    by_entry: dict[int, DerivedShot],
+) -> ShotJudgment:
+    team = shot.hitter_team_id
     reply = by_entry.get(shot.entry_index + 1)
+    if reply is not None and team is not None and reply.hitter_team_id == team:
+        reply = None  # a messy Rally: the next Shot is not the opponents' reply
     follow_up = None if reply is None else by_entry.get(shot.entry_index + 2)
+    if (
+        follow_up is not None
+        and team is not None
+        and follow_up.hitter_team_id is not None
+        and follow_up.hitter_team_id != team
+    ):
+        follow_up = None  # a messy Rally: the Shot after the reply is not the Team's
     ctx = _Context(derived, roster, shot, reply, follow_up)
     for check in (_rally_ending, _popup, _mirrored_exchange, _row_rule):
         verdict = check(ctx)
@@ -191,7 +218,7 @@ def _rally_ending(ctx: _Context) -> _Verdict | None:
         # Log that does not say how it ended.
         return (_DISADVANTAGE, OutcomeReason.ERROR) if _lost_on(ctx, shot) else _UNDECIDED
     if reply is None:
-        return _UNDECIDED  # an Observation Gap comes next
+        return _UNDECIDED  # an Observation Gap, or a Shot by the same Team, comes next
     if reply.is_winner is None:
         return _UNDECIDED
     if reply.is_winner:
@@ -200,10 +227,14 @@ def _rally_ending(ctx: _Context) -> _Verdict | None:
         return None
     if not _lost_on(ctx, reply):
         return _UNDECIDED
-    if shot.is_popup is True and reply.shot.shot_class.value is ShotClass.OVERHEAD:
-        # A failed Overhead counts against the Overhead, not for the Soft Shot it answered: the
-        # Popup check judges this Shot instead.
-        return None
+    if shot.shot_type is not ShotType.SERVE:
+        reply_class = reply.shot.shot_class.value
+        if shot.is_popup is True and reply_class is ShotClass.OVERHEAD:
+            # A failed Overhead counts against the Overhead, not for the Soft Shot it answered:
+            # the Popup check judges this Shot instead.
+            return None
+        if shot.is_popup is None and reply_class in (ShotClass.OVERHEAD, None):
+            return _UNDECIDED  # it might be a Popup answered by a failed Overhead
     return _ADVANTAGE, OutcomeReason.REPLY_ERROR
 
 
@@ -212,6 +243,14 @@ def _popup(ctx: _Context) -> _Verdict | None:
     if shot.shot_type is ShotType.SERVE:
         return None
     if shot.is_popup is None:
+        # A Shot of Unknown Shot Class is still no Popup if its reply can't make it one.
+        reply = ctx.reply
+        if (
+            reply is not None
+            and reply.shot.shot_class.value not in (ShotClass.OVERHEAD, None)
+            and reply.is_put_away is False
+        ):
+            return None
         return _UNDECIDED
     return (_DISADVANTAGE, OutcomeReason.POPUP) if shot.is_popup else None
 
@@ -316,20 +355,34 @@ def _follow_up_popup(ctx: _Context) -> bool | None:
     return None if ctx.follow_up is None else ctx.follow_up.is_popup
 
 
-def _team_status_at(shot: DerivedShot | None, team: DerivedShot) -> TeamStatus | None:
-    """The Team Status of `team`'s hitter's Team at `shot`'s contact."""
-    if shot is None or team.hitter_team_id is None:
+def _established_at(ctx: _Context, shot: DerivedShot | None) -> bool | None:
+    """Whether the judged Shot's Team is Established at `shot`'s contact."""
+    team = ctx.shot.hitter_team_id
+    if shot is None or team is None:
         return None
-    return shot.team_status.get(team.hitter_team_id)
+    return shot.team_established.get(team)
+
+
+def _status_rank_bounds(ctx: _Context, shot: DerivedShot | None) -> tuple[int, int]:
+    """The lowest and highest Team Status rank the judged Shot's Team can have at `shot`."""
+    team = ctx.shot.hitter_team_id
+    status = None if shot is None or team is None else shot.team_status.get(team)
+    if status is not None:
+        return _STATUS_RANK[status], _STATUS_RANK[status]
+    if _established_at(ctx, shot) is False:
+        return _STATUS_RANK[TeamStatus.BACK], _STATUS_RANK[TeamStatus.SPLIT]
+    return _STATUS_RANK[TeamStatus.BACK], _STATUS_RANK[TeamStatus.ESTABLISHED]
 
 
 def _moved_up(ctx: _Context) -> bool | None:
     """Whether the Team's Team Status is better at its follow-up than at the Shot."""
-    before = _team_status_at(ctx.shot, ctx.shot)
-    after = _team_status_at(ctx.follow_up, ctx.shot)
-    if before is None or after is None:
-        return None
-    return _STATUS_RANK[after] > _STATUS_RANK[before]
+    before_lo, before_hi = _status_rank_bounds(ctx, ctx.shot)
+    after_lo, after_hi = _status_rank_bounds(ctx, ctx.follow_up)
+    if after_lo > before_hi:
+        return True
+    if after_hi <= before_lo:
+        return False
+    return None
 
 
 def _opponents_established_at_reply(ctx: _Context) -> bool | None:
@@ -345,14 +398,14 @@ def _drop(ctx: _Context) -> _Verdict:
         return _UNDECIDED
     if popup:
         return _DISADVANTAGE, OutcomeReason.FOLLOW_UP_POPUP
-    after = _team_status_at(ctx.follow_up, ctx.shot)
-    if after is TeamStatus.ESTABLISHED:
+    established = _established_at(ctx, ctx.follow_up)
+    if established:
         return _ADVANTAGE, OutcomeReason.ESTABLISHED_AT_FOLLOW_UP
     moved_up = _moved_up(ctx)
-    if moved_up is None:
-        return _UNDECIDED
     if moved_up:
         return _ADVANTAGE, OutcomeReason.TEAM_MOVED_UP
+    if moved_up is None or established is None:
+        return _UNDECIDED
     return _NEUTRAL, OutcomeReason.NO_GAIN
 
 
@@ -363,10 +416,14 @@ def _reset_or_block(ctx: _Context) -> _Verdict:
     if popup:
         return _DISADVANTAGE, OutcomeReason.FOLLOW_UP_POPUP
     assert ctx.reply is not None
-    # The Popup and mirror checks have judged every other reply: the reply is Soft or a Lob.
-    if ctx.reply.shot.shot_class.value is ShotClass.SOFT:
+    reply_class = ctx.reply.shot.shot_class.value
+    if reply_class is ShotClass.SOFT:
         return _ADVANTAGE, OutcomeReason.SOFT_REPLY
-    return _NEUTRAL, OutcomeReason.LOB_REPLY
+    if reply_class is ShotClass.LOB:
+        return _NEUTRAL, OutcomeReason.LOB_REPLY
+    # The Popup and mirror checks judge every other reply, except on a messy Rally (a reply
+    # whose recorded Shot Number makes it a Serve or Return, so never an Attack).
+    return _UNDECIDED
 
 
 def _dink(ctx: _Context) -> _Verdict:
@@ -416,27 +473,27 @@ def _is_counter(shot: DerivedShot) -> bool | None:
 
 def _partner_put_away(ctx: _Context) -> bool | None:
     follow_up = ctx.follow_up
-    if follow_up is None or follow_up.hitter_id is None or follow_up.is_put_away is None:
+    if follow_up is None:
         return None
-    partner = (
-        follow_up.hitter_team_id == ctx.shot.hitter_team_id
-        and follow_up.hitter_id != ctx.shot.hitter_id
-    )
-    return partner and follow_up.is_put_away
+    if follow_up.is_put_away is False:
+        return False
+    hitter = ctx.shot.hitter_id
+    if hitter is None or follow_up.hitter_id is None:
+        return None
+    partner = follow_up.hitter_team_id == ctx.shot.hitter_team_id and follow_up.hitter_id != hitter
+    return follow_up.is_put_away if partner else False
 
 
 def _drive(ctx: _Context) -> _Verdict:
     reply = ctx.reply
     assert reply is not None
     counter = _is_counter(reply)
-    if counter is None:
-        return _UNDECIDED
-    if counter:
-        won = ctx.exchange_from(reply)
-        if won is None:
+    if counter is not False:
+        exchange = ctx.exchange_from(reply)
+        if exchange is ExchangeOutcome.WON:
+            return (_DISADVANTAGE, OutcomeReason.COUNTER_WON) if counter else _UNDECIDED
+        if exchange is None:
             return _UNDECIDED
-        if won is ExchangeOutcome.WON:
-            return _DISADVANTAGE, OutcomeReason.COUNTER_WON
     put_away = _partner_put_away(ctx)
     if put_away:
         return _ADVANTAGE, OutcomeReason.PARTNER_PUT_AWAY
@@ -450,6 +507,8 @@ def _drive(ctx: _Context) -> _Verdict:
 def _overhead(ctx: _Context) -> _Verdict:
     reply = ctx.reply
     assert reply is not None
+    if reply.shot.shot_class.value in (ShotClass.HARD, ShotClass.OVERHEAD):
+        return _NEUTRAL, OutcomeReason.REPLY_KEEPS_RALLY_GOING  # never a Defensive Lob or Reset
     zone = reply.contact_zone
     if zone is None:
         return _UNDECIDED
