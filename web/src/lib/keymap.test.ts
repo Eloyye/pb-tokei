@@ -6,6 +6,7 @@ import {
   changeSpeed,
   historyKeyAction,
   isPanelSwapKey,
+  isSplitKey,
   isTextEntry,
   keyAction,
   type KeyInput,
@@ -147,6 +148,19 @@ describe("isPanelSwapKey", () => {
     for (const modifier of ["shiftKey", "altKey", "ctrlKey", "metaKey"] as const) {
       expect(isPanelSwapKey(press("`", { [modifier]: true }))).toBe(false);
     }
+  });
+});
+
+describe("isSplitKey", () => {
+  it("accepts Cmd+K or Ctrl+K regardless of case and rejects other combinations", () => {
+    expect(isSplitKey(press("k", { metaKey: true }))).toBe(true);
+    expect(isSplitKey(press("K", { metaKey: true }))).toBe(true);
+    expect(isSplitKey(press("k", { ctrlKey: true }))).toBe(true);
+    expect(isSplitKey(press("k"))).toBe(false);
+    expect(isSplitKey(press("k", { metaKey: true, ctrlKey: true }))).toBe(false);
+    expect(isSplitKey(press("k", { metaKey: true, shiftKey: true }))).toBe(false);
+    expect(isSplitKey(press("k", { metaKey: true, altKey: true }))).toBe(false);
+    expect(isSplitKey(press("z", { metaKey: true }))).toBe(false);
   });
 });
 

@@ -87,6 +87,7 @@ import {
   calibrationKeyAction,
   historyKeyAction,
   isPanelSwapKey,
+  isSplitKey,
   isTextEntry,
   keyAction,
   type PlayerAction,
@@ -858,11 +859,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   // The keyboard follows the playhead and pending segment. A clip menu targets that clip.
   const runSegment = (action: SegmentAction, target?: PlaySegment) => {
     if (action.type === "split") {
-      if (!calibrating) {
-        return recording.notify(
-          "Split Rally is available in Annotate; Split Play Segment is available in Calibrate",
-        );
-      }
+      if (!calibrating) return recording.notify("Split Play Segment is available in Calibrate");
       if (totalFrames === 0) return recording.notify("Load the video first");
       if (!segments) return recording.notify("Wait for Play Segments to load");
     }
@@ -1121,17 +1118,27 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return;
       }
     }
-    if (annotating) {
+    if (isSplitKey(event)) {
+      event.preventDefault();
+      if (event.repeat) return;
+      switch (workspace) {
+        case "annotate":
+          if (!recordingState.recording) return recording.notify("Wait for Rallies to load");
+          runAnnotate({ type: "splitRally" });
+          return;
+        case "calibrate":
+          runSegment({ type: "split" });
+          return;
+        case "review":
+          recording.notify(
+            "Split Rally is available in Annotate; Split Play Segment is available in Calibrate",
+          );
+          return;
+      }
+    }
+    if (annotating && recordingState.recording) {
       const annotateAction = annotateKeyAction(event);
       if (annotateAction) {
-        if (!recordingState.recording) {
-          // Only `⌘K` is intercepted before Rallies load so it doesn't fall through to the browser
-          // or Calibrate's Play Segment split handler; other Annotate keys stay ignored.
-          if (annotateAction.type !== "splitRally") return;
-          event.preventDefault();
-          if (!event.repeat) recording.notify("Wait for Rallies to load");
-          return;
-        }
         event.preventDefault();
         if (event.repeat && annotateAction.type !== "shot" && annotateAction.type !== "cursor") {
           return;
@@ -1155,18 +1162,20 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       if (!event.repeat) handleEscape();
       return;
     }
-    const segmentAction = segmentKeyAction(event);
-    if (segmentAction && (segmentAction.type === "split" || (calibrating && totalFrames > 0))) {
-      event.preventDefault();
-      if (!event.repeat) runSegment(segmentAction);
-      return;
-    }
-    if (calibrating && totalFrames > 0 && calibrateTab === "landmarks") {
-      const calibrationAction = calibrationKeyAction(event);
-      if (calibrationAction) {
+    if (calibrating && totalFrames > 0) {
+      const segmentAction = segmentKeyAction(event);
+      if (segmentAction) {
         event.preventDefault();
-        if (!event.repeat) calibrate(calibrationAction);
+        if (!event.repeat) runSegment(segmentAction);
         return;
+      }
+      if (calibrateTab === "landmarks") {
+        const calibrationAction = calibrationKeyAction(event);
+        if (calibrationAction) {
+          event.preventDefault();
+          if (!event.repeat) calibrate(calibrationAction);
+          return;
+        }
       }
     }
     const zoomDirection = zoomKeyAction(event);
