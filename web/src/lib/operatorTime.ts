@@ -1,6 +1,6 @@
 import type { OperatorSessionIn, OperatorTime } from "../api/client";
 import { FPS, formatLength } from "./frames";
-import { WORKSPACES, WORKSPACE_LABELS, type Workspace } from "./workspaces";
+import { OPERATOR_WORKSPACES, WORKSPACE_LABELS, type OperatorWorkspace } from "./workspaces";
 
 export const IDLE_TIMEOUT_MS = 120_000;
 export const FLUSH_INTERVAL_MS = 15_000;
@@ -42,7 +42,7 @@ export function tentativeOperatorMs(clock: OperatorClock, now: number): number {
 
 export function operatorSessionSnapshot(
   clock: OperatorClock,
-  workspace: Workspace,
+  workspace: OperatorWorkspace,
 ): OperatorSessionIn | null {
   if (clock.startedAt === null || clock.lastCommittedWallAt === null) return null;
   return {
@@ -72,7 +72,7 @@ export function ratioClassName(ratio: number | null, budget: number | null): str
 }
 
 export function operatorTimeTitle(time: OperatorTime): string {
-  return WORKSPACES.map(
+  return OPERATOR_WORKSPACES.map(
     (workspace) =>
       `${WORKSPACE_LABELS[workspace]} ${formatActiveTime(time[`${workspace}_seconds`])}`,
   ).join(" · ");

@@ -261,7 +261,7 @@ h1 {
 }
 
 .match-table {
-  min-width: 1140px;
+  min-width: 1180px;
   overflow: hidden;
   background: var(--panel);
   border-radius: 4px;
@@ -272,7 +272,7 @@ h1 {
   grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(
       140px,
       1.2fr
-    ) 136px 68px 140px 60px 50px;
+    ) 136px 68px 140px 60px 50px 60px;
   gap: 16px;
   align-items: center;
   padding: 7px 12px;
@@ -286,10 +286,22 @@ h1 {
   font-weight: 500;
 }
 
-.match-table a.tr:hover,
-.match-table a.tr:focus-visible {
+.match-table .match-row-main {
+  grid-column: 1 / -2;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding-block: 7px;
+  margin-block: -7px;
+}
+
+.match-table .tr:has(.match-row-main:hover),
+.match-table .tr:has(.match-row-main:focus-visible) {
   background: var(--hover);
-  outline: none;
+}
+
+.match-report-link {
+  text-align: center;
 }
 
 .match-table .tr:last-child {

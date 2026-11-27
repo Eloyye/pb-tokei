@@ -80,39 +80,51 @@ export function MatchList() {
             const assisted = match.annotation_mode === "assisted";
             const budget = assisted ? match.assisted_ratio_budget : null;
             return (
-              <Link
-                key={match.id}
-                to="/matches/$matchId/$workspace"
-                params={{ matchId: match.id, workspace: "annotate" }}
-                className="tr"
-              >
-                <span className="dimmed">{match.tournament}</span>
-                <span className="teams-cell">
-                  <span className="swatch team-a" />
-                  {match.team_a.join(" / ")}
-                  <span className="vs">vs</span>
-                  <span className="swatch team-b" />
-                  {match.team_b.join(" / ")}
-                </span>
-                <span className="dimmed">{franchisesLabel(match) ?? "—"}</span>
-                <span>
-                  <span className={pill.className}>{pill.label}</span>
-                </span>
-                <span>
-                  <span className={`pill ${assisted ? "pill-active" : "pill-none"}`}>
-                    {assisted ? "Assisted" : "Gold"}
-                  </span>
-                </span>
-                <Progress done={match.done_rallies} total={match.total_rallies} />
-                <span className="number mono dimmed" title={operatorTimeTitle(match.operator_time)}>
-                  {formatActiveTime(match.operator_time.active_seconds)}
-                </span>
-                <span
-                  className={`number mono ${ratioClassName(match.operator_time_ratio, budget)}`}
+              <div key={match.id} className="tr">
+                <Link
+                  to="/matches/$matchId/$workspace"
+                  params={{ matchId: match.id, workspace: "annotate" }}
+                  className="match-row-main"
                 >
-                  {formatRatio(match.operator_time_ratio)}
-                </span>
-              </Link>
+                  <span className="dimmed">{match.tournament}</span>
+                  <span className="teams-cell">
+                    <span className="swatch team-a" />
+                    {match.team_a.join(" / ")}
+                    <span className="vs">vs</span>
+                    <span className="swatch team-b" />
+                    {match.team_b.join(" / ")}
+                  </span>
+                  <span className="dimmed">{franchisesLabel(match) ?? "—"}</span>
+                  <span>
+                    <span className={pill.className}>{pill.label}</span>
+                  </span>
+                  <span>
+                    <span className={`pill ${assisted ? "pill-active" : "pill-none"}`}>
+                      {assisted ? "Assisted" : "Gold"}
+                    </span>
+                  </span>
+                  <Progress done={match.done_rallies} total={match.total_rallies} />
+                  <span
+                    className="number mono dimmed"
+                    title={operatorTimeTitle(match.operator_time)}
+                  >
+                    {formatActiveTime(match.operator_time.active_seconds)}
+                  </span>
+                  <span
+                    className={`number mono ${ratioClassName(match.operator_time_ratio, budget)}`}
+                  >
+                    {formatRatio(match.operator_time_ratio)}
+                  </span>
+                </Link>
+                <Link
+                  to="/matches/$matchId/$workspace"
+                  params={{ matchId: match.id, workspace: "report" }}
+                  className="button match-report-link"
+                  title={`Report for ${match.team_a.join(" / ")} vs ${match.team_b.join(" / ")}`}
+                >
+                  Report
+                </Link>
+              </div>
             );
           })}
         </div>

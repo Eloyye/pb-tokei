@@ -77,6 +77,16 @@ afterEach(() => {
 });
 
 describe("MatchList Video pills", () => {
+  it("links each Match to its report", async () => {
+    vi.mocked(listMatches).mockResolvedValue([makeMatch("m1"), makeMatch("m2")]);
+    renderList();
+    expect(
+      (await screen.findAllByRole("link", { name: "Report" })).map((link) =>
+        link.getAttribute("href"),
+      ),
+    ).toEqual(["/matches/m1/report", "/matches/m2/report"]);
+  });
+
   it("offers New Match when the Rally Log has no Matches", async () => {
     vi.mocked(listMatches).mockResolvedValue([]);
     renderList();

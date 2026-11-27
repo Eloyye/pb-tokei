@@ -11,7 +11,7 @@ import {
 } from "../api/client";
 import { FLUSH_INTERVAL_MS, IDLE_TIMEOUT_MS } from "../lib/operatorTime";
 import { tabSaveStatus } from "../lib/unsavedChanges";
-import type { Workspace } from "../lib/workspaces";
+import type { OperatorWorkspace } from "../lib/workspaces";
 import { useOperatorTime } from "./useOperatorTime";
 
 type Client = typeof import("../api/client");
@@ -57,7 +57,7 @@ const match: TimingMatch = {
   operator_time_ratio: 0.1,
 };
 
-function renderClock(initialWorkspace: Workspace = "annotate", initialMatch = match) {
+function renderClock(initialWorkspace: OperatorWorkspace = "annotate", initialMatch = match) {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["matches"], [initialMatch]);
   queryClient.setQueryData(["matches", match.id], initialMatch);

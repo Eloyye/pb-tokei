@@ -3,7 +3,7 @@ import type { Game, PlaySegment, Rally, RallyEntry } from "../api/client";
 import { rallyStartTarget, splitRallyReason } from "../lib/annotate";
 import type { AnnotateAction, SegmentAction } from "../lib/keymap";
 import { segmentSplitBlocker } from "../lib/segments";
-import type { Workspace } from "../lib/workspaces";
+import type { OperatorWorkspace } from "../lib/workspaces";
 
 export type ContextMenuTarget =
   | { kind: "rally"; game: number; rally: number }
@@ -45,7 +45,7 @@ export function contextMenuItems(
     rally,
     entry,
   }: {
-    workspace: Workspace;
+    workspace: OperatorWorkspace;
     hasVideo: boolean;
     frame: number;
     games: readonly Game[];

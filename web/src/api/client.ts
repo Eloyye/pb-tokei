@@ -92,6 +92,20 @@ export async function getMatch(matchId: string) {
   return data;
 }
 
+export async function getMatchReport(
+  matchId: string,
+  signal?: AbortSignal,
+): Promise<Schemas["MatchReport"]> {
+  const { data, error, response } = await api.GET("/api/matches/{match_id}/report", {
+    params: { path: { match_id: matchId } },
+    cache: "no-store",
+    signal,
+  });
+  if (data === undefined) throw apiError(response, error);
+  // openapi-fetch widens the schema's fixed-size tuples to arrays.
+  return data as Schemas["MatchReport"];
+}
+
 export async function upsertOperatorSession(
   matchId: string,
   sessionId: string,
