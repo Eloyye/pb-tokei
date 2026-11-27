@@ -39,15 +39,16 @@ export function defaultView(segments: PlaySegment[], frame: number): CameraView 
 }
 
 /**
- * `Shift+I`: inside a segment, its start moves to the frame; outside, a pending segment opens
- * there.
+ * `Shift+I`: moves a selected segment's start to the frame. With no selection, it trims the
+ * segment under the playhead or starts a pending segment.
  */
 export function markIn(
   segments: PlaySegment[],
   pending: PendingSegment | null,
   frame: number,
+  selected?: PlaySegment,
 ): SegmentEdit {
-  const segment = segmentAt(segments, frame);
+  const segment = selected ?? segmentAt(segments, frame);
   if (segment) return moveEdge(segments, pending, segment.start_frame, "start", frame);
   const view = defaultView(segments, frame);
   return {
@@ -59,16 +60,17 @@ export function markIn(
 }
 
 /**
- * `Shift+O`: ends the pending segment at the frame, or moves the end of the segment under the
- * playhead there.
+ * `Shift+O`: moves a selected segment's end to the frame. With no selection, it closes a
+ * pending segment or trims the segment under the playhead.
  */
 export function markOut(
   segments: PlaySegment[],
   pending: PendingSegment | null,
   frame: number,
+  selected?: PlaySegment,
 ): SegmentEdit {
-  if (pending) return closePending(segments, pending, frame);
-  const segment = segmentAt(segments, frame);
+  if (pending && !selected) return closePending(segments, pending, frame);
+  const segment = selected ?? segmentAt(segments, frame);
   if (segment) return moveEdge(segments, pending, segment.start_frame, "end", frame);
   return unchanged(segments, pending, "Shift+I on a Play Segment's first frame starts one");
 }
@@ -136,17 +138,18 @@ export function moveEdge(
   };
 }
 
-/** `1`/`2`: sets the view of the pending segment, or of the segment under the playhead. */
+/** `1`/`2`: sets the view of the selected, pending, or playhead segment, in that order. */
 export function setCameraView(
   segments: PlaySegment[],
   pending: PendingSegment | null,
   frame: number,
   view: CameraView,
+  selected?: PlaySegment,
 ): SegmentEdit {
-  if (pending) {
+  if (pending && !selected) {
     return unchanged(segments, { ...pending, camera_view: view }, `Pending: ${VIEW_LABELS[view]}`);
   }
-  const segment = segmentAt(segments, frame);
+  const segment = selected ?? segmentAt(segments, frame);
   if (!segment) return unchanged(segments, pending, "Not in a Play Segment");
   if (segment.camera_view === view) return unchanged(segments, pending, describe(segment));
   const changed = { ...segment, camera_view: view };
@@ -158,13 +161,14 @@ export function setCameraView(
   };
 }
 
-/** `Backspace`: removes the segment under the playhead. */
+/** `Backspace`: removes the selected segment or the one under the playhead. */
 export function removeAt(
   segments: PlaySegment[],
   pending: PendingSegment | null,
   frame: number,
+  selected?: PlaySegment,
 ): SegmentEdit {
-  const segment = segmentAt(segments, frame);
+  const segment = selected ?? segmentAt(segments, frame);
   if (!segment) return unchanged(segments, pending, "Not in a Play Segment");
   return {
     segments: segments.filter((s) => s !== segment),
