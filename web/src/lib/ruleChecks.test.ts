@@ -434,8 +434,7 @@ describe("ruleChecks: Shot-level checks", () => {
     ]);
   });
 
-  it("Missing landing (#99): warns in Amber when Serve or Return has Unknown landing, skips Rally-ending Errors and Unknown Shot Numbers", () => {
-    // Serve and Return without landings both warn; Shot 3 without landing does not.
+  it("Missing landing (#99): warns in Amber when Serve or Return has Unknown landing, and skips Shot 3+", () => {
     const rMissingBoth = rally(1, {
       serving_team_id: observed("A"),
       server_id: observed("a1"),
@@ -465,21 +464,6 @@ describe("ruleChecks: Shot-level checks", () => {
       }),
     ]);
 
-    // Observed or Inferred landings satisfy the check.
-    const rWithLandings = rally(1, {
-      serving_team_id: observed("A"),
-      entries: [
-        shot(1010, { hitter_id: observed("a1"), landing: observed({ x: 3, y: 18 }) }),
-        shot(1050, {
-          hitter_id: observed("b1"),
-          contact_kind: observed("bounce"),
-          landing: inferred({ x: -2, y: -19 }),
-        }),
-      ],
-    });
-    expect(checkMatch([game([rWithLandings])], ROSTER)).toEqual([]);
-
-    // Only Serve missing landing (Return has one), and vice versa.
     const rMissingServeOnly = rally(1, {
       serving_team_id: observed("A"),
       entries: [
@@ -509,8 +493,24 @@ describe("ruleChecks: Shot-level checks", () => {
     expect(
       checkMatch([game([rMissingReturnOnly])], ROSTER).map((i) => [i.entryIndex, i.code]),
     ).toEqual([[1, "missing_landing"]]);
+  });
 
-    // Faulted Serve (ends the Rally with an Error) is skipped.
+  it("Missing landing (#99): accepts Observed and Inferred landings on Serve and Return", () => {
+    const rWithLandings = rally(1, {
+      serving_team_id: observed("A"),
+      entries: [
+        shot(1010, { hitter_id: observed("a1"), landing: observed({ x: 3, y: 18 }) }),
+        shot(1050, {
+          hitter_id: observed("b1"),
+          contact_kind: observed("bounce"),
+          landing: inferred({ x: -2, y: -19 }),
+        }),
+      ],
+    });
+    expect(checkMatch([game([rWithLandings])], ROSTER)).toEqual([]);
+  });
+
+  it("Missing landing (#99): skips Rally-ending Errors on Serve and Return, but still warns on non-final Errors", () => {
     const rFaultedServe = rally(1, {
       serving_team_id: observed("A"),
       winner_id: observed("B"),
@@ -524,7 +524,6 @@ describe("ruleChecks: Shot-level checks", () => {
     });
     expect(checkMatch([game([rFaultedServe])], ROSTER)).toEqual([]);
 
-    // Faulted Return (ends the Rally with an Error) is also skipped.
     const rFaultedReturn = rally(1, {
       serving_team_id: observed("A"),
       winner_id: observed("A"),
@@ -540,7 +539,6 @@ describe("ruleChecks: Shot-level checks", () => {
     });
     expect(checkMatch([game([rFaultedReturn])], ROSTER)).toEqual([]);
 
-    // A non-final Error on Shot 1 did not end the Rally, so missing_landing still fires alongside non_final_error.
     const rNonFinalServeError = rally(1, {
       serving_team_id: observed("A"),
       entries: [
@@ -563,8 +561,9 @@ describe("ruleChecks: Shot-level checks", () => {
       { entry: 0, code: "missing_landing", severity: "amber", field: "landing" },
       { entry: 0, code: "non_final_error", severity: "red", field: "error" },
     ]);
+  });
 
-    // Shot with Unknown Shot Number (after a leading Observation Gap, or directly unnumbered) is skipped.
+  it("Missing landing (#99): skips Unknown Shot Numbers and checks Inferred Shot Numbers", () => {
     const rAfterGap = rally(1, {
       serving_team_id: observed("A"),
       entries: [gap("odd"), { ...newShot(1050), hitter_id: observed("b1") }],
@@ -579,7 +578,6 @@ describe("ruleChecks: Shot-level checks", () => {
     };
     expect(checkMatch([game([rUnnumbered])], ROSTER)).toEqual([]);
 
-    // Inferred Shot Number 1 or 2 is also checked.
     const rInferredShotNum: Rally = {
       ...newRally(1, 1000),
       end_frame: 1300,
