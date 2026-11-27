@@ -19,11 +19,13 @@ import type {
 import { unproject } from "../lib/calibrations";
 import { inferred, newRally, newShot, numberShots, observed } from "../lib/rallyLog";
 import { ROSTER } from "../lib/testRoster";
+import type { Workspace as WorkspaceName } from "../lib/workspaces";
 import { ShortcutSheet } from "../shell/ShortcutSheet";
 import { Workspace } from "./Workspace";
 
 const apiMocks = vi.hoisted(() => ({
   getPlaySegments: vi.fn<() => Promise<PlaySegment[]>>(),
+  replacePlaySegments: vi.fn<(id: string, segments: PlaySegment[]) => Promise<PlaySegment[]>>(),
   getCalibrations: vi.fn<() => Promise<CalibrationOut[]>>(),
   getPlayerAnchors: vi.fn<() => Promise<PlayerAnchor[]>>(),
   replacePlayerAnchors: vi.fn<(id: string, anchors: PlayerAnchor[]) => Promise<PlayerAnchor[]>>(),
@@ -42,6 +44,7 @@ vi.mock("../api/client", async (importOriginal) => {
   return {
     ...actual,
     getPlaySegments: apiMocks.getPlaySegments,
+    replacePlaySegments: apiMocks.replacePlaySegments,
     getCalibrations: apiMocks.getCalibrations,
     getPlayerAnchors: apiMocks.getPlayerAnchors,
     replacePlayerAnchors: apiMocks.replacePlayerAnchors,
@@ -200,7 +203,7 @@ function liveTrackingFrames(): PlayerTrackingFramesOut {
   };
 }
 
-function renderWorkspace(workspace: "annotate" | "review" | "calibrate", games = sampleGames()) {
+function renderWorkspace(workspace: WorkspaceName, games = sampleGames()) {
   apiMocks.getGames.mockResolvedValue(games);
   apiMocks.replaceGames.mockImplementation(async (_id: string, next: Game[]) => next);
   apiMocks.replacePlayerAnchors.mockImplementation(
@@ -236,6 +239,7 @@ beforeEach(() => {
   apiMocks.getPlaySegments.mockResolvedValue([
     { start_frame: 0, end_frame: 600, camera_view: "main" },
   ]);
+  apiMocks.replacePlaySegments.mockImplementation(async (_id, segments) => segments);
   apiMocks.getCalibrations.mockResolvedValue([]);
   apiMocks.getPlayerAnchors.mockResolvedValue([]);
   apiMocks.getTeamEnds.mockResolvedValue([]);
@@ -937,5 +941,282 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(annaButton.getAttribute("aria-pressed")).toBe("true");
     expect(container.textContent).not.toContain("Player placement cancelled");
+  });
+});
+
+function openContextMenu(target: Element, name: string) {
+  const mouse = { button: 2, clientX: 425, clientY: 200 };
+  fireEvent.pointerDown(target, { ...mouse, pointerId: 1 });
+  expect(fireEvent.contextMenu(target, mouse)).toBe(false);
+  return within(screen.getByRole("menu", { name }));
+}
+
+function expectMenuItems(menu: ReturnType<typeof within>, items: [string, string?][]) {
+  expect(menu.getAllByRole("menuitem")).toHaveLength(items.length);
+  for (const [name, shortcut] of items) {
+    const option = menu.getByRole("menuitem", { name });
+    expect(option.getAttribute("aria-keyshortcuts")).toBe(shortcut ?? null);
+    expect(option.querySelector("kbd")?.textContent).toBe(shortcut);
+  }
+}
+
+const rallyActions: [string, string?][] = [
+  ["Rally start at playhead", "Shift+I"],
+  ["Rally end at playhead", "Shift+O"],
+  ["Insert Unseen Rally after", "Shift+U"],
+  ["Delete Rally", "Shift+Backspace"],
+  ["Mark Done", "Enter"],
+  ["Fit Rally"],
+  ["Rally details", "Shift+S"],
+];
+
+describe("Workspace context menus", () => {
+  it("opens the same menu on Rally clips and rows, selects without seeking, and dismisses it", async () => {
+    const games = sampleGames();
+    games[0]!.rallies.push(newRally(2));
+    const { video, container } = renderAnnotateWorkspace(games);
+    const playhead = video.currentTime;
+    const clip = await screen.findByTitle("Game 1 Rally 1: frames 100–300");
+    const row = within(container.querySelector<HTMLElement>(".rally-list")!).getByRole("button", {
+      name: /R2/,
+    });
+    let menu = openContextMenu(clip, "Rally actions");
+    expectMenuItems(menu, rallyActions);
+    expect(clip.getAttribute("aria-pressed")).toBe("true");
+    expect(video.currentTime).toBe(playhead);
+
+    const first = menu.getByRole("menuitem", { name: "Rally start at playhead" });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: "End" });
+    const details = menu.getByRole("menuitem", { name: "Rally details" });
+    expect(document.activeElement).toBe(details);
+    fireEvent.keyDown(details, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(clip);
+    expect(clip.getAttribute("aria-pressed")).toBe("true");
+
+    menu = openContextMenu(row, "Rally actions");
+    expectMenuItems(menu, rallyActions);
+    expect(row.getAttribute("aria-pressed")).toBe("true");
+    expect(clip.getAttribute("aria-pressed")).toBe("false");
+    expect(video.currentTime).toBe(playhead);
+    const fit = menu.getByRole("menuitem", { name: "Fit Rally" });
+    expect(fit.getAttribute("aria-disabled")).toBe("true");
+    expect(fit.title).toBe("Select a framed Rally first");
+    fireEvent.click(fit);
+    expect(screen.queryByRole("menu")).toBeTruthy();
+    fireEvent.click(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("explains why an open Rally's start can't move past its first Shot", async () => {
+    const games = sampleGames();
+    games[0]!.rallies[0]!.end_frame = null;
+    renderAnnotateWorkspace(games);
+    const clip = await screen.findByTitle("Game 1 Rally 1: frames 100–open");
+    for (let step = 0; step < 3; step++) {
+      fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    }
+    const menu = openContextMenu(clip, "Rally actions");
+    const start = menu.getByRole("menuitem", { name: "Rally start at playhead" });
+    expect(start.getAttribute("aria-disabled")).toBe("true");
+    expect(start.title).toBe("A Rally must start at or before its first Shot (frame 120)");
+    fireEvent.click(start);
+    expect(apiMocks.replaceGames).not.toHaveBeenCalled();
+  });
+
+  it("selects a Shot or Observation Gap and flips its parity with the existing command", async () => {
+    const games = sampleGames();
+    const rally = games[0]!.rallies[0]!;
+    rally.entries.splice(1, 0, { type: "gap", missing: "odd" });
+    const { video } = renderAnnotateWorkspace(games);
+    const playhead = video.currentTime;
+    const pin = await screen.findByRole("button", { name: "Shot 2 at frame 180" });
+    const gap = screen.getByRole("button", { name: "odd gap" });
+    const shotMenu = openContextMenu(pin, "Shot actions");
+    expectMenuItems(shotMenu, [
+      ["Delete Shot", "Backspace"],
+      ["Odd Observation Gap after", "G"],
+      ["Even Observation Gap after", "Shift+G"],
+      ["Swap hitter to partner", "X"],
+      ["Switch hitter’s Team", "Shift+H"],
+    ]);
+    expect(pin.getAttribute("aria-pressed")).toBe("true");
+    expect(video.currentTime).toBe(playhead);
+
+    const gapMenu = openContextMenu(gap, "Observation Gap actions");
+    expectMenuItems(gapMenu, [
+      ["Delete Observation Gap", "Backspace"],
+      ["Change to even", "Shift+G"],
+    ]);
+    expect(gap.getAttribute("aria-pressed")).toBe("true");
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    expect(video.currentTime).toBe(playhead);
+    fireEvent.click(gapMenu.getByRole("menuitem", { name: "Change to even" }));
+    expect(screen.getByText("Gap is now even")).toBeTruthy();
+    const evenGap = screen.getByRole("button", { name: "even gap" });
+    expectMenuItems(openContextMenu(evenGap, "Observation Gap actions"), [
+      ["Delete Observation Gap", "Backspace"],
+      ["Change to odd", "G"],
+    ]);
+  });
+
+  it.each(["annotate", "calibrate", "review"] as const)(
+    "shows the right Segment, Rally and empty lane availability in %s",
+    async (workspace) => {
+      const { container, video } = renderWorkspace(workspace);
+      vi.spyOn(container.querySelector(".ruler")!, "getBoundingClientRect").mockReturnValue(
+        DOMRect.fromRect({ width: 1200 }),
+      );
+      const segment = await screen.findByRole("button", {
+        name: "Main View Play Segment, frames 0–600",
+      });
+      const row = container.querySelector<HTMLButtonElement>(".r-row")!;
+      const playhead = video.currentTime;
+      const segmentMenu = openContextMenu(segment, "Play Segment actions");
+      expectMenuItems(segmentMenu, [
+        ["Set Main View", "1"],
+        ["Set Sideline View", "2"],
+        ["Delete Play Segment", "Backspace"],
+        ["Play Segment start at playhead", "Shift+I"],
+        ["Play Segment end at playhead", "Shift+O"],
+      ]);
+      expect(segment.getAttribute("aria-pressed")).toBe("true");
+      for (const option of segmentMenu.getAllByRole("menuitem")) {
+        expect(option.getAttribute("aria-disabled")).toBe(
+          workspace === "calibrate" ? null : "true",
+        );
+        expect(option.title).toBe(workspace === "calibrate" ? "" : "Available in Calibrate");
+      }
+      if (workspace !== "calibrate") {
+        fireEvent.click(segmentMenu.getByRole("menuitem", { name: "Delete Play Segment" }));
+      }
+      expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+
+      const rallyMenu = openContextMenu(row, "Rally actions");
+      const done = rallyMenu.getByRole("menuitem", { name: "Mark Done" });
+      expect(done.getAttribute("aria-disabled")).toBe(workspace === "annotate" ? null : "true");
+      expect(done.title).toBe(workspace === "annotate" ? "" : "Available in Annotate");
+
+      const laneMenu = openContextMenu(
+        container.querySelector(".lane.segments")!,
+        "Timeline actions",
+      );
+      expectMenuItems(laneMenu, [
+        ["Fit Rally"],
+        ["Fit video"],
+        ["Rally start at playhead", "Shift+I"],
+      ]);
+      expect(
+        laneMenu.getByRole("menuitem", { name: "Fit Rally" }).getAttribute("aria-disabled"),
+      ).toBe(workspace === "calibrate" ? "true" : null);
+      expect(
+        laneMenu.getByRole("menuitem", { name: "Fit video" }).getAttribute("aria-disabled"),
+      ).toBeNull();
+      expect(laneMenu.getByRole("menuitem", { name: "Rally start at playhead" }).title).toBe(
+        workspace === "annotate" ? "" : "Available in Annotate",
+      );
+      expect(row.getAttribute("aria-pressed")).toBe("true");
+      expect(video.currentTime).toBe(playhead);
+    },
+  );
+
+  it("deletes the right-clicked Shot with the same save, status and undo as Backspace", async () => {
+    const games = sampleGames();
+    renderAnnotateWorkspace(games);
+    const pin = await screen.findByRole("button", { name: "Shot 2 at frame 180" });
+    const menu = openContextMenu(pin, "Shot actions");
+    fireEvent.click(menu.getByRole("menuitem", { name: "Delete Shot" }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByText("Shot deleted")).toBeTruthy();
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenCalledTimes(1));
+    const edited = apiMocks.replaceGames.mock.lastCall![1];
+    expect(edited[0]!.rallies[0]!.entries).toHaveLength(1);
+    expect(edited[0]!.rallies[0]!.entries[0]).toMatchObject({ contact_frame: observed(120) });
+
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, games));
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    expect(screen.getByText("Nothing to undo")).toBeTruthy();
+    const restored = screen.getByRole("button", { name: "Shot 2 at frame 180" });
+    openContextMenu(restored, "Shot actions");
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "Backspace" });
+    expect(screen.getByText("Shot deleted")).toBeTruthy();
+    await waitFor(() => expect(apiMocks.replaceGames).toHaveBeenLastCalledWith(MATCH.id, edited));
+  });
+
+  it("relabels a Play Segment from its clip menu or with 2 over the segment", async () => {
+    const segments: PlaySegment[] = [
+      { start_frame: 0, end_frame: 299, camera_view: "main" },
+      { start_frame: 400, end_frame: 600, camera_view: "main" },
+    ];
+    apiMocks.getPlaySegments.mockResolvedValue(segments);
+    const { video } = renderWorkspace("calibrate");
+    const playhead = video.currentTime;
+    const target = await screen.findByRole("button", {
+      name: "Main View Play Segment, frames 400–600",
+    });
+    const menu = openContextMenu(target, "Play Segment actions");
+    const markOut = menu.getByRole("menuitem", { name: "Play Segment end at playhead" });
+    expect(markOut.getAttribute("aria-disabled")).toBe("true");
+    expect(markOut.title).toBe("Move the playhead to or after this Play Segment’s start");
+    fireEvent.click(menu.getByRole("menuitem", { name: "Set Sideline View" }));
+    const changed = [segments[0]!, { ...segments[1]!, camera_view: "sideline" }];
+    expect(screen.getByText("Sideline View Play Segment, frames 400–600")).toBeTruthy();
+    expect(video.currentTime).toBe(playhead);
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenCalledExactlyOnceWith(MATCH.id, changed),
+    );
+
+    fireEvent.keyDown(window, { key: "z", metaKey: true });
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenLastCalledWith(MATCH.id, segments),
+    );
+    fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+    const keyFrame = video.currentTime;
+    fireEvent.keyDown(window, { key: "2" });
+    expect(screen.getByText("Sideline View Play Segment, frames 400–600")).toBeTruthy();
+    expect(video.currentTime).toBe(keyFrame);
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenLastCalledWith(MATCH.id, changed),
+    );
+  });
+
+  it("keeps Play Segment shortcuts tied to the playhead and pending segment after clip clicks", async () => {
+    const first: PlaySegment = { start_frame: 100, end_frame: 200, camera_view: "main" };
+    const second: PlaySegment = { start_frame: 450, end_frame: 650, camera_view: "main" };
+    apiMocks.getPlaySegments.mockResolvedValue([first, second]);
+    const { container } = renderWorkspace("calibrate");
+    vi.spyOn(container.querySelector(".ruler")!, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ width: 1200 }),
+    );
+    const clip = await screen.findByTitle("Main View Play Segment, frames 100–200");
+    fireEvent.pointerDown(clip, { pointerId: 1, clientX: 150 });
+    fireEvent.pointerUp(clip, { pointerId: 1, clientX: 150 });
+    expect(clip.getAttribute("aria-pressed")).toBe("true");
+    for (let step = 0; step < 3; step++) {
+      fireEvent.keyDown(window, { key: "ArrowRight", shiftKey: true });
+    }
+    fireEvent.keyDown(window, { key: "I", shiftKey: true });
+    expect(
+      screen.getByText("Main View Play Segment from frame 330: Shift+O on its last frame"),
+    ).toBeTruthy();
+    expect(apiMocks.replacePlaySegments).not.toHaveBeenCalled();
+
+    const laterClip = screen.getByTitle("Main View Play Segment, frames 450–650");
+    fireEvent.pointerDown(laterClip, { pointerId: 2, clientX: 500 });
+    fireEvent.pointerUp(laterClip, { pointerId: 2, clientX: 500 });
+    expect(laterClip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(window, { key: "2" });
+    expect(screen.getByText("Pending: Sideline View")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "O", shiftKey: true });
+    await waitFor(() =>
+      expect(apiMocks.replacePlaySegments).toHaveBeenCalledExactlyOnceWith(MATCH.id, [
+        first,
+        { start_frame: 330, end_frame: 449, camera_view: "sideline" },
+        second,
+      ]),
+    );
   });
 });

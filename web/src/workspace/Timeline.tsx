@@ -1,4 +1,5 @@
 import {
+  type MouseEvent,
   type PointerEvent,
   useEffect,
   useEffectEvent,
@@ -22,6 +23,7 @@ import {
   type WheelAxisLock,
   wheelToView,
 } from "../lib/timeline";
+import type { OpenContextMenu } from "./contextMenuItems";
 import { Icon } from "./icons";
 import { Panel, PanelTitle } from "./Panel";
 
@@ -98,6 +100,9 @@ export function Timeline({
   onZoom,
   focused,
   segments,
+  selectedSegment,
+  onSelectSegment,
+  onContextMenu,
   unmappedRanges,
   pending,
   onMoveEdge,
@@ -114,6 +119,9 @@ export function Timeline({
   focused: boolean;
   /** The Match's Play Segments in frame order; null until loaded. */
   segments: PlaySegment[] | null;
+  selectedSegment?: PlaySegment | null;
+  onSelectSegment?: (segment: PlaySegment | null) => void;
+  onContextMenu?: OpenContextMenu;
   /** Stretches inside Play Segments where Camera Motion failed registration. */
   unmappedRanges?: readonly UnmappedRangeOut[];
   /** A segment begun and not yet ended: drawn from its start to the playhead. */
@@ -222,7 +230,7 @@ export function Timeline({
     event: PointerEvent<HTMLElement>,
     pin: Omit<PinDrag, "startX" | "moved">,
   ) => {
-    if (event.button !== 0 || activeDrag.current) return;
+    if (event.button !== 0 || event.ctrlKey || activeDrag.current) return;
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     activeDrag.current = {
@@ -268,6 +276,34 @@ export function Timeline({
     }
   };
 
+  const startScrub = (event: PointerEvent<HTMLElement>, selected: PlaySegment | null = null) => {
+    if (event.button !== 0 || event.ctrlKey || activeDrag.current) return;
+    onSelectSegment?.(selected);
+    if (!hasVideo) return;
+    const rect = rulerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    activeDrag.current = {
+      kind: "scrub",
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      frame: null,
+    };
+    applyDrag(event.clientX, currentView(), rect);
+  };
+  const scrubHandlers = {
+    onPointerDown: startScrub,
+    onPointerMove: moveDrag,
+    onPointerUp: finishDrag,
+    onPointerCancel: finishDrag,
+    onLostPointerCapture: finishDrag,
+  };
+  const openLaneMenu = (event: MouseEvent<HTMLElement>) => {
+    // Issue markers keep their own click behavior and aren't empty space.
+    if (event.target instanceof Element && event.target.closest("button")) return;
+    onContextMenu?.(event, { kind: "lane" });
+  };
+
   const edgeHandle = (target: EdgeTarget, edge: RallyEdge, edgeFrame: number) =>
     hasVideo && (
       <span
@@ -276,7 +312,7 @@ export function Timeline({
         aria-hidden
         onPointerDown={(event) => {
           const source = target.kind === "segment" ? segments : games;
-          if (!source || event.button !== 0 || activeDrag.current) return;
+          if (!source || event.button !== 0 || event.ctrlKey || activeDrag.current) return;
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
           activeDrag.current = {
@@ -450,7 +486,7 @@ export function Timeline({
             }}
           />
         </div>
-        <div ref={rulerRef} className="ruler">
+        <div ref={rulerRef} className="ruler" title="Drag to scrub" {...scrubHandlers}>
           {ticks.frames.map((f) => (
             <div key={f} className="tick" style={{ left: `${toPercent(view, f)}%` }}>
               <span>{formatTimecode(f)}</span>
@@ -470,32 +506,56 @@ export function Timeline({
             <div className="track-head" style={{ gridRow: i + 3 }}>
               {track.label}
             </div>
-            <div className={`lane ${track.id}`} style={{ gridRow: i + 3 }}>
+            <div
+              className={`lane ${track.id}`}
+              style={{ gridRow: i + 3 }}
+              title="Drag to scrub"
+              {...scrubHandlers}
+              onContextMenu={openLaneMenu}
+            >
               {track.id === "segments" && shownSegments?.length ? (
                 // Keyed by position, which an edge drag never changes (segments can't pass each
                 // other), so the dragged handle keeps its pointer capture.
-                shownSegments.map((segment, index) => (
-                  <div
-                    key={index}
-                    className={`seg ${segment.camera_view} ${hasVideo ? "editable" : ""}`}
-                    style={{
-                      left: `${toPercent(view, segment.start_frame)}%`,
-                      width: `${toPercent(view, segment.end_frame + 1) - toPercent(view, segment.start_frame)}%`,
-                    }}
-                    title={describe(segment)}
-                  >
-                    {VIEW_LABELS[segment.camera_view].toUpperCase()}
-                    {(["start", "end"] as const).map((edge) =>
-                      edgeHandle(
-                        { kind: "segment", start: segments![index]!.start_frame },
-                        edge,
-                        edge === "start" ? segment.start_frame : segment.end_frame,
-                      ),
-                    )}
-                  </div>
-                ))
+                shownSegments.map((segment, index) => {
+                  const original = segments![index]!;
+                  const on = original === selectedSegment;
+                  return (
+                    <button
+                      key={index}
+                      type="button"
+                      aria-pressed={on}
+                      aria-label={describe(segment)}
+                      className={`seg ${segment.camera_view} ${hasVideo ? "editable" : ""} ${on ? "on" : ""}`}
+                      style={{
+                        left: `${toPercent(view, segment.start_frame)}%`,
+                        width: `${toPercent(view, segment.end_frame + 1) - toPercent(view, segment.start_frame)}%`,
+                      }}
+                      title={describe(segment)}
+                      {...scrubHandlers}
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                        startScrub(event, original);
+                      }}
+                      onClick={(event) => {
+                        if (event.detail === 0) onSelectSegment?.(original);
+                      }}
+                      onContextMenu={(event) =>
+                        onContextMenu?.(event, { kind: "segment", segment: original })
+                      }
+                    >
+                      {VIEW_LABELS[segment.camera_view].toUpperCase()}
+                      {(["start", "end"] as const).map((edge) =>
+                        edgeHandle(
+                          { kind: "segment", start: original.start_frame },
+                          edge,
+                          edge === "start" ? segment.start_frame : segment.end_frame,
+                        ),
+                      )}
+                    </button>
+                  );
+                })
               ) : track.id === "rallies" && rallyLog && hasFramedRallies(rallyLog.games) ? (
-                rallyClips(rallyLog, view, edgePreview, edgeHandle)
+                rallyClips(rallyLog, view, edgePreview, edgeHandle, onContextMenu)
               ) : track.id === "shots" && rallyLog && hasShots(rallyLog.games) ? (
                 <ShotMarks
                   rallyLog={rallyLog}
@@ -504,6 +564,7 @@ export function Timeline({
                   onPinDown={startPinDrag}
                   onMove={moveDrag}
                   onUp={finishDrag}
+                  onContextMenu={onContextMenu}
                 />
               ) : (
                 track.empty && <span className="lane-empty">{track.empty}</span>
@@ -544,6 +605,7 @@ export function Timeline({
                       }}
                       title={`Unmapped frames ${range.start_frame}–${range.end_frame}: click to seek and re-anchor`}
                       aria-label={`Unmapped frames ${range.start_frame} to ${range.end_frame}`}
+                      onPointerDown={(event) => event.stopPropagation()}
                       onClick={() => onSeek(range.start_frame)}
                     />
                   ))
@@ -551,38 +613,15 @@ export function Timeline({
             </div>
           </div>
         ))}
+        <div className="track-head" style={{ gridRow: 7 }} />
         <div
           className="timeline-fill"
-          style={{ gridRow: 7, display: "grid", gridTemplateColumns: "100px 1fr" }}
-        >
-          <div className="track-head" />
-        </div>
-        <div
-          className="playhead-layer"
+          style={{ gridRow: 7 }}
           title="Drag to scrub"
-          style={{
-            pointerEvents: hasVideo ? "auto" : "none",
-            cursor: "ew-resize",
-            touchAction: "none",
-          }}
-          onPointerDown={(event) => {
-            if (!hasVideo || activeDrag.current) return;
-            const rect = rulerRef.current?.getBoundingClientRect();
-            if (!rect) return;
-            event.currentTarget.setPointerCapture(event.pointerId);
-            activeDrag.current = {
-              kind: "scrub",
-              pointerId: event.pointerId,
-              clientX: event.clientX,
-              frame: null,
-            };
-            applyDrag(event.clientX, currentView(), rect);
-          }}
-          onPointerMove={moveDrag}
-          onPointerUp={finishDrag}
-          onPointerCancel={finishDrag}
-          onLostPointerCapture={finishDrag}
-        >
+          {...scrubHandlers}
+          onContextMenu={openLaneMenu}
+        />
+        <div className="playhead-layer" aria-hidden>
           {hasVideo && <div className="playhead" style={{ left: `${toPercent(view, frame)}%` }} />}
         </div>
       </div>
@@ -624,6 +663,7 @@ function rallyClips(
   view: FrameRange,
   preview: EdgeDrag | undefined,
   edgeHandle: (target: EdgeTarget, edge: RallyEdge, frame: number) => React.ReactNode,
+  onContextMenu?: OpenContextMenu,
 ) {
   const { games, selection, roster } = rallyLog;
   return games.flatMap((game, gi) =>
@@ -647,6 +687,7 @@ function rallyClips(
           title={`Game ${game.number} Rally ${rally.number}: frames ${rally.start_frame}–${rally.end_frame ?? "open"}`}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={() => rallyLog.onSelectRally(gi, ri)}
+          onContextMenu={(event) => onContextMenu?.(event, target)}
         >
           <span className="clip-label">
             {STATUS_MARK[rally.status]} R{rally.number}
@@ -667,6 +708,7 @@ function ShotMarks({
   onPinDown,
   onMove,
   onUp,
+  onContextMenu,
 }: {
   rallyLog: TimelineRallies;
   view: FrameRange;
@@ -674,6 +716,7 @@ function ShotMarks({
   onPinDown: (event: PointerEvent<HTMLElement>, pin: Omit<PinDrag, "startX" | "moved">) => void;
   onMove: (event: PointerEvent<HTMLElement>) => void;
   onUp: (event: PointerEvent<HTMLElement>, commit?: boolean) => void;
+  onContextMenu?: OpenContextMenu;
 }) {
   const { games, selection, roster } = rallyLog;
   return (
@@ -705,6 +748,9 @@ function ShotMarks({
                   title={`An ${entry.missing} number of Shots unseen (${on ? "click to deselect, " : "click, then "}⌫ deletes or G / ⇧G flips)`}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => rallyLog.onSelectEntry(gi, ri, ei)}
+                  onContextMenu={(event) =>
+                    onContextMenu?.(event, { kind: "gap", game: gi, rally: ri, entry: ei })
+                  }
                 >
                   {entry.missing} gap
                 </button>
@@ -731,6 +777,9 @@ function ShotMarks({
                 onPointerUp={(event) => onUp(event, true)}
                 onPointerCancel={onUp}
                 onLostPointerCapture={onUp}
+                onContextMenu={(event) =>
+                  onContextMenu?.(event, { kind: "shot", game: gi, rally: ri, entry: ei })
+                }
               >
                 {number ?? "?"}
               </button>

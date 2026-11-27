@@ -2,6 +2,7 @@ import type { Game, RallyStatus } from "../api/client";
 import type { Selection } from "../lib/annotate";
 import { formatScore, type Roster, teamKey } from "../lib/rallyLog";
 import { countIssuesByRally, rallyIssueKey, type RuleIssue } from "../lib/ruleChecks";
+import type { OpenContextMenu } from "./contextMenuItems";
 import { Panel, PanelTitle } from "./Panel";
 
 const STATUS_MARK: Record<RallyStatus, string> = { empty: "○", in_progress: "●", done: "✓" };
@@ -22,6 +23,7 @@ export function RalliesPanel({
   roster,
   issues,
   onSelectRally,
+  onContextMenu,
   onSelectGame,
   onAddUnseen,
   onAddGame,
@@ -33,6 +35,7 @@ export function RalliesPanel({
   roster: Roster;
   issues?: readonly RuleIssue[];
   onSelectRally: (game: number, rally: number) => void;
+  onContextMenu?: OpenContextMenu;
   onSelectGame: (game: number) => void;
   onAddUnseen: () => void;
   onAddGame: () => void;
@@ -114,6 +117,9 @@ export function RalliesPanel({
                   aria-pressed={on}
                   className={`r-row ${on ? "on" : ""}`}
                   onClick={() => onSelectRally(gi, ri)}
+                  onContextMenu={(event) =>
+                    onContextMenu?.(event, { kind: "rally", game: gi, rally: ri })
+                  }
                   title={`${STATUS_LABEL[rally.status]}${rally.start_frame === null ? " · Unseen" : ""}${on ? " · click to deselect" : ""}`}
                 >
                   <span className={`st ${rally.status}`}>{STATUS_MARK[rally.status]}</span>

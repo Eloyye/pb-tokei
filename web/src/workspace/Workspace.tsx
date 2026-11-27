@@ -3,11 +3,12 @@ import {
   type Calibration,
   type CalibrationOut,
   type FrameDetectionOut,
+  type Game,
   type Landmark,
   type Lens,
   type MatchDetail,
-  type PlaySegment,
   matchVideoUrl,
+  type PlaySegment,
 } from "../api/client";
 import {
   calibrationAt,
@@ -135,6 +136,14 @@ import { Monitor } from "./Monitor";
 import type { PanelId } from "./Panel";
 import { CalibrationOverlay } from "./CalibrationOverlay";
 import { type CalibrateTab, CalibrationPanel } from "./CalibrationPanel";
+import { ContextMenu } from "./ContextMenu";
+import {
+  CONTEXT_MENU_LABELS,
+  contextMenuItems,
+  type ContextMenuTarget,
+  type MenuCommand,
+  type OpenContextMenu,
+} from "./contextMenuItems";
 import type { CourtNavigation } from "./CourtDiagram";
 import { type MonitorLanding, PlayerOverlay } from "./PlayerOverlay";
 import { PlayersPanel } from "./PlayersPanel";
@@ -147,7 +156,7 @@ import { Timeline } from "./Timeline";
 import { type CameraMotionState, useCameraMotion } from "./useCameraMotion";
 import { usePlayerTracking } from "./usePlayerTracking";
 import { useActionQueue } from "./useActionQueue";
-import { useRecording } from "./useRecording";
+import { type RecordingControls, useRecording } from "./useRecording";
 
 /**
  * Extra feet beyond `COURT_BOUNDS` that a Monitor landing click may unproject to before we treat
@@ -200,6 +209,19 @@ const MESSAGES: Record<WorkspaceName, string> = {
   review: "Review needs pre-filled Rally Logs, which don't exist yet.",
 };
 
+interface MenuSelection {
+  games: readonly Game[];
+  selection: Selection;
+}
+
+interface OpenMenu {
+  workspace: WorkspaceName;
+  target: ContextMenuTarget;
+  position: { x: number; y: number };
+  trigger: HTMLElement;
+  selection?: MenuSelection;
+}
+
 /**
  * A Match open in one workspace: Monitor, Court and Inspector over Rallies and Timeline, with
  * resizable gutters. The player lives here so the Monitor and the Timeline share it.
@@ -220,6 +242,8 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const { notify } = recording;
   useEffect(() => notify(defaultMessage), [defaultMessage, notify]);
   const [edgeDragHint, setEdgeDragHint] = useState<string | null>(null);
+  const [menu, setMenu] = useState<OpenMenu | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   const calibrating = workspace === "calibrate";
   const annotating = workspace === "annotate";
   const reviewing = workspace === "review";
@@ -286,6 +310,18 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
   const issueCounts = useMemo(() => countIssues(ruleIssues), [ruleIssues]);
 
   const segments = recordingState.recording?.segments ?? null;
+  const [segmentSelection, setSegmentSelection] = useState<PlaySegment | null>(null);
+  const selectedSegment =
+    segmentSelection && segments?.includes(segmentSelection) ? segmentSelection : null;
+  if (segmentSelection && !selectedSegment) setSegmentSelection(null);
+  if (
+    menu &&
+    (menu.workspace !== workspace ||
+      (menu.selection && menu.selection.games !== games) ||
+      (menu.target.kind === "segment" && menu.target.segment !== selectedSegment))
+  ) {
+    setMenu(null);
+  }
   const segment = (segments && segmentAt(segments, frame)) || undefined;
   const monitorSegment =
     previewFrame !== null && segments ? segmentAt(segments, previewFrame) : segment;
@@ -514,6 +550,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     setView(fitRange(rally.start_frame, end, totalFrames));
     return true;
   };
+  const fitVideo = () => setView(fullView(totalFrames));
 
   /** Selects a Rally (its first Shot), fits the Timeline to it and seeks to its start. */
   const goToRally = (next: Selection) => {
@@ -678,20 +715,36 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     togglePlay();
   };
 
-  /** One Annotate action, at the frame its key was pressed on. */
-  const executeAnnotate = ({ action, frame: at }: { action: AnnotateAction; frame: number }) => {
+  /** A shortcut or menu action, at the frame it was requested on. */
+  const executeAnnotate = ({
+    action,
+    frame: at,
+    target,
+  }: {
+    action: AnnotateAction;
+    frame: number;
+    target?: MenuSelection;
+  }) => {
+    // An earlier queued edit (for example, adding a Shot) can change these indices.
+    if (target && target.games !== games) {
+      return recording.notify("Rallies changed. Open the context menu again");
+    }
+    const edit = (operation: (ctx: AnnotateContext) => AnnotateEdit) =>
+      annotateEdit(operation, { frame: at, selection: target?.selection });
+    const activeSelection = target?.selection ?? current;
     switch (action.type) {
       case "rallyStart":
         focusField("rally", "frames");
-        return annotateEdit(markRallyStart, { frame: at });
+        return edit(markRallyStart);
       case "rallyEnd":
         focusField("rally", "frames");
-        return annotateEdit(markRallyEnd, { frame: at });
+        return edit(markRallyEnd);
       case "refereeCall":
         focusField("rally", "referee_call");
-        return annotateEdit((c) => setRefereeCall(c, action.call));
+        return edit((c) => setRefereeCall(c, action.call));
       case "rallyForm":
-        if (!currentRally) return recording.notify("Select a Rally first");
+        if (!selectedRally(games, activeSelection)) return recording.notify("Select a Rally first");
+        setRallySelection(activeSelection);
         focusField("rally", "score");
         return setForm("details");
       case "challengeForm":
@@ -700,12 +753,12 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return setForm("challenge");
       case "unseenRally":
         focusField("rally", "score");
-        return annotateEdit(insertUnseenRally);
+        return edit(insertUnseenRally);
       case "deleteRally":
-        return annotateEdit(deleteRally);
+        return edit(deleteRally);
       case "done": {
-        const result = annotateEdit(markRallyDone);
-        if (result && result.selection.rally !== current.rally) goToRally(result.selection);
+        const result = edit(markRallyDone);
+        if (result && result.selection.rally !== activeSelection.rally) goToRally(result.selection);
         return;
       }
       case "nextGame":
@@ -714,33 +767,33 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         return addShotAt(at);
       case "shotClass":
         focusField("shot", "shot_class");
-        return annotateEdit((c) => setShotClass(c, action.value));
+        return edit((c) => setShotClass(c, action.value));
       case "contactKind":
         focusField("shot", "contact_kind");
-        return annotateEdit((c) => setContactKind(c, action.value));
+        return edit((c) => setContactKind(c, action.value));
       case "swapPartner":
         focusField("shot", "hitter_id");
-        return annotateEdit(swapHitterToPartner);
+        return edit(swapHitterToPartner);
       case "switchTeam":
         focusField("shot", "hitter_id");
-        return annotateEdit(switchHitterTeam);
+        return edit(switchHitterTeam);
       case "flag":
         focusField("shot", action.flag);
-        return annotateEdit((c) => toggleFlag(c, action.flag));
+        return edit((c) => toggleFlag(c, action.flag));
       case "error":
         focusField("shot", "error");
-        return annotateEdit((c) => setError(c, action.kind));
+        return edit((c) => setError(c, action.kind));
       case "gap":
         setInspectorTab("shot");
-        return annotateEdit((c) => toggleGap(c, action.parity));
+        return edit((c) => toggleGap(c, action.parity));
       case "deleteEntry":
-        return annotateEdit(deleteEntry);
+        return edit(deleteEntry);
       case "cycleCertainty": {
         const field =
           inspectorTab === "shot" ? SHOT_FIELDS[cursor.shot] : RALLY_FIELDS[cursor.rally];
         if (!field) return;
         let nextStash = stashRef.current;
-        annotateEdit((c) => {
+        edit((c) => {
           const result = cycleCertainty(c, inspectorTab, field, stashRef.current);
           nextStash = result.stash;
           return result.edit;
@@ -771,10 +824,93 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
     }
   };
 
-  // While `M` waits for Player Tracking, later Annotate keys queue (with the frame they were
-  // pressed at) so they act on the new Shot, in order.
+  // While `M` waits for Player Tracking, later Annotate commands queue with their frame.
+  // Keyboard commands follow the latest selection, while menu commands keep their target.
   const queueAnnotate = useActionQueue(executeAnnotate);
-  const runAnnotate = (action: AnnotateAction, at = frame) => queueAnnotate({ action, frame: at });
+  const runAnnotate = (action: AnnotateAction, at = frame, target?: MenuSelection) =>
+    queueAnnotate({ action, frame: at, target });
+
+  const editPlaySegments: RecordingControls["editSegments"] = (edit) =>
+    recording.editSegments((list, pending) => {
+      const result = edit(list, pending);
+      if (selectedSegment && result.segments !== list) {
+        const start = selectedSegment.start_frame;
+        const nextStart = result.startMoved?.from === start ? result.startMoved.to : start;
+        setSegmentSelection(result.segments.find((s) => s.start_frame === nextStart) ?? null);
+      }
+      return result;
+    });
+
+  // The keyboard follows the playhead and pending segment. A clip menu targets that clip.
+  const runSegment = (action: SegmentAction, target?: PlaySegment) => {
+    if (action.type === "cancel") {
+      setSegmentSelection(null);
+      return recording.cancelPending();
+    }
+    editPlaySegments((list, pending) => {
+      if (target && !list.includes(target)) {
+        return { segments: list, pending, startMoved: null, message: "That Play Segment is gone" };
+      }
+      switch (action.type) {
+        case "markIn":
+          return markIn(list, pending, frame, target);
+        case "markOut":
+          return markOut(list, pending, frame, target);
+        case "setView":
+          return setCameraView(list, pending, frame, action.view, target);
+        case "remove":
+          return removeAt(list, pending, frame, target);
+      }
+    });
+  };
+
+  const openMenu: OpenContextMenu = (event, target) => {
+    event.preventDefault();
+    event.stopPropagation();
+    let selection: Selection | undefined;
+    switch (target.kind) {
+      case "rally":
+        selection = selectRally(games, target.game, target.rally);
+        setInspectorTab("rally");
+        setForm(null);
+        break;
+      case "shot":
+      case "gap":
+        selection = { game: target.game, rally: target.rally, entry: target.entry };
+        setInspectorTab("shot");
+        break;
+    }
+    if (selection) setRallySelection(selection);
+    setSegmentSelection(target.kind === "segment" ? target.segment : null);
+    const trigger = event.currentTarget;
+    setFocused(trigger.closest('[data-panel="rallies"]') ? "rallies" : "timeline");
+    const { clientX: x, clientY: y } = event;
+    const rect = event.button === 0 && x === 0 && y === 0 ? trigger.getBoundingClientRect() : null;
+    setMenu({
+      workspace,
+      target,
+      position: rect ? { x: rect.left, y: rect.bottom } : { x, y },
+      trigger,
+      selection: selection && { games, selection },
+    });
+  };
+
+  const runMenuCommand = (command: MenuCommand) => {
+    if (!menu) return;
+    menu.trigger.focus({ preventScroll: true });
+    closeMenu();
+    switch (command.kind) {
+      case "annotate":
+        return runAnnotate(command.action, frame, menu.selection);
+      case "segment":
+        if (menu.target.kind === "segment") return runSegment(command.action, menu.target.segment);
+        return;
+      case "fitRally":
+        return fitRally();
+      case "fitVideo":
+        return fitVideo();
+    }
+  };
 
   const [selection, setSelection] = useState<{ key: string | null; landmark: Landmark | null }>({
     key: null,
@@ -919,23 +1055,16 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           return setGotoOpen(true);
       }
     };
-    const edit = (action: SegmentAction) => {
-      switch (action.type) {
-        case "markIn":
-          return recording.editSegments((list, pending) => markIn(list, pending, frame));
-        case "markOut":
-          return recording.editSegments((list, pending) => markOut(list, pending, frame));
-        case "setView":
-          return recording.editSegments((list, pending) =>
-            setCameraView(list, pending, frame, action.view),
-          );
-        case "remove":
-          return recording.editSegments((list, pending) => removeAt(list, pending, frame));
-        case "cancel":
-          return recording.cancelPending();
+    if (event.defaultPrevented) return;
+    if (menu) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        menu.trigger.focus({ preventScroll: true });
+        closeMenu();
       }
-    };
-    if (event.defaultPrevented || isTextEntry(event.target)) return;
+      return;
+    }
+    if (isTextEntry(event.target)) return;
     if (
       (event.key === " " || event.key === "Enter") &&
       event.target instanceof Element &&
@@ -997,7 +1126,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
       const segmentAction = segmentKeyAction(event);
       if (segmentAction) {
         event.preventDefault();
-        if (!event.repeat) edit(segmentAction);
+        if (!event.repeat) runSegment(segmentAction);
         return;
       }
       if (calibrateTab === "landmarks") {
@@ -1380,6 +1509,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           roster={roster}
           issues={showRuleChecks ? ruleIssues : undefined}
           onSelectRally={selectOrToggleRally}
+          onContextMenu={openMenu}
           onSelectGame={(gi) => setRallySelection({ game: gi, rally: null, entry: null })}
           onAddUnseen={() => runAnnotate({ type: "unseenRally" })}
           onAddGame={() => runAnnotate({ type: "nextGame" })}
@@ -1406,12 +1536,13 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
           onZoom={zoom}
           focused={focused === "timeline"}
           segments={segments}
+          selectedSegment={selectedSegment}
+          onSelectSegment={setSegmentSelection}
+          onContextMenu={openMenu}
           unmappedRanges={calibrating ? unmappedRanges : undefined}
           pending={calibrating ? recordingState.pending : null}
           onMoveEdge={(segmentStart, edge, to) =>
-            recording.editSegments((list, pending) =>
-              moveEdge(list, pending, segmentStart, edge, to),
-            )
+            editPlaySegments((list, pending) => moveEdge(list, pending, segmentStart, edge, to))
           }
           onPreviewEdge={(target, reason) => {
             controls.preview(target);
@@ -1461,7 +1592,7 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
                     }),
                   onSelectIssue: jumpToIssue,
                   onFitRally: () => {
-                    if (!fitRally()) setView(fullView(totalFrames));
+                    if (!fitRally()) fitVideo();
                   },
                 }
               : undefined
@@ -1476,6 +1607,21 @@ export function Workspace({ match, workspace }: { match: MatchDetail; workspace:
         issueCounts={showRuleChecks ? issueCounts : undefined}
         onNextIssue={() => cycleRuleIssue(1)}
       />
+      {menu && (
+        <ContextMenu
+          label={CONTEXT_MENU_LABELS[menu.target.kind]}
+          position={menu.position}
+          items={contextMenuItems(menu.target, {
+            workspace,
+            hasVideo: totalFrames > 0,
+            frame,
+            rally: currentRally,
+            entry: selectedEntry(games, current),
+          })}
+          onRun={runMenuCommand}
+          onClose={closeMenu}
+        />
+      )}
     </div>
   );
 }

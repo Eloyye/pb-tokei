@@ -2173,6 +2173,49 @@ fieldset.transport-group {
 
 /* --- Timeline ----------------------------------------------------------------------------- */
 
+.context-menu {
+  position: fixed;
+  z-index: 10;
+  width: max-content;
+  min-width: min(210px, calc(100vw - 8px));
+  max-width: calc(100vw - 8px);
+  max-height: calc(100dvh - 8px);
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--header);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 55%);
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu button:hover,
+.context-menu button:focus-visible {
+  background: var(--hover);
+}
+
+.context-menu button[aria-disabled="true"] {
+  color: var(--dim);
+  cursor: default;
+}
+
+.context-menu kbd {
+  flex: none;
+}
+
 .timeline-body {
   flex: 1;
   min-height: 0;
@@ -2268,6 +2311,7 @@ fieldset.transport-group {
   grid-column: 2;
   overflow: hidden;
   border-bottom: 1px solid var(--line);
+  cursor: ew-resize;
   touch-action: none;
 }
 
@@ -2292,12 +2336,15 @@ fieldset.transport-group {
   min-width: 1px;
   padding: 0 4px;
   overflow: hidden;
+  border: 0;
   border-radius: 2px;
   color: var(--text);
   font-size: 9px;
   letter-spacing: 0.06em;
   line-height: 12px;
+  text-align: left;
   white-space: nowrap;
+  cursor: ew-resize;
 }
 
 .seg.main {
@@ -2313,9 +2360,14 @@ fieldset.transport-group {
   outline: 1px solid var(--accent);
 }
 
+.seg.on {
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
 .seg.pending {
   background: transparent;
   outline: 1px dashed var(--accent);
+  pointer-events: none;
 }
 
 .seg-unmapped {
@@ -2387,11 +2439,9 @@ fieldset.transport-group {
 }
 
 .timeline-fill {
-  grid-column: 1 / -1;
-}
-
-.timeline-fill .track-head {
-  height: 100%;
+  grid-column: 2;
+  cursor: ew-resize;
+  touch-action: none;
 }
 
 .playhead-layer {
