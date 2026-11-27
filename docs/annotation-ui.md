@@ -57,7 +57,7 @@ The workspace tabs are how the operator switches jobs. All three tabs use the sa
 | Workspace | Right column in the default layout | Timeline | Notes |
 |---|---|---|---|
 | **Calibrate** (#10, #11, #51) | Two tabs: **Landmarks** and **Players**. Under **Landmarks**: the Calibration in effect at the playhead (mini court, 12-Landmark checklist with leave-one-out errors in feet, Camera Motion status and clickable unmapped ranges with one-click re-anchoring), then every Calibration of each Camera View (click to seek, × to delete, **Use here**). Under **Players**: explicit **Track Players** / **Cancel** with progress %, active compute device badge (`MPS` / `CUDA` / `CPU`), and per-segment status (prioritising the Play Segment under the playhead first); 4-Player checklist showing Zone, Settled, certainty, and active selection; 1-click **Swap A**, **Swap B**, and **Swap ends** buttons acting from the playhead forward; interactive Court diagram preview; and clickable lists of anchors and end changes (click to seek, × to delete) | Segments track editable (with amber hatching on unmapped Camera Motion ranges); Issues track shows clickable amber bars for unmapped ranges; Rallies and Shots dimmed | Under **Landmarks**: Landmarks are clicked on the Monitor with a 4× magnifier and lens-corrected court template; `Tab` skips, `V` marks not visible, `C` confirms carried-over clicks, `X` clears, `N` starts a new Calibration. Under **Players**: detected person boxes, foot dots, and Player labels render over the Monitor for 1-click/1-drag anchoring (see [Player positions and anchoring](#player-positions-and-anchoring)). Play Segment keys (`Shift+I`/`Shift+O`, `1`/`2`, `Backspace`, `Esc`, and edge drags) work on both tabs. |
-| **Annotate** (#11, #12, Gold) | Court diagram (the selected Shot's recorded positions, or live tracked Players when no Shot is selected) + Inspector | All tracks | Monitor header includes a toggleable **Players** overlay (boxes, foot dots, labels) plus quick **Swap A**, **Swap B**, and **Swap ends** controls; parked on the selected Shot's contact, Swap A / Swap B also swap those teammates on that Shot. A whole Game is entered with the keyboard (see [Keymap](#keymap)), apart from landing clicks on the Court diagram. `Enter` marks the Rally Done. |
+| **Annotate** (#11, #12, Gold) | Court diagram (the selected Shot's recorded positions, or live tracked Players when no Shot is selected) + Inspector | All tracks | Monitor header includes a toggleable **Players** overlay (boxes, foot dots, labels) plus quick **Swap A**, **Swap B**, and **Swap ends** controls; parked on the selected Shot's contact, Swap A / Swap B also swap those teammates on that Shot. A whole Game is entered with the keyboard (see [Keymap](#keymap)), apart from landing clicks on the Monitor or Court diagram. `Enter` marks the Rally Done. |
 | **Review** (#30, Assisted) | Court + Inspector | All tracks; Shot markers with low-confidence fields get an amber dot | Low-confidence fields get an amber outline and a percentage. `N`/`Shift+N` move between them. `Enter` accepts the Rally. Threshold slider in the status bar. |
 
 Each key's meaning is set by the workspace. The same key never does two things in one workspace.
@@ -116,9 +116,9 @@ A top-down Court with an orientation toggle in its header. The browser remembers
   - The hitter has a white ring.
   - An Inferred position is drawn at reduced opacity.
   - An Unknown position is drawn as a hollow dashed dot parked outside the court.
-  - Dragging any dot (parked Unknown ones included) sets that Shot's position only, as Observed, with no Calibration needed. A Player dragged out of the Frontcourt becomes not Settled, and the hitter's Contact Zone follows their dot. Clicking a dot without dragging just selects it.
+  - Dragging any dot (parked Unknown ones included) sets that Shot's position only, as Observed, with no Calibration needed. A Player dragged out of the Frontcourt becomes not Settled, and the hitter's Contact Zone follows their dot. Clicking a dot without dragging selects it (clicking it again deselects it).
 - **Previous Shot.** Its positions are drawn as faint ghosts for context.
-- **Landing.** Clicking the court sets the landing (Observed, clamped to the court and surround), shown as a ✕ in the hitter's Team color with a dashed arc from the hitter.
+- **Landing.** Clicking the court — or clicking where the ball bounces on the **Monitor** video on any calibrated, mapped frame — sets the landing (Observed, clamped to the court and surround), shown as a ✕ in the hitter's Team color on both the Court (with a dashed arc from the hitter) and the Monitor. Monitor clicks map through the playhead frame's Calibration and Camera Motion (including lens distortion, ADR 0011), so scrub to the bounce before clicking. Plain clicks on the Monitor give way to Player foot dots, detection-box binding, and Player placement; `Alt`+click always sets the landing even over a Player. Because the mapping is for the ground plane, click the bounce spot on the court surface and keep using the Court diagram for a Volley's "would land" point. Clicking an unmapped frame, outside a Play Segment, or off the court plane does nothing and explains why in the status bar.
 - **Header.** Shows what the diagram is drawing: `Shot <N|?> · contact HH:MM:SS:FF` (or `contact Unknown`) with a **Live** button that deselects the Shot when a Shot is selected, or `Live · HH:MM:SS:FF` at the playhead otherwise.
 - **No Shot selected.** The diagram shows live Player Tracking at the playhead with #11's anchor fixes (below). Deselecting a Shot (clicking its selected pin, clicking **Live**, or pressing `Esc`) returns the diagram to live tracking and switches the Inspector to the Rally tab.
 
@@ -128,6 +128,7 @@ Both `Calibrate → Players` and `Annotate` share one click/drag correction mode
 
 - **Click inside a detected person box on the Monitor** binds the selected Player to that detection (`kind = identity`), snaps to their detected ankles, seeds `team_ends` if none is set yet, and auto-advances selection through unanchored Players.
 - **Drag any Player's foot dot on the Monitor or Court diagram** (or click empty court when placing an undetected Player) saves a `kind = position` anchor directly at the drop coordinates without snapping back to a bad detection box, and re-attaches tracking from there.
+- **Leaving placement in Annotate.** Clicking an already-selected Player dot again (on the Monitor overlay or Court diagram) deselects them, and pressing `Esc` cancels Player placement ("Player placement cancelled") before deselecting the Shot so plain Monitor clicks return to setting landings. `Calibrate → Players` keeps its own selection auto-advance and `Esc` meaning.
 - **Swap A / Swap B / Swap ends** act from the playhead forward, writing coordinate anchors (partner swaps) or `team_ends` records (end swaps) that survive cache rebuilds.
 - **Live Court display:** Team colours (`--team-a`, `--team-b`) with initials, full opacity for `Observed`, reduced opacity for `Inferred`, hollow dashed dots parked outside the court for `Unknown`, and near/far Team labels driven by `team_ends`.
 - Every anchor and `team_ends` edit autosaves and participates in `⌘Z` / `⇧⌘Z` undo/redo in both `Calibrate` and `Annotate`.
@@ -151,7 +152,7 @@ Each row has three parts: label, value, then key hints on the right. A key hint 
   - Contact Zone (follows the hitter's position; click to set it by hand when the position is Unknown)
   - Erne (`E`)
   - ATP (`T`)
-  - Landing (click the court)
+  - Landing (click the court, or click the ground bounce on the Monitor video; `Alt`+click over a Player)
   - Error (`1`–`5`, `0` clears). The Error's Player defaults to the hitter, except for a Body Hit, where it is the opponent nearest the landing (or the first opponent). Pressing `5` again cycles between the opponents and `3` again between the hitter and partner; the row's picker sets any Player.
 - Positions at contact, with a **Sync from tracking** button that re-pulls Player Tracking for the Shot (undoable): one row per Player with Team swatch, name, `(x, |y| ft, Zone)` in certainty style, and a clickable Settled badge (`Settled` / `Moving` / `Unknown`, ADR 0012).
 - Derived, computed and never stored: Shot Type, Rally Phase, Team Status, labeled "Derived · computed, never stored".
@@ -312,6 +313,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Contact Kind: Volley / Bounce | `V` `B` | ✓ |
 | Swap hitter to partner / to the other Team | `X` / `Shift+H` | ✓ (in Calibrate, `X` clears the selected Landmark) |
 | Toggle Erne / ATP | `E` / `T` | ✓ |
+| Set the selected Shot's landing (ground-plane bounce on mapped frames) | Click Court or Monitor (`Alt`+click Monitor over a Player) | ✓ |
 | Error: Net, Out, Kitchen Fault, Double Hit, Body Hit / clear (repeat `5` / `3` cycles the Player) | `1`–`5` / `0` | ✓ (in Calibrate, `1` / `2` set Main / Sideline View) |
 | Observation Gap after current Shot (a leading gap before any Shot): odd / even; again removes, the other key flips | `G` / `Shift+G` | ✓ |
 | Delete Shot or Observation Gap | `Backspace` | ✓ (in Calibrate: remove the Play Segment) |
@@ -319,7 +321,7 @@ This is the Annotate and Review keymap. **Today** marks the inputs that work in 
 | Referee Call: point / second server / side out (again clears) | `Shift+P` / `Shift+2` / `Shift+X` | ✓ |
 | Record a Challenge | `Shift+C` | ✓ |
 | Mark Rally Done (Review: accept), go to next | `Enter` | ✓ in Annotate |
-| Close an inline form; otherwise deselect the Shot, then the Rally | `Esc` | ✓ |
+| Close a popup or inline form; otherwise cancel Player placement (Annotate), then deselect the Shot, then the Rally | `Esc` | ✓ |
 | Next / previous low-confidence field (Review) | `N` / `Shift+N` | planned (in Calibrate, `N` starts a new Calibration) |
 | Undo / redo (Rally Log, anchors and Team ends alike) | `⌘Z` / `⇧⌘Z` | ✓ in all workspaces |
 | Shortcut sheet | `?` | ✓ |

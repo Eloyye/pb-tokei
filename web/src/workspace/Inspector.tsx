@@ -469,7 +469,7 @@ function ShotTab({
         onClick={click("landing")}
         keys={
           <span className="keys">
-            <span className="hint">click court</span>
+            <span className="hint">click court / video</span>
           </span>
         }
       >

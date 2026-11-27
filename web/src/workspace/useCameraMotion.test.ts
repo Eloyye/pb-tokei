@@ -136,18 +136,32 @@ describe("useCameraMotion", () => {
     );
 
     await waitFor(() => expect(getCameraMotionFrames).toHaveBeenCalledTimes(1));
+    expect(result.current.frameLoading).toBe(true);
 
     // Advance the playhead during playback before the response resolves.
     rerender({ frame: 101 });
     rerender({ frame: 103 });
+    expect(result.current.frameLoading).toBe(true);
 
     await act(async () => {
       framesReq.resolve(FRAMES_OUT);
       await framesReq.promise;
     });
 
+    expect(result.current.frameLoading).toBe(false);
     expect(result.current.frameMatrix).toEqual(MATRIX_A);
     expect(getCameraMotionFrames).toHaveBeenCalledTimes(1);
+  });
+
+  it("sets frameMatrix to null and stops frameLoading if a frame-window fetch fails", async () => {
+    vi.mocked(getCameraMotionFrames).mockRejectedValueOnce(new Error("network"));
+
+    const { result } = renderHook(() =>
+      useCameraMotion("match-1", true, SAVED, SEGMENTS, CALIBRATIONS, 100),
+    );
+
+    await waitFor(() => expect(result.current.frameMatrix).toBeNull());
+    expect(result.current.frameLoading).toBe(false);
   });
 
   it("polls while tracking and re-triggers if tracking settles back to idle", async () => {
