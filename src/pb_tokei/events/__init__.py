@@ -24,6 +24,18 @@ from .derived import (
     resolve_attack_exchange,
 )
 from .outcomes import OutcomeReason, ShotJudgment, ShotOutcome, judge_rally, judge_shot
+from .stats import (
+    CourtHalf,
+    RallyRole,
+    ShotBreakdown,
+    Stat,
+    StatBreakdown,
+    StatRow,
+    StatSubject,
+    SubjectKind,
+    compute_stats,
+    wilson_interval,
+)
 
 __all__ = [
     "ESTABLISHED_KEEP_MAX_Y_FT",
@@ -33,6 +45,7 @@ __all__ = [
     "TARGET_TIE_TOLERANCE_FT",
     "ArrivalStatus",
     "AttackExchange",
+    "CourtHalf",
     "DerivedGame",
     "DerivedMatch",
     "DerivedRally",
@@ -40,16 +53,25 @@ __all__ = [
     "ExchangeOutcome",
     "OutcomeReason",
     "RallyPhase",
+    "RallyRole",
+    "ShotBreakdown",
     "ShotJudgment",
     "ShotOutcome",
     "ShotType",
     "SpeedupExchange",
+    "Stat",
+    "StatBreakdown",
+    "StatRow",
+    "StatSubject",
+    "SubjectKind",
     "TeamArrival",
     "TeamStatus",
+    "compute_stats",
     "derive_game",
     "derive_match",
     "derive_rally",
     "judge_rally",
     "judge_shot",
     "resolve_attack_exchange",
+    "wilson_interval",
 ]
