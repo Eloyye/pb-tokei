@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import replace
 
 from pb_tokei.rally_log import (
@@ -34,6 +35,7 @@ from pb_tokei.rally_log import (
 from pb_tokei.roster import Roster, RosterPlayer, set_up_match
 
 DEMO_TOURNAMENT = "Synthetic Doubles Open"
+DEMO_DATE = datetime.date(2026, 4, 15)
 
 
 def demo_games(roster: MatchRoster) -> tuple[Game, ...]:
@@ -171,6 +173,7 @@ def write_demo_match(log: RallyLog) -> MatchId:
     """Append the demo to a Rally Log using a fresh Match ID."""
     names = Roster(
         match_id=MatchId(new_id()),
+        date=DEMO_DATE,
         tournament=DEMO_TOURNAMENT,
         tour=Tour.PPA,
         team_a=(

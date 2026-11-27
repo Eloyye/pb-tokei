@@ -7,9 +7,9 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Match } from "../api/client";
+import { ApiError, type Match } from "../api/client";
 import { MatchList } from "./MatchList";
 
 type Client = typeof import("../api/client");
@@ -17,13 +17,15 @@ type Client = typeof import("../api/client");
 vi.mock("../api/client", async (importOriginal) => ({
   ...(await importOriginal<Client>()),
   listMatches: vi.fn<Client["listMatches"]>(),
+  updateMatch: vi.fn<Client["updateMatch"]>(),
 }));
 
-import { listMatches } from "../api/client";
+import { listMatches, updateMatch } from "../api/client";
 
 function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
   return {
     id,
+    date: "2026-04-12",
     tournament: "PPA Atlanta Open 2026",
     team_a: ["Anna Bright", "Ben Johns"],
     team_b: ["Cara Lee", "Dan Kim"],
@@ -128,8 +130,8 @@ describe("MatchList Video pills", () => {
     ]) {
       const pill = await screen.findByText(text);
       expect(pill.tagName).toBe("SPAN");
+      expect(pill.closest("button")).toBeNull();
     }
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
   it("shows Rally progress, or that there are no Rallies yet", async () => {
@@ -172,7 +174,7 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
   renderList();
 
   expect((await screen.findByText("Mode")).parentElement?.textContent).toBe(
-    "TournamentMatchFranchise MatchVideoModeProgressActiveRatio",
+    "DateTournamentMatchFranchise MatchVideoModeProgressActiveRatio",
   );
   expect(screen.getByText("Gold").classList.contains("pill-none")).toBe(true);
   expect(
@@ -188,4 +190,117 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
   expect(unknown?.textContent).toBe("—");
   expect(unknown?.classList.contains("within-budget")).toBe(false);
   expect(screen.getByText(/Assisted Annotation has a 0.25 budget/)).toBeTruthy();
+});
+
+describe("MatchList editable date", () => {
+  it("shows — for an empty date, saves immediately on change, and reorders newest first", async () => {
+    const dated = makeMatch("m1", {
+      date: "2026-04-10",
+      tournament: "Older Open",
+      team_a: ["Alex One", "Avery Two"],
+    });
+    const undated = makeMatch("m2", {
+      date: null,
+      tournament: "Undated Open",
+      team_a: ["Anna Bright", "Ben Johns"],
+    });
+    vi.mocked(listMatches).mockResolvedValue([dated, undated]);
+    vi.mocked(updateMatch).mockResolvedValue({ ...undated, date: "2026-05-01" });
+
+    renderList();
+
+    const dateButton = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    expect(dateButton.textContent).toBe("—");
+    expect(screen.getByText("2026-04-10")).toBeTruthy();
+
+    fireEvent.click(dateButton);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    );
+    expect(input.type).toBe("date");
+    expect(input.value).toBe("");
+
+    fireEvent.change(input, { target: { value: "2026-05-01" } });
+
+    await waitFor(() =>
+      expect(updateMatch).toHaveBeenCalledWith("m2", { date: "2026-05-01" }, { rallyLog: null }),
+    );
+    fireEvent.blur(input);
+
+    const updatedButton = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    expect(updatedButton.textContent).toBe("2026-05-01");
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["2026-05-01", "2026-04-10"]);
+  });
+
+  it("refuses clearing a date and ignores partial years while editing", async () => {
+    const match = makeMatch("m1", { date: "2026-04-12" });
+    vi.mocked(listMatches).mockResolvedValue([match]);
+    renderList();
+
+    const button = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    fireEvent.click(button);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    );
+
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.change(input, { target: { value: "0002-04-12" } });
+    expect(updateMatch).not.toHaveBeenCalled();
+
+    fireEvent.blur(input);
+    const restored = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    expect(restored.textContent).toBe("2026-04-12");
+  });
+
+  it("shows a save error, reverts the displayed date, and clears the error on retry", async () => {
+    const match = makeMatch("m1", { date: null });
+    vi.mocked(listMatches).mockResolvedValue([match]);
+    vi.mocked(updateMatch)
+      .mockRejectedValueOnce(new ApiError(503, "Rally Log unavailable"))
+      .mockResolvedValueOnce({ ...match, date: "2026-04-18" });
+
+    renderList();
+
+    const button = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    fireEvent.click(button);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    );
+    fireEvent.change(input, { target: { value: "2026-04-18" } });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Rally Log unavailable");
+    expect(input.value).toBe("");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+
+    fireEvent.blur(input);
+    const reverted = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    expect(reverted.textContent).toBe("—");
+
+    fireEvent.click(reverted);
+    const retryInput = screen.getByLabelText<HTMLInputElement>(
+      "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    );
+    fireEvent.change(retryInput, { target: { value: "2026-04-18" } });
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    fireEvent.blur(retryInput);
+    const saved = await screen.findByRole("button", {
+      name: "Date for Anna Bright / Ben Johns vs Cara Lee / Dan Kim",
+    });
+    expect(saved.textContent).toBe("2026-04-18");
+  });
 });

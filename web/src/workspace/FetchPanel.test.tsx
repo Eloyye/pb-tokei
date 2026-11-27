@@ -22,6 +22,7 @@ const SAMPLE_URL = "https://www.youtube.com/watch?v=abc123";
 function makeMatch(overrides: Partial<MatchDetail> = {}): MatchDetail {
   return {
     id: MATCH_ID,
+    date: "2026-04-12",
     tournament: "PPA Atlanta Open 2026",
     team_a: ["Anna Bright", "Ben Johns"],
     team_b: ["Cara Lee", "Dan Kim"],

@@ -41,6 +41,7 @@ export type RecentRallyLog = Schemas["RecentRallyLogOut"];
 export type Match = Awaited<ReturnType<typeof listMatches>>[number];
 export type MatchDetail = Awaited<ReturnType<typeof getMatch>>;
 export type CreateMatchIn = Schemas["CreateMatchIn"];
+export type UpdateMatchIn = Schemas["UpdateMatchIn"];
 export type Roster = Awaited<ReturnType<typeof getRoster>>;
 export type OperatorTime = Schemas["OperatorTimeOut"];
 export type OperatorSessionIn = Schemas["OperatorSessionIn"];
@@ -87,6 +88,21 @@ export async function createMatch(body: CreateMatchIn, rallyLog: string) {
 export async function getMatch(matchId: string) {
   const { data, error, response } = await api.GET("/api/matches/{match_id}", {
     params: { path: { match_id: matchId } },
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function updateMatch(
+  matchId: string,
+  body: UpdateMatchIn,
+  options?: { rallyLog?: string | null },
+): Promise<Match> {
+  const rallyLog = options?.rallyLog ?? tabRallyLog;
+  const { data, error, response } = await api.PATCH("/api/matches/{match_id}", {
+    params: { path: { match_id: matchId } },
+    body,
+    headers: rallyLog === null ? undefined : { [RALLY_LOG_HEADER]: encodeURIComponent(rallyLog) },
   });
   if (data === undefined) throw apiError(response, error);
   return data;

@@ -62,6 +62,7 @@ vi.mock("../api/client", async (importOriginal) => {
 
 const MATCH: MatchDetail = {
   id: "match-rule-checks",
+  date: "2026-04-12",
   tournament: "PPA Atlanta Open 2026",
   team_a: ["Anna Bright", "Ben Johns"],
   team_b: ["Cara Lee", "Dan Kim"],

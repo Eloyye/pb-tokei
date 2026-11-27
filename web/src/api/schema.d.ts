@@ -39,7 +39,11 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    patch?: never;
+    /**
+     * Update Match
+     * @description Updates a Match's date and returns the updated Match summary.
+     */
+    patch: operations["updateMatch"];
     trace?: never;
   };
   "/api/matches/{match_id}/calibrations": {
@@ -622,6 +626,11 @@ export interface components {
     };
     /** CreateMatchIn */
     CreateMatchIn: {
+      /**
+       * Date
+       * Format: date
+       */
+      date: string;
       /** Footage Url */
       footage_url?: string | null;
       franchise_match?: components["schemas"]["FranchiseMatchIn"] | null;
@@ -954,6 +963,8 @@ export interface components {
       assisted_ratio_budget: number;
       /** Broadcast Seconds */
       broadcast_seconds: number | null;
+      /** Date */
+      date: string | null;
       /**
        * Done Rallies
        * @default 0
@@ -1016,6 +1027,8 @@ export interface components {
       assisted_ratio_budget: number;
       /** Broadcast Seconds */
       broadcast_seconds: number | null;
+      /** Date */
+      date: string | null;
       /**
        * Done Rallies
        * @default 0
@@ -1625,6 +1638,14 @@ export interface components {
       /** Start Frame */
       start_frame: number;
     };
+    /** UpdateMatchIn */
+    UpdateMatchIn: {
+      /**
+       * Date
+       * Format: date
+       */
+      date: string;
+    };
     /** ValidationError */
     ValidationError: {
       /** Context */
@@ -1734,6 +1755,41 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MatchDetailOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  updateMatch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdateMatchIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MatchOut"];
         };
       };
       /** @description Validation Error */

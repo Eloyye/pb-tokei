@@ -19,11 +19,13 @@ inclusive at both ends, for Rallies and Play Segments alike.
 
 from __future__ import annotations
 
+import datetime
 import itertools
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, NewType
@@ -568,6 +570,26 @@ class SourceVideo:
             raise ValueError("SourceVideo path cannot be empty")
 
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def check_match_date(value: datetime.date | None) -> None:
+    if value is not None and (
+        not isinstance(value, datetime.date) or isinstance(value, datetime.datetime)
+    ):
+        raise ValueError("Match date must be a calendar date")
+
+
+def parse_match_date(value: str) -> datetime.date:
+    """Parses a calendar date in strict YYYY-MM-DD format."""
+    if not isinstance(value, str) or not _ISO_DATE_RE.fullmatch(value):
+        raise ValueError(f"Match date must be YYYY-MM-DD, not {value!r}")
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"Invalid Match date: {value!r}") from None
+
+
 def check_video_frames(frames: int | None) -> None:
     if frames is not None and frames <= 0:
         raise ValueError("Source video frame count must be positive")
@@ -590,8 +612,8 @@ class OperatorSession:
 
     session_id: UUID
     workspace: OperatorWorkspace
-    started_at: datetime
-    ended_at: datetime
+    started_at: datetime.datetime
+    ended_at: datetime.datetime
     active_seconds: float
 
     def __post_init__(self) -> None:
@@ -748,10 +770,12 @@ class Match:
     team_ends: tuple[TeamEnd, ...] = ()
     annotation_mode: AnnotationMode = AnnotationMode.GOLD
     source_video_frames: int | None = None
+    date: datetime.date | None = None
 
     def __post_init__(self) -> None:
         if self.team_a_id == self.team_b_id:
             raise ValueError("a Match needs two different Teams")
+        check_match_date(self.date)
         check_video_frames(self.source_video_frames)
         if self.source_video_frames is not None and self.source_video is None:
             raise ValueError("Source video frames require a recorded source video")
@@ -783,6 +807,7 @@ class MatchSummary:
     franchise_a: str | None
     franchise_b: str | None
     source_video: SourceVideo | None
+    date: datetime.date | None = field(default=None, kw_only=True)
     annotation_mode: AnnotationMode = field(default=AnnotationMode.GOLD, kw_only=True)
     source_video_frames: int | None = field(default=None, kw_only=True)
     operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary, kw_only=True)

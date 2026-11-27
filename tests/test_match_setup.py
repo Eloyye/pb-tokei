@@ -1,7 +1,9 @@
 from dataclasses import asdict, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from urllib.parse import quote
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,6 +33,7 @@ def client(db: Path) -> TestClient:
 def form(roster: Roster | None = None) -> dict[str, Any]:
     roster = roster or parse_roster(roster_toml())
     body: dict[str, Any] = {
+        "date": roster.date.isoformat(),
         "tournament": roster.tournament,
         "tour": roster.tour,
         "team_a": [asdict(player) for player in roster.team_a],
@@ -206,3 +209,106 @@ def test_footage_enqueue_failure_keeps_the_match_and_shows_the_error(
     assert footage["requested_url"] == url
     expected = "Could not start" if url == URL_A else "Expected an http(s) URL"
     assert expected in footage["error"]
+
+
+@pytest.mark.parametrize(
+    "bad_date", [None, "", "2026-02-30", "20260412", "2026-04-12T00:00:00Z", 0]
+)
+def test_match_creation_rejects_missing_or_malformed_date(
+    client: TestClient, db: Path, bad_date: object
+) -> None:
+    body = form()
+    if bad_date is None:
+        del body["date"]
+    else:
+        body["date"] = bad_date
+
+    response = client.post("/api/matches", json=body)
+
+    assert response.status_code == 422
+    with RallyLog.open(db) as log:
+        assert not log.list_matches()
+
+
+def test_patch_match_date_updates_summary_and_persists(client: TestClient, db: Path) -> None:
+    with RallyLog.open(db) as log:
+        match = set_up_match(log, parse_roster(roster_toml(match_date="2026-03-01")))
+        log.save_match(replace(match, date=None))
+
+    assert client.get(f"/api/matches/{match.id}").json()["date"] is None
+
+    updated = client.patch(f"/api/matches/{match.id}", json={"date": "2026-04-18"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["id"] == str(match.id)
+    assert updated.json()["date"] == "2026-04-18"
+    assert client.get(f"/api/matches/{match.id}").json()["date"] == "2026-04-18"
+    assert client.get("/api/matches").json()[0]["date"] == "2026-04-18"
+
+    changed = client.patch(f"/api/matches/{match.id}", json={"date": "2026-05-02"})
+    assert changed.status_code == 200
+    assert changed.json()["date"] == "2026-05-02"
+    with RallyLog.open(db) as log:
+        assert log.load_match(match.id).date == date(2026, 5, 2)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"date": None},
+        {"date": ""},
+        {"date": "2026-02-30"},
+        {"date": "20260412"},
+        {"date": "2026-04-12T10:00:00Z"},
+        {"date": 1700000000},
+        {"date": "2026-04-18", "tournament": "Other Open"},
+    ],
+)
+def test_patch_match_date_rejects_malformed_body(
+    client: TestClient, db: Path, payload: dict[str, object]
+) -> None:
+    with RallyLog.open(db) as log:
+        match = set_up_match(log, parse_roster(roster_toml(match_date="2026-03-01")))
+
+    response = client.patch(f"/api/matches/{match.id}", json=payload)
+
+    assert response.status_code == 422
+    with RallyLog.open(db) as log:
+        assert log.load_match(match.id).date == date(2026, 3, 1)
+
+
+def test_patch_match_date_checks_existence_origin_and_rally_log(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    with RallyLog.open(db) as log:
+        match = set_up_match(log, parse_roster(roster_toml(match_date="2026-03-01")))
+
+    assert client.patch(f"/api/matches/{uuid4()}", json={"date": "2026-04-18"}).status_code == 404
+
+    no_origin = TestClient(create_app(db), base_url=LOCAL)
+    assert (
+        no_origin.patch(f"/api/matches/{match.id}", json={"date": "2026-04-18"}).status_code == 403
+    )
+    assert (
+        client.patch(
+            f"/api/matches/{match.id}",
+            json={"date": "2026-04-18"},
+            headers={"Origin": "https://example.com"},
+        ).status_code
+        == 403
+    )
+
+    other = tmp_path / "other.duckdb"
+    assert (
+        client.post("/api/rally-log", json={"path": str(other), "create": True}).status_code == 200
+    )
+    assert (
+        client.patch(
+            f"/api/matches/{match.id}",
+            json={"date": "2026-04-18"},
+            headers={"X-Rally-Log": quote(str(db.resolve()))},
+        ).status_code
+        == 409
+    )
+    with RallyLog.open(db) as log:
+        assert log.load_match(match.id).date == date(2026, 3, 1)

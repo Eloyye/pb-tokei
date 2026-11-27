@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from pb_tokei import main
 from pb_tokei.annotate.app import create_app
-from pb_tokei.demo_match import DEMO_TOURNAMENT, write_demo_match
+from pb_tokei.demo_match import DEMO_DATE, DEMO_TOURNAMENT, write_demo_match
 from pb_tokei.events import (
     CourtHalf,
     ExchangeOutcome,
@@ -431,4 +431,5 @@ def test_report_endpoint_reads_the_current_saved_match(
     assert second_id != match_id
     with RallyLog.open(db) as log:
         assert len(log.list_matches()) == 2
+        assert log.load_match(MatchId(UUID(second_id))).date == DEMO_DATE
         assert len(log.get_games(MatchId(UUID(second_id)))) == 3

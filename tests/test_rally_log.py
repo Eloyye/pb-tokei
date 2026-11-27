@@ -1,6 +1,7 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -55,6 +56,7 @@ from pb_tokei.rally_log import (
     inferred,
     new_id,
     observed,
+    parse_match_date,
     team_end_at,
     zone_for_y,
 )
@@ -518,6 +520,7 @@ def test_opening_an_older_database_migrates_match_metadata(
     )
     with RallyLog.open(path) as log:
         migrated = log.load_match(match_id)
+        assert migrated.date is None
         assert migrated.source_video == (
             SourceVideo("https://example.com/existing", "existing", Path("footage/existing.mp4"))
             if has_video_columns
@@ -528,6 +531,127 @@ def test_opening_an_older_database_migrates_match_metadata(
         assert log.get_operator_time(match_id) == OperatorTimeSummary()
         log.set_match_source_video(match_id, video)
         assert log.load_match(match_id).source_video == video
+        log.set_match_date(match_id, date(2026, 4, 12))
+        assert log.load_match(match_id).date == date(2026, 4, 12)
+
+
+def test_opening_a_pre_date_database_migrates_matches_with_null_date(tmp_path: Path) -> None:
+    path = tmp_path / "pre_date.duckdb"
+    video = SourceVideo("https://example.com/existing", "existing", Path("footage/existing.mp4"))
+    match = replace(
+        small_match(),
+        source_video=video,
+        source_video_frames=3600,
+        annotation_mode=AnnotationMode.ASSISTED,
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    session = OperatorSession(
+        new_id(), OperatorWorkspace.ANNOTATE, start, start + timedelta(seconds=30), 20
+    )
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+        log.upsert_operator_session(match.id, session)
+
+    # Recreate `matches` as it existed immediately before issue #107 (no `date` column).
+    with duckdb.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE matches_pre_date (
+                id UUID PRIMARY KEY,
+                tournament_id UUID NOT NULL REFERENCES tournaments (id),
+                team_a_id UUID NOT NULL REFERENCES teams (id),
+                team_b_id UUID NOT NULL REFERENCES teams (id),
+                franchise_match_id UUID REFERENCES franchise_matches (id),
+                source_video_url VARCHAR,
+                source_video_id VARCHAR,
+                source_video_path VARCHAR,
+                source_video_frames INTEGER CHECK (source_video_frames > 0),
+                annotation_mode VARCHAR NOT NULL DEFAULT 'gold'
+                    CHECK (annotation_mode IN ('gold', 'assisted'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO matches_pre_date
+            SELECT id, tournament_id, team_a_id, team_b_id, franchise_match_id,
+                   source_video_url, source_video_id, source_video_path,
+                   source_video_frames, annotation_mode
+            FROM matches
+            """
+        )
+        conn.execute("DROP TABLE matches")
+        conn.execute("ALTER TABLE matches_pre_date RENAME TO matches")
+
+    with RallyLog.open(path) as log:
+        migrated = log.load_match(match.id)
+        assert migrated == replace(match, date=None)
+        summary = log.get_match_summary(match.id)
+        assert summary.date is None
+        assert summary.annotation_mode is AnnotationMode.ASSISTED
+        assert summary.source_video_frames == 3600
+        assert log.get_operator_time(match.id).annotate_seconds == 20
+        log.set_match_date(match.id, date(2026, 3, 21))
+        assert log.load_match(match.id).date == date(2026, 3, 21)
+        assert log.get_match_summary(match.id).date == date(2026, 3, 21)
+
+
+def test_match_date_round_trips_and_set_match_date_preserves_rallies(log: RallyLog) -> None:
+    match = replace(small_match(), date=date(2026, 4, 10))
+    log.save_match(match)
+    assert log.load_match(match.id) == match
+
+    log.set_match_date(match.id, date(2026, 4, 15))
+    assert log.load_match(match.id) == replace(match, date=date(2026, 4, 15))
+    assert log.get_match_summary(match.id).date == date(2026, 4, 15)
+
+    with pytest.raises(MatchNotFound):
+        log.set_match_date(MatchId(new_id()), date(2026, 4, 15))
+    invalid_none: Any = None
+    with pytest.raises(ValueError, match="cannot be cleared"):
+        log.set_match_date(match.id, invalid_none)
+    with pytest.raises(ValueError, match="calendar date"):
+        log.set_match_date(match.id, datetime(2026, 4, 15, tzinfo=UTC))
+
+
+def test_list_matches_orders_newest_date_first_nulls_last_then_tournament(log: RallyLog) -> None:
+    beta = Tournament(TournamentId(new_id()), "Beta Open", Tour.PPA)
+    alpha = Tournament(TournamentId(new_id()), "Alpha Open", Tour.APP)
+    log.save_tournament(beta)
+    log.save_tournament(alpha)
+
+    oldest = replace(
+        small_match(), id=MatchId(new_id()), tournament_id=alpha.id, date=date(2026, 1, 10)
+    )
+    newest_beta = replace(
+        small_match(), id=MatchId(new_id()), tournament_id=beta.id, date=date(2026, 5, 2)
+    )
+    newest_alpha = replace(
+        small_match(), id=MatchId(new_id()), tournament_id=alpha.id, date=date(2026, 5, 2)
+    )
+    undated_beta = replace(small_match(), id=MatchId(new_id()), tournament_id=beta.id, date=None)
+    undated_alpha = replace(small_match(), id=MatchId(new_id()), tournament_id=alpha.id, date=None)
+    for match in (undated_beta, oldest, newest_beta, undated_alpha, newest_alpha):
+        log.save_match(match)
+
+    assert [s.id for s in log.list_matches()] == [
+        newest_alpha.id,
+        newest_beta.id,
+        oldest.id,
+        undated_alpha.id,
+        undated_beta.id,
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "2026-02-30", "2025-02-29", "2026-13-01", "20260412", "2026-4-5", "2026-04-12T00:00:00"],
+)
+def test_parse_match_date_rejects_malformed_dates(bad: str) -> None:
+    assert parse_match_date("2024-02-29") == date(2024, 2, 29)
+    with pytest.raises(ValueError):
+        parse_match_date(bad)
 
 
 # --- Play Segments and Calibrations -------------------------------------------------------

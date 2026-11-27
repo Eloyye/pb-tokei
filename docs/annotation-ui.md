@@ -68,8 +68,9 @@ Annotate and Review share the saved panel swap. In the small slot, the Monitor s
 
 ## Home
 
-A separate screen: a dense table of Matches with these columns:
+A separate screen: a dense table of Matches (newest date first, undated Matches last, then Tournament name) with these columns:
 
+- Date (editable inline; undated Matches show `—`; changing it saves straight away and clearing is not allowed)
 - Tournament
 - Match (Teams with color swatches)
 - Franchise Match

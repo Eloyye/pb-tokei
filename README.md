@@ -91,6 +91,7 @@ A Roster File is a TOML file that sets up one Match: its Tournament, its two Tea
 uv run pb-tokei match new rosters/<tournament>/<match>.toml
 uv run pb-tokei match add rosters/<tournament>/<match>.toml [--db <path>]
 uv run pb-tokei match list [--tournament <name>] [--db <path>]
+uv run pb-tokei match set-date <match-id> <YYYY-MM-DD> [--db <path>]
 ```
 
 ### Annotation app
