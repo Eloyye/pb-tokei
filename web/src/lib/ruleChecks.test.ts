@@ -27,8 +27,11 @@ const at = (x: number, y: number): ShotPosition => ({
   settled: observed(true),
 });
 
+const LANDED = observed({ x: 0, y: 15 });
+
+/** A Shot with a recorded landing by default so unrelated check tests don't trip missing_landing. */
 function shot(frame: number, fields: Partial<Shot> = {}): Shot {
-  return { ...newShot(frame), ...fields };
+  return { ...newShot(frame), landing: LANDED, ...fields };
 }
 
 function gap(missing: "odd" | "even"): ObservationGap {
@@ -48,7 +51,7 @@ function game(rallies: Rally[], number = 1): Game {
   return { number, rallies };
 }
 
-describe("ruleChecks: Shot-level checks (1–7)", () => {
+describe("ruleChecks: Shot-level checks", () => {
   it("Check 1: flags Serve hit by Receiving Team and re-anchors forward without cascading", () => {
     const r = rally(1, {
       serving_team_id: observed("A"),
@@ -428,6 +431,161 @@ describe("ruleChecks: Shot-level checks (1–7)", () => {
     });
     expect(checkMatch([game([rUpheld])], ROSTER).map((i) => i.code)).toEqual([
       "error_winner_mismatch",
+    ]);
+  });
+
+  it("Missing landing (#99): warns in Amber when Serve or Return has Unknown landing, and skips Shot 3+", () => {
+    const rMissingBoth = rally(1, {
+      serving_team_id: observed("A"),
+      server_id: observed("a1"),
+      returner_id: observed("b1"),
+      entries: [
+        { ...newShot(1010), hitter_id: observed("a1") },
+        { ...newShot(1050), hitter_id: observed("b1"), contact_kind: observed("bounce") },
+        { ...newShot(1090), hitter_id: observed("a2"), contact_kind: observed("bounce") },
+      ],
+    });
+    expect(checkMatch([game([rMissingBoth])], ROSTER)).toEqual([
+      expect.objectContaining({
+        code: "missing_landing",
+        severity: "amber",
+        entryIndex: 0,
+        shotFrame: 1010,
+        field: "landing",
+        message: "Serve has no landing — click the Court or Monitor to record it.",
+      }),
+      expect.objectContaining({
+        code: "missing_landing",
+        severity: "amber",
+        entryIndex: 1,
+        shotFrame: 1050,
+        field: "landing",
+        message: "Return has no landing — click the Court or Monitor to record it.",
+      }),
+    ]);
+
+    const rMissingServeOnly = rally(1, {
+      serving_team_id: observed("A"),
+      entries: [
+        shot(1010, { hitter_id: observed("a1"), landing: UNKNOWN }),
+        shot(1050, {
+          hitter_id: observed("b1"),
+          contact_kind: observed("bounce"),
+          landing: observed({ x: 0, y: -16 }),
+        }),
+      ],
+    });
+    expect(
+      checkMatch([game([rMissingServeOnly])], ROSTER).map((i) => [i.entryIndex, i.code]),
+    ).toEqual([[0, "missing_landing"]]);
+
+    const rMissingReturnOnly = rally(1, {
+      serving_team_id: observed("A"),
+      entries: [
+        shot(1010, { hitter_id: observed("a1"), landing: observed({ x: 0, y: 16 }) }),
+        shot(1050, {
+          hitter_id: observed("b1"),
+          contact_kind: observed("bounce"),
+          landing: UNKNOWN,
+        }),
+      ],
+    });
+    expect(
+      checkMatch([game([rMissingReturnOnly])], ROSTER).map((i) => [i.entryIndex, i.code]),
+    ).toEqual([[1, "missing_landing"]]);
+  });
+
+  it("Missing landing (#99): accepts Observed and Inferred landings on Serve and Return", () => {
+    const rWithLandings = rally(1, {
+      serving_team_id: observed("A"),
+      entries: [
+        shot(1010, { hitter_id: observed("a1"), landing: observed({ x: 3, y: 18 }) }),
+        shot(1050, {
+          hitter_id: observed("b1"),
+          contact_kind: observed("bounce"),
+          landing: inferred({ x: -2, y: -19 }),
+        }),
+      ],
+    });
+    expect(checkMatch([game([rWithLandings])], ROSTER)).toEqual([]);
+  });
+
+  it("Missing landing (#99): skips Rally-ending Errors on Serve and Return, but still warns on non-final Errors", () => {
+    const rFaultedServe = rally(1, {
+      serving_team_id: observed("A"),
+      winner_id: observed("B"),
+      entries: [
+        {
+          ...newShot(1010),
+          hitter_id: observed("a1"),
+          error: { kind: observed("net"), player_id: observed("a1") },
+        },
+      ],
+    });
+    expect(checkMatch([game([rFaultedServe])], ROSTER)).toEqual([]);
+
+    const rFaultedReturn = rally(1, {
+      serving_team_id: observed("A"),
+      winner_id: observed("A"),
+      entries: [
+        shot(1010, { hitter_id: observed("a1") }),
+        {
+          ...newShot(1050),
+          hitter_id: observed("b1"),
+          contact_kind: observed("bounce"),
+          error: { kind: observed("out"), player_id: observed("b1") },
+        },
+      ],
+    });
+    expect(checkMatch([game([rFaultedReturn])], ROSTER)).toEqual([]);
+
+    const rNonFinalServeError = rally(1, {
+      serving_team_id: observed("A"),
+      entries: [
+        {
+          ...newShot(1010),
+          hitter_id: observed("a1"),
+          error: { kind: observed("net"), player_id: observed("a1") },
+        },
+        shot(1050, { hitter_id: observed("b1"), contact_kind: observed("bounce") }),
+      ],
+    });
+    expect(
+      checkMatch([game([rNonFinalServeError])], ROSTER).map((i) => ({
+        entry: i.entryIndex,
+        code: i.code,
+        severity: i.severity,
+        field: i.field,
+      })),
+    ).toEqual([
+      { entry: 0, code: "missing_landing", severity: "amber", field: "landing" },
+      { entry: 0, code: "non_final_error", severity: "red", field: "error" },
+    ]);
+  });
+
+  it("Missing landing (#99): skips Unknown Shot Numbers and checks Inferred Shot Numbers", () => {
+    const rAfterGap = rally(1, {
+      serving_team_id: observed("A"),
+      entries: [gap("odd"), { ...newShot(1050), hitter_id: observed("b1") }],
+    });
+    expect(checkMatch([game([rAfterGap])], ROSTER)).toEqual([]);
+
+    const rUnnumbered: Rally = {
+      ...newRally(1, 1000),
+      end_frame: 1300,
+      serving_team_id: observed("A"),
+      entries: [{ ...newShot(1010), shot_number: UNKNOWN, hitter_id: observed("a1") }],
+    };
+    expect(checkMatch([game([rUnnumbered])], ROSTER)).toEqual([]);
+
+    const rInferredShotNum: Rally = {
+      ...newRally(1, 1000),
+      end_frame: 1300,
+      serving_team_id: observed("A"),
+      entries: [{ ...newShot(1010), shot_number: inferred(1), hitter_id: observed("a1") }],
+    };
+    expect(checkMatch([game([rInferredShotNum])], ROSTER).map((i) => i.code)).toEqual([
+      "missing_landing",
     ]);
   });
 });

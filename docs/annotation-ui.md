@@ -241,7 +241,7 @@ Side-out pre-fill (Inferred, never overwriting Observed):
 
 ## Rule checks (#13)
 
-Live, non-blocking rule checks run purely on the Match's in-memory Games and Roster in Annotate and Review (never persisted or dismissible, ADR 0003). They evaluate Observed and Inferred facts across every Rally regardless of status (`empty`, `in_progress`, or `done`) and skip Unknown facts (except that an Unknown-hitter Shot mid-Rally counts as one Team flip in alternation).
+Live, non-blocking rule checks run purely on the Match's in-memory Games and Roster in Annotate and Review (never persisted or dismissible, ADR 0003). They evaluate Observed and Inferred facts across every Rally regardless of status (`empty`, `in_progress`, or `done`) and skip Unknown facts (except that an Unknown-hitter Shot mid-Rally counts as one Team flip in alternation, and an Unknown landing on a Serve or Return raises an amber warning).
 
 Each check appears in four linked places:
 
@@ -259,6 +259,7 @@ Each check appears in four linked places:
 - **Amber** means likely wrong:
   - **Serve / Return hitter mismatch** (`Hitter`): Shot 1's hitter differs from the Rally's Server, or Shot 2's hitter differs from the Returner (suppressed when Team alternation already flagged the Shot in red).
   - **Volley at the kitchen line** (`Contact Kind`): Volley inside the sidelines (`|x| ≤ 10.0 ft`) in the `6.5–7.0 ft` kitchen-line margin (same `Erne` and hitter `Kitchen Fault` exemptions).
+  - **Missing Serve / Return landing** (`Landing`): Shot 1 (Serve) or Shot 2 (Return) has an Unknown landing, so Shot Outcome (#17) cannot judge its depth (skipped when the Shot ends the Rally with an Error, and when Shot Number is Unknown).
   - **Last-Shot Error vs Rally winner** (`Error`): final Shot's Error implies a different winner than `Rally.winner_id` (exempt when a Challenge was overturned).
   - **Referee Call vs server number** (`Referee Call`): `Side out` called with Server 1, or `Second server` called with Server 2.
   - **Winner agreement** (`Winner`): post-Challenge official ruling (flipped Referee Call or last-Shot Error when overturned, else Referee Call) disagrees with the scoreboard reading, or `Rally.winner_id` disagrees with the official ruling or scoreboard (without duplicating the same conflict).

@@ -57,6 +57,7 @@ export type RuleIssueCode =
   | "kitchen_line_volley"
   | "non_final_error"
   | "error_winner_mismatch"
+  | "missing_landing"
   | "negative_score"
   | "server_wrong_team"
   | "returner_wrong_team"
@@ -74,7 +75,7 @@ export type RuleIssueCode =
   | "score_backwards"
   | "score_jump";
 
-export type ShotIssueField = Extract<ShotField, "hitter_id" | "contact_kind" | "error">;
+export type ShotIssueField = Extract<ShotField, "hitter_id" | "contact_kind" | "landing" | "error">;
 export type RallyIssueField = Extract<
   RallyField,
   "score" | "serving_team_id" | "server_id" | "returner_id" | "referee_call" | "winner_id"
@@ -230,7 +231,7 @@ function compareIssues(a: RuleIssue, b: RuleIssue): number {
   return 0;
 }
 
-/** Runs Shot-level checks 1–7 on one Rally. */
+/** Runs Shot-level rule checks on one Rally. */
 function checkShots(
   roster: Roster,
   gameIndex: number,
@@ -404,6 +405,7 @@ function checkShots(
 
     // Check 6: Error on a non-final Shot (Red).
     const isLastEntry = ei === rally.entries.length - 1;
+    const finalError = isLastEntry ? shot.error : null;
     if (shot.error !== null && !isLastEntry) {
       emit(
         "non_final_error",
@@ -414,14 +416,8 @@ function checkShots(
     }
 
     // Check 7: Last-Shot Error disagrees with Rally.winner_id (Amber).
-    if (
-      isLastEntry &&
-      shot.error !== null &&
-      known(shot.error.player_id) &&
-      rallyWinner !== null &&
-      !overturned
-    ) {
-      const errorPlayerTeam = teamOf(roster, shot.error.player_id.value);
+    if (finalError !== null && known(finalError.player_id) && rallyWinner !== null && !overturned) {
+      const errorPlayerTeam = teamOf(roster, finalError.player_id.value);
       if (errorPlayerTeam !== null) {
         const errorWinner = otherTeam(roster, errorPlayerTeam);
         if (errorWinner !== rallyWinner) {
@@ -429,10 +425,21 @@ function checkShots(
             "error_winner_mismatch",
             "amber",
             "error",
-            `Error by ${playerName(roster, shot.error.player_id.value)} implies ${teamName(roster, errorWinner)} won, but Rally winner is ${teamName(roster, rallyWinner)}.`,
+            `Error by ${playerName(roster, finalError.player_id.value)} implies ${teamName(roster, errorWinner)} won, but Rally winner is ${teamName(roster, rallyWinner)}.`,
           );
         }
       }
+    }
+
+    // Missing landing on Serve or Return (#99) (Amber).
+    if ((shotNum === 1 || shotNum === 2) && !known(shot.landing) && finalError === null) {
+      const label = shotNum === 1 ? "Serve" : "Return";
+      emit(
+        "missing_landing",
+        "amber",
+        "landing",
+        `${label} has no landing — click the Court or Monitor to record it.`,
+      );
     }
   }
 }
@@ -876,7 +883,7 @@ function checkCrossGapMonotonicity(
   }
 }
 
-/** Runs Rally-level checks 8–11 and Shot-level checks 1–7 across one Game. */
+/** Runs Shot-level and Rally-level rule checks across one Game. */
 function checkGame(roster: Roster, gameIndex: number, game: Game, out: RuleIssue[]): void {
   const evenRight = new Map<string, string>();
   let legalServingBox: Box | null = null;
@@ -961,7 +968,7 @@ function checkGame(roster: Roster, gameIndex: number, game: Game, out: RuleIssue
 }
 
 /**
- * Evaluates all 11 rule checks across every Game and Rally of a Match, returning issues in
+ * Evaluates all rule checks across every Game and Rally of a Match, returning issues in
  * canonical chronological order: Game.number → Rally.number → Rally-level (Inspector field order)
  * → Shot-level (entryIndex order, then Inspector field order).
  */
