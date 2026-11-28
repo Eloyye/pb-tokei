@@ -4,12 +4,12 @@ Every fact is two columns: `<name>` holding the value and `<name>_certainty` hol
 'observed', 'inferred' or 'unknown'. A CHECK keeps them consistent: Unknown facts have no value.
 Court points are `<name>_x`, `<name>_y` and `<name>_certainty`.
 
-Roster tables (players, teams, tournaments...) are upserted and never deleted. The annotation
-tables under a Match (games, rallies, shots...) are rewritten together whenever the Match is
-saved, so they are keyed by the Match and carry no foreign keys to it or to each other: DuckDB
-can't delete a parent and its children, or update a referenced row, in one transaction.
+Tables carry primary keys, uniqueness and CHECK constraints, but no foreign keys: DuckDB can't
+update or delete a child row and delete a now-orphaned parent row in the same transaction
+(ADR 0016). `RallyLog` enforces referential integrity inside its transactional operations.
 """
 
+from collections.abc import Callable
 from enum import StrEnum
 
 import duckdb
@@ -66,10 +66,10 @@ def matches_table(name: str) -> str:
     return f"""
 CREATE TABLE IF NOT EXISTS {name} (
     id UUID PRIMARY KEY,
-    tournament_id UUID NOT NULL REFERENCES tournaments (id),
-    team_a_id UUID NOT NULL REFERENCES teams (id),
-    team_b_id UUID NOT NULL REFERENCES teams (id),
-    franchise_match_id UUID REFERENCES franchise_matches (id),
+    tournament_id UUID NOT NULL,
+    team_a_id UUID NOT NULL,
+    team_b_id UUID NOT NULL,
+    franchise_match_id UUID,
     date DATE,
     source_video_url VARCHAR,
     source_video_id VARCHAR,
@@ -168,7 +168,7 @@ def shot_positions_table(name: str) -> str:
     return f"""
 CREATE TABLE IF NOT EXISTS {name} (
     {_SHOT_KEY},
-    player_id UUID NOT NULL REFERENCES players (id),
+    player_id UUID NOT NULL,
     {_fact("position", "POINT")},
     {_fact("settled", "BOOLEAN")},
     PRIMARY KEY (match_id, game_number, rally_number, log_position, player_id)
@@ -401,12 +401,126 @@ def migrate(db: duckdb.DuckDBPyConnection) -> None:
         db.execute("COMMIT")
 
     _migrate_rally_status(db)
+    _migrate_drop_foreign_keys(db)
+
+
+def teams_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    id UUID PRIMARY KEY,
+    player_low_id UUID NOT NULL,
+    player_high_id UUID NOT NULL,
+    CHECK (player_low_id < player_high_id),
+    UNIQUE (player_low_id, player_high_id)
+)"""
+
+
+def franchise_matches_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    id UUID PRIMARY KEY,
+    tournament_id UUID NOT NULL,
+    franchise_a_id UUID NOT NULL,
+    franchise_b_id UUID NOT NULL
+)"""
+
+
+def shots_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    {_SHOT_KEY},
+    {_fact("shot_number", "INTEGER")},
+    {_fact("hitter_id", _PLAYER)},
+    {_fact("contact_frame", "INTEGER")},
+    {_fact("contact_zone", "VARCHAR", values=_one_of("contact_zone", Zone))},
+    {_fact("shot_class", "VARCHAR", values=_one_of("shot_class", ShotClass))},
+    {_fact("contact_kind", "VARCHAR", values=_one_of("contact_kind", ContactKind))},
+    {_fact("erne", "BOOLEAN")},
+    {_fact("atp", "BOOLEAN")},
+    {_fact("landing", "POINT")},
+    has_error BOOLEAN NOT NULL,
+    {_fact("error_kind", "VARCHAR", optional=True, values=_one_of("error_kind", ErrorKind))},
+    {_fact("error_player_id", _PLAYER, optional=True)},
+    CHECK (has_error = (error_kind_certainty IS NOT NULL)),
+    CHECK (has_error = (error_player_id_certainty IS NOT NULL)),
+    PRIMARY KEY (match_id, game_number, rally_number, log_position)
+)"""
+
+
+def player_anchors_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    match_id UUID NOT NULL,
+    frame INTEGER NOT NULL CHECK (frame >= 0),
+    player_id UUID NOT NULL,
+    kind VARCHAR NOT NULL {_one_of("kind", AnchorKind)},
+    image_x DOUBLE NOT NULL CHECK (image_x BETWEEN 0 AND 1),
+    image_y DOUBLE NOT NULL CHECK (image_y BETWEEN 0 AND 1),
+    PRIMARY KEY (match_id, frame, player_id)
+)"""
+
+
+def team_ends_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    match_id UUID NOT NULL,
+    effective_from_frame INTEGER NOT NULL CHECK (effective_from_frame >= 0),
+    near_team_id UUID NOT NULL,
+    PRIMARY KEY (match_id, effective_from_frame)
+)"""
+
+
+def _migrate_drop_foreign_keys(db: duckdb.DuckDBPyConnection) -> None:
+    """Rebuilds legacy tables carrying foreign keys so edits and orphan deletes can share one
+    transaction (ADR 0016). Children are rebuilt before their parents."""
+    fk_tables = {
+        name
+        for (name,) in db.execute(
+            "SELECT DISTINCT table_name FROM duckdb_constraints() "
+            "WHERE constraint_type = 'FOREIGN KEY'"
+        ).fetchall()
+    }
+    if not fk_tables:
+        return
+    ordered: tuple[tuple[str, Callable[[str], str]], ...] = (
+        ("shot_positions", shot_positions_table),
+        ("shots", shots_table),
+        ("rallies", rallies_table),
+        ("player_anchors", player_anchors_table),
+        ("team_ends", team_ends_table),
+        ("matches", matches_table),
+        ("franchise_matches", franchise_matches_table),
+        ("teams", teams_table),
+    )
+    for table, ddl in ordered:
+        if table not in fk_tables:
+            continue
+        columns = [
+            col
+            for (col,) in db.execute(
+                "SELECT column_name FROM duckdb_columns() "
+                "WHERE table_name = ? ORDER BY column_index",
+                [table],
+            ).fetchall()
+        ]
+        cols = ", ".join(columns)
+        migrated = f"{table}_migrated"
+        db.execute("BEGIN TRANSACTION")
+        try:
+            db.execute(ddl(migrated))
+            db.execute(f"INSERT INTO {migrated} ({cols}) SELECT {cols} FROM {table}")
+            db.execute(f"DROP TABLE {table}")
+            db.execute(f"ALTER TABLE {migrated} RENAME TO {table}")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
 
 
 _RALLY_KEY = "match_id UUID NOT NULL, game_number INTEGER NOT NULL"
 _SHOT_KEY = f"{_RALLY_KEY}, rally_number INTEGER NOT NULL, log_position INTEGER NOT NULL"
-_PLAYER = "UUID REFERENCES players (id)"
-_TEAM = "UUID REFERENCES teams (id)"
+_PLAYER = "UUID"
+_TEAM = "UUID"
 _RULING = _one_of("challenge_ruling", Ruling)
 
 STATEMENTS = [
@@ -422,26 +536,13 @@ CREATE TABLE IF NOT EXISTS players (
     name VARCHAR NOT NULL,
     handedness VARCHAR NOT NULL {_one_of("handedness", Handedness)}
 )""",
-    """
-CREATE TABLE IF NOT EXISTS teams (
-    id UUID PRIMARY KEY,
-    player_low_id UUID NOT NULL REFERENCES players (id),
-    player_high_id UUID NOT NULL REFERENCES players (id),
-    CHECK (player_low_id < player_high_id),
-    UNIQUE (player_low_id, player_high_id)
-)""",
+    teams_table("teams"),
     """
 CREATE TABLE IF NOT EXISTS franchises (
     id UUID PRIMARY KEY,
     name VARCHAR NOT NULL
 )""",
-    """
-CREATE TABLE IF NOT EXISTS franchise_matches (
-    id UUID PRIMARY KEY,
-    tournament_id UUID NOT NULL REFERENCES tournaments (id),
-    franchise_a_id UUID NOT NULL REFERENCES franchises (id),
-    franchise_b_id UUID NOT NULL REFERENCES franchises (id)
-)""",
+    franchise_matches_table("franchise_matches"),
     matches_table("matches"),
     f"""
 CREATE TABLE IF NOT EXISTS operator_sessions (
@@ -471,25 +572,7 @@ CREATE TABLE IF NOT EXISTS games (
     PRIMARY KEY (match_id, number)
 )""",
     rallies_table("rallies"),
-    f"""
-CREATE TABLE IF NOT EXISTS shots (
-    {_SHOT_KEY},
-    {_fact("shot_number", "INTEGER")},
-    {_fact("hitter_id", _PLAYER)},
-    {_fact("contact_frame", "INTEGER")},
-    {_fact("contact_zone", "VARCHAR", values=_one_of("contact_zone", Zone))},
-    {_fact("shot_class", "VARCHAR", values=_one_of("shot_class", ShotClass))},
-    {_fact("contact_kind", "VARCHAR", values=_one_of("contact_kind", ContactKind))},
-    {_fact("erne", "BOOLEAN")},
-    {_fact("atp", "BOOLEAN")},
-    {_fact("landing", "POINT")},
-    has_error BOOLEAN NOT NULL,
-    {_fact("error_kind", "VARCHAR", optional=True, values=_one_of("error_kind", ErrorKind))},
-    {_fact("error_player_id", _PLAYER, optional=True)},
-    CHECK (has_error = (error_kind_certainty IS NOT NULL)),
-    CHECK (has_error = (error_player_id_certainty IS NOT NULL)),
-    PRIMARY KEY (match_id, game_number, rally_number, log_position)
-)""",
+    shots_table("shots"),
     shot_positions_table("shot_positions"),
     f"""
 CREATE TABLE IF NOT EXISTS observation_gaps (
@@ -497,23 +580,8 @@ CREATE TABLE IF NOT EXISTS observation_gaps (
     missing VARCHAR NOT NULL {_one_of("missing", Parity)},
     PRIMARY KEY (match_id, game_number, rally_number, log_position)
 )""",
-    f"""
-CREATE TABLE IF NOT EXISTS player_anchors (
-    match_id UUID NOT NULL,
-    frame INTEGER NOT NULL CHECK (frame >= 0),
-    player_id UUID NOT NULL REFERENCES players (id),
-    kind VARCHAR NOT NULL {_one_of("kind", AnchorKind)},
-    image_x DOUBLE NOT NULL CHECK (image_x BETWEEN 0 AND 1),
-    image_y DOUBLE NOT NULL CHECK (image_y BETWEEN 0 AND 1),
-    PRIMARY KEY (match_id, frame, player_id)
-)""",
-    """
-CREATE TABLE IF NOT EXISTS team_ends (
-    match_id UUID NOT NULL,
-    effective_from_frame INTEGER NOT NULL CHECK (effective_from_frame >= 0),
-    near_team_id UUID NOT NULL REFERENCES teams (id),
-    PRIMARY KEY (match_id, effective_from_frame)
-)""",
+    player_anchors_table("player_anchors"),
+    team_ends_table("team_ends"),
 ]
 
 # A Match's Games and everything under them, children first: rewritten by `replace_games`.

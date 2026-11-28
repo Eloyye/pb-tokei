@@ -363,6 +363,10 @@ MAX_STORED_INT = 2**31 - 1
 """The largest number the Rally Log's INTEGER columns hold (frames, numbers, scores)."""
 
 
+class RosterMismatchError(ValueError):
+    """A Player or Team id does not belong to the Match."""
+
+
 def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
     """Raises ValueError unless the Games fit the Match: unique positive Game and Rally numbers,
     frame bounds in order, every number small enough to store, and every Team and Player one of
@@ -378,11 +382,15 @@ def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
 
     def team(fact: Fact[TeamId], what: str) -> None:
         if fact.value is not None and fact.value not in teams:
-            raise ValueError(f"{what}: Team {fact.value} is not in Match {roster.match_id}")
+            raise RosterMismatchError(
+                f"{what}: Team {fact.value} is not in Match {roster.match_id}"
+            )
 
     def player(fact: Fact[PlayerId], what: str) -> None:
         if fact.value is not None and fact.value not in players:
-            raise ValueError(f"{what}: Player {fact.value} is not in Match {roster.match_id}")
+            raise RosterMismatchError(
+                f"{what}: Player {fact.value} is not in Match {roster.match_id}"
+            )
 
     for game in games:
         if game.number < 1:
@@ -434,7 +442,7 @@ def check_games(games: Iterable[Game], roster: MatchRoster) -> None:
                     player(shot.error.player_id, f"{where} Error")
                 for player_id in shot.positions:
                     if player_id not in players:
-                        raise ValueError(
+                        raise RosterMismatchError(
                             f"{where} position: Player {player_id} is not in Match "
                             f"{roster.match_id}"
                         )

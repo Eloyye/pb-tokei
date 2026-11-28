@@ -142,6 +142,13 @@ class CameraMotionService:
             for job in self._jobs.values():
                 job.cancel.set()
 
+    def cancel(self, match_id: MatchId) -> None:
+        """Cancels an active Camera Motion job for `match_id`, if any."""
+        with self._lock:
+            job = self._jobs.pop(match_id, None)
+            if job is not None:
+                job.cancel.set()
+
     @property
     def cache(self) -> CameraMotionCache:
         return self._cache

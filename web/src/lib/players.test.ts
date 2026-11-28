@@ -26,10 +26,10 @@ const MATCH: Pick<MatchDetail, "team_a_id" | "team_b_id" | "team_a" | "team_b" |
   team_a: ["Anna Bright", "Anna-Leigh Waters"],
   team_b: ["Jorja Johnson", "Tyra Black"],
   players: [
-    { id: "p-a1", name: "Anna Bright", team_id: "team-a", team: "a" },
-    { id: "p-a2", name: "Anna-Leigh Waters", team_id: "team-a", team: "a" },
-    { id: "p-b1", name: "Jorja Johnson", team_id: "team-b", team: "b" },
-    { id: "p-b2", name: "Tyra Black", team_id: "team-b", team: "b" },
+    { id: "p-a1", name: "Anna Bright", handedness: "right", team_id: "team-a", team: "a" },
+    { id: "p-a2", name: "Anna-Leigh Waters", handedness: "right", team_id: "team-a", team: "a" },
+    { id: "p-b1", name: "Jorja Johnson", handedness: "right", team_id: "team-b", team: "b" },
+    { id: "p-b2", name: "Tyra Black", handedness: "right", team_id: "team-b", team: "b" },
   ],
 };
 
@@ -50,9 +50,9 @@ describe("players helpers", () => {
 
   it("computes initials and disambiguates collisions", () => {
     const map = playerInitialsMap([
-      { id: "1", name: "Anna Wright", team_id: "team-a", team: "a" },
-      { id: "2", name: "Anna Waters", team_id: "team-a", team: "a" },
-      { id: "3", name: "Tyra Black", team_id: "team-b", team: "b" },
+      { id: "1", name: "Anna Wright", handedness: "right", team_id: "team-a", team: "a" },
+      { id: "2", name: "Anna Waters", handedness: "right", team_id: "team-a", team: "a" },
+      { id: "3", name: "Tyra Black", handedness: "right", team_id: "team-b", team: "b" },
     ]);
     expect(map.get("1")).toBe("AWR");
     expect(map.get("2")).toBe("AWA");

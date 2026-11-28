@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+  "/api/franchises/{franchise_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Update Franchise
+     * @description Renames a Franchise across all Franchise Matches.
+     */
+    patch: operations["updateFranchise"];
+    trace?: never;
+  };
+  "/api/franchises/{franchise_id}/merge": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Merge Franchise Route
+     * @description Moves every Franchise Match onto another Franchise and deletes the old one.
+     */
+    post: operations["mergeFranchise"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/leaderboard": {
     parameters: {
       query?: never;
@@ -53,12 +93,16 @@ export interface paths {
     get: operations["getMatch"];
     put?: never;
     post?: never;
-    delete?: never;
+    /**
+     * Delete Match
+     * @description Hard-deletes a Match and any orphans, then cancels any footage/tracking jobs for it.
+     */
+    delete: operations["deleteMatch"];
     options?: never;
     head?: never;
     /**
      * Update Match
-     * @description Updates a Match's date and returns the updated Match summary.
+     * @description Updates a Match's date, Tournament, and/or Franchise Match.
      */
     patch: operations["updateMatch"];
     trace?: never;
@@ -373,6 +417,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/matches/{match_id}/replace-player": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Replace Match Player Route
+     * @description Replaces one Player in a Match and rewrites every annotation reference.
+     */
+    post: operations["replaceMatchPlayer"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches/{match_id}/report": {
     parameters: {
       query?: never;
@@ -459,6 +523,30 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
+    /**
+     * Update Player
+     * @description Renames a Player or fixes handedness across all Matches.
+     */
+    patch: operations["updatePlayer"];
+    trace?: never;
+  };
+  "/api/players/{player_id}/merge": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Merge Player Route
+     * @description Replaces a Player with another across every Match and deletes the old one.
+     */
+    post: operations["mergePlayer"];
+    delete?: never;
+    options?: never;
+    head?: never;
     patch?: never;
     trace?: never;
   };
@@ -534,6 +622,46 @@ export interface paths {
     get: operations["getTeam"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/tournaments/{tournament_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Update Tournament
+     * @description Renames a Tournament or fixes its Tour across all Matches.
+     */
+    patch: operations["updateTournament"];
+    trace?: never;
+  };
+  "/api/tournaments/{tournament_id}/merge": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Merge Tournament Route
+     * @description Moves every Match and Franchise Match onto another Tournament and deletes the old one.
+     */
+    post: operations["mergeTournament"];
     delete?: never;
     options?: never;
     head?: never;
@@ -735,6 +863,14 @@ export interface components {
        */
       id: string;
     };
+    /** DeletedMatchOut */
+    DeletedMatchOut: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+    };
     /**
      * DeviceKind
      * @enum {string}
@@ -915,6 +1051,14 @@ export interface components {
       id: string;
       /** Name */
       name: string;
+    };
+    /** FranchiseEditOut */
+    FranchiseEditOut: {
+      /** Affected Matches */
+      affected_matches: number;
+      /** Dry Run */
+      dry_run: boolean;
+      franchise: components["schemas"]["Franchise"];
     };
     /**
      * FranchiseMatchIn
@@ -1127,11 +1271,19 @@ export interface components {
       done_rallies: number;
       /** Fix Command */
       fix_command: string | null;
+      /** Footage Dir */
+      footage_dir: string;
       footage_job?: components["schemas"]["FootageJobSummaryOut"] | null;
       /** Franchise A */
       franchise_a: string | null;
+      /** Franchise A Id */
+      franchise_a_id: string | null;
       /** Franchise B */
       franchise_b: string | null;
+      /** Franchise B Id */
+      franchise_b_id: string | null;
+      /** Franchise Match Id */
+      franchise_match_id: string | null;
       /**
        * Id
        * Format: uuid
@@ -1146,6 +1298,8 @@ export interface components {
       players: components["schemas"]["MatchPlayerOut"][];
       /** Source Url */
       source_url: string | null;
+      /** Source Video Path */
+      source_video_path: string | null;
       /** Team A */
       team_a: [string, string];
       /**
@@ -1165,8 +1319,14 @@ export interface components {
        * @default 0
        */
       total_rallies: number;
+      tour: components["schemas"]["Tour"];
       /** Tournament */
       tournament: string;
+      /**
+       * Tournament Id
+       * Format: uuid
+       */
+      tournament_id: string;
       video_status: components["schemas"]["VideoStatus"];
     };
     /** MatchFilterOptions */
@@ -1225,6 +1385,7 @@ export interface components {
      * @description One Player in a Match, with their Team assignment.
      */
     MatchPlayerOut: {
+      handedness: components["schemas"]["Handedness"];
       /**
        * Id
        * Format: uuid
@@ -1256,6 +1417,14 @@ export interface components {
       /** Team B */
       team_b: [string, string];
     };
+    /** MergeIn */
+    MergeIn: {
+      /**
+       * Into
+       * Format: uuid
+       */
+      into: string;
+    };
     /** MultiMatchHeader */
     MultiMatchHeader: {
       /** Match Count */
@@ -1263,6 +1432,18 @@ export interface components {
       rallies: components["schemas"]["ReportRallies"];
       /** Uncredited */
       uncredited: number;
+    };
+    /** NewPlayerIn */
+    NewPlayerIn: {
+      handedness: components["schemas"]["Handedness"];
+      /** Name */
+      name: string;
+    };
+    /** NewTournamentIn */
+    NewTournamentIn: {
+      /** Name */
+      name: string;
+      tour: components["schemas"]["Tour"];
     };
     /**
      * OpenRallyLogIn
@@ -1365,6 +1546,17 @@ export interface components {
       /** Name */
       name: string;
     };
+    /** Player */
+    Player: {
+      handedness: components["schemas"]["Handedness"];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+    };
     /**
      * PlayerAnchorIO
      * @description One operator-placed Player anchor on a frame, in normalised image coordinates (0 to 1).
@@ -1382,6 +1574,14 @@ export interface components {
        * Format: uuid
        */
       player_id: string;
+    };
+    /** PlayerEditOut */
+    PlayerEditOut: {
+      /** Affected Matches */
+      affected_matches: number;
+      /** Dry Run */
+      dry_run: boolean;
+      player: components["schemas"]["Player"];
     };
     /** PlayerListEntry */
     PlayerListEntry: {
@@ -1554,6 +1754,16 @@ export interface components {
      * @enum {string}
      */
     RefereeCall: "point" | "second_server" | "side_out";
+    /** ReplacePlayerIn */
+    ReplacePlayerIn: {
+      /**
+       * From
+       * Format: uuid
+       */
+      from: string;
+      /** To */
+      to: string | components["schemas"]["NewPlayerIn"];
+    };
     ReportBreakdowns: {
       [key: string]: {
         [key: string]: components["schemas"]["ReportValues"];
@@ -1746,7 +1956,7 @@ export interface components {
       /** Franchises */
       franchises: components["schemas"]["Franchise"][];
       /** Players */
-      players: components["schemas"]["RosterPlayer"][];
+      players: components["schemas"]["Player"][];
       /** Tournaments */
       tournaments: components["schemas"]["Tournament"][];
     };
@@ -1925,6 +2135,14 @@ export interface components {
       name: string;
       tour: components["schemas"]["Tour"];
     };
+    /** TournamentEditOut */
+    TournamentEditOut: {
+      /** Affected Matches */
+      affected_matches: number;
+      /** Dry Run */
+      dry_run: boolean;
+      tournament: components["schemas"]["Tournament"];
+    };
     /**
      * TrackPlayersIn
      * @description Optional parameters for triggering background Player Tracking.
@@ -1982,13 +2200,30 @@ export interface components {
       /** Start Frame */
       start_frame: number;
     };
+    /** UpdateFranchiseIn */
+    UpdateFranchiseIn: {
+      /** Name */
+      name: string;
+    };
     /** UpdateMatchIn */
     UpdateMatchIn: {
-      /**
-       * Date
-       * Format: date
-       */
-      date: string;
+      /** Date */
+      date?: string | null;
+      franchise_match?: components["schemas"]["FranchiseMatchIn"] | null;
+      /** Tournament */
+      tournament?: string | components["schemas"]["NewTournamentIn"] | null;
+    };
+    /** UpdatePlayerIn */
+    UpdatePlayerIn: {
+      handedness?: components["schemas"]["Handedness"] | null;
+      /** Name */
+      name?: string | null;
+    };
+    /** UpdateTournamentIn */
+    UpdateTournamentIn: {
+      /** Name */
+      name?: string | null;
+      tour?: components["schemas"]["Tour"] | null;
     };
     /** ValidationError */
     ValidationError: {
@@ -2028,6 +2263,80 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  updateFranchise: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+      };
+      header?: never;
+      path: {
+        franchise_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdateFranchiseIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FranchiseEditOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  mergeFranchise: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+      };
+      header?: never;
+      path: {
+        franchise_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MergeIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FranchiseEditOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   getLeaderboard: {
     parameters: {
       query?: {
@@ -2151,6 +2460,37 @@ export interface operations {
       };
     };
   };
+  deleteMatch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeletedMatchOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   updateMatch: {
     parameters: {
       query?: never;
@@ -2172,7 +2512,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["MatchOut"];
+          "application/json": components["schemas"]["MatchDetailOut"];
         };
       };
       /** @description Validation Error */
@@ -2813,6 +3153,41 @@ export interface operations {
       };
     };
   };
+  replaceMatchPlayer: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        match_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ReplacePlayerIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MatchDetailOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   getMatchReport: {
     parameters: {
       query?: never;
@@ -3008,6 +3383,80 @@ export interface operations {
       };
     };
   };
+  updatePlayer: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+      };
+      header?: never;
+      path: {
+        player_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdatePlayerIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerEditOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  mergePlayer: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+      };
+      header?: never;
+      path: {
+        player_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MergeIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerEditOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   getRallyLog: {
     parameters: {
       query?: never;
@@ -3125,6 +3574,80 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TeamReport"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  updateTournament: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+      };
+      header?: never;
+      path: {
+        tournament_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdateTournamentIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TournamentEditOut"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  mergeTournament: {
+    parameters: {
+      query?: {
+        dry_run?: boolean;
+      };
+      header?: never;
+      path: {
+        tournament_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MergeIn"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TournamentEditOut"];
         };
       };
       /** @description Validation Error */

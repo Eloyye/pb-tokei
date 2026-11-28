@@ -33,10 +33,10 @@ const PATH = "/data/log.duckdb";
 const VIDEO_URL = "https://www.youtube.com/watch?v=abc123";
 const roster: Roster = {
   players: [
-    { name: "Anna Bright", handedness: "right" },
-    { name: "Anna-Leigh Waters", handedness: "right" },
-    { name: "Cara Lee", handedness: "left" },
-    { name: "Dan Kim", handedness: "right" },
+    { id: "p1", name: "Anna Bright", handedness: "right" },
+    { id: "p2", name: "Anna-Leigh Waters", handedness: "right" },
+    { id: "p3", name: "Cara Lee", handedness: "left" },
+    { id: "p4", name: "Dan Kim", handedness: "right" },
   ],
   tournaments: [
     { id: "ppa-tournament", name: "Atlanta Open", tour: "ppa" },
