@@ -7,6 +7,11 @@ __pycache__/
 # Downloaded broadcasts live on disk only, never in git.
 footage/
 
+# Local Rally Logs, DuckDB sidecar files, and Roster Files.
+*.[dD][uU][cC][kK][dD][bB]
+*.[dD][uU][cC][kK][dD][bB].*
+rosters/
+
 # Exported browser cookies for yt-dlp (credentials; never commit).
 cookies.txt
 
