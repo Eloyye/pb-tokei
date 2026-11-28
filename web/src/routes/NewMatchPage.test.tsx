@@ -118,6 +118,10 @@ function changeTournament(value: string) {
   change(screen.getByRole("combobox", { name: "Tournament" }), value);
 }
 
+function changeDate(value: string) {
+  change(screen.getByLabelText("Date"), value);
+}
+
 function changeFranchise(side: "A" | "B", value: string) {
   change(screen.getByRole("combobox", { name: `Franchise ${side} (Team ${side})` }), value);
 }
@@ -194,10 +198,12 @@ it.each(["existing", "new"])("can choose a %s Franchise Match for MLP", async (c
   if (choice === "new") change(meeting, "new");
 
   fillPlayers();
+  changeDate("2026-04-12");
   fireEvent.click(screen.getByRole("button", { name: "Create Match" }));
   await screen.findByRole("heading", { name: "Match Workspace" });
   expect(createMatch).toHaveBeenCalledWith(
     {
+      date: "2026-04-12",
       tournament: "MLP Dallas",
       tour: "mlp",
       team_a: [
@@ -225,6 +231,8 @@ it("keeps the draft on a RosterError and opens the Workspace on success", async 
   const button = await screen.findByRole("button", { name: "Create Match" });
   const tournament = screen.getByLabelText<HTMLInputElement>("Tournament");
   change(tournament, "Atlanta Open");
+  const dateField = screen.getByLabelText<HTMLInputElement>("Date");
+  change(dateField, "2026-04-12");
   const video = screen.getByLabelText<HTMLInputElement>(/Footage URL/);
   change(video, VIDEO_URL);
   fillPlayers();
@@ -232,6 +240,7 @@ it("keeps the draft on a RosterError and opens the Workspace on success", async 
   fireEvent.click(button);
   expect((await screen.findByRole("alert")).textContent).toBe("Choose the stored Player name");
   expect(tournament.value).toBe("Atlanta Open");
+  expect(dateField.value).toBe("2026-04-12");
   expect(teamFields("A").player2.value).toBe("Eve Park");
   expect(video.value).toBe(VIDEO_URL);
 
@@ -239,7 +248,7 @@ it("keeps the draft on a RosterError and opens the Workspace on success", async 
   await screen.findByRole("heading", { name: "Match Workspace" });
   expect(router.state.location.pathname).toBe("/matches/created-match/annotate");
   expect(createMatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({ footage_url: VIDEO_URL }),
+    expect.objectContaining({ date: "2026-04-12", footage_url: VIDEO_URL }),
     PATH,
   );
 });
@@ -255,6 +264,7 @@ it("lets the server match a meeting that was absent when the form opened", async
   await screen.findByRole("heading", { name: "New Match" });
   fillPlayers();
   fillFranchises();
+  changeDate("2026-04-12");
   expect(screen.queryByRole("combobox", { name: "Franchise Match" })).toBeNull();
 
   submit();
@@ -278,6 +288,8 @@ it("lets the server match a meeting that was absent when the form opened", async
 it.each([
   { error: "Enter a Tournament name.", adjust: () => changeTournament(" ") },
   { error: "Choose a Tour.", adjust: () => changeTournament("New Tournament") },
+  { error: "Enter a Match date.", adjust: () => changeDate("") },
+  { error: "Enter a valid Match date (YYYY-MM-DD).", adjust: () => changeDate("0002-04-12") },
   { error: "Enter all four Player names.", adjust: () => change(teamFields("A").player2, " ") },
   {
     error: "A Player can't appear twice in a Match.",
@@ -303,6 +315,7 @@ it.each([
   renderForm();
   await screen.findByRole("heading", { name: "New Match" });
   fillPlayers();
+  changeDate("2026-04-12");
   if (mlp) fillFranchises();
   else changeTournament("Atlanta Open");
   adjust?.();
@@ -324,6 +337,7 @@ it("stays off the old Match Workspace if the Rally Log changes during creation",
   const router = renderForm();
   await screen.findByRole("heading", { name: "New Match" });
   changeTournament("Atlanta Open");
+  changeDate("2026-04-12");
   fillPlayers();
   submit();
   await screen.findByRole("button", { name: "Creating Match…" });

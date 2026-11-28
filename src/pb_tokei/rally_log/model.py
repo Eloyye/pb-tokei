@@ -19,14 +19,16 @@ inclusive at both ends, for Rallies and Play Segments alike.
 
 from __future__ import annotations
 
+import datetime
 import itertools
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, NewType
+from typing import Any, Literal, NewType, TypeGuard
 from uuid import UUID, uuid4
 
 PlayerId = NewType("PlayerId", UUID)
@@ -568,6 +570,39 @@ class SourceVideo:
             raise ValueError("SourceVideo path cannot be empty")
 
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MIN_MATCH_YEAR = 1000
+"""Minimum valid Match year, matching the UI's inline date input (which ignores partial years)."""
+
+
+def is_calendar_date(value: object) -> TypeGuard[datetime.date]:
+    """Whether `value` is a `datetime.date` and not a `datetime.datetime`."""
+    return isinstance(value, datetime.date) and not isinstance(value, datetime.datetime)
+
+
+def check_match_date(value: datetime.date | None, *, required: bool = False) -> None:
+    if value is None:
+        if required:
+            raise ValueError("Match date cannot be cleared")
+        return
+    if not is_calendar_date(value):
+        raise ValueError("Match date must be a calendar date")
+    if value.year < MIN_MATCH_YEAR:
+        raise ValueError(f"Match date year must be {MIN_MATCH_YEAR} or later, not {value.year}")
+
+
+def parse_match_date(value: str) -> datetime.date:
+    """Parses a calendar date in strict YYYY-MM-DD format (4-digit year >= 1000)."""
+    if not isinstance(value, str) or not _ISO_DATE_RE.fullmatch(value):
+        raise ValueError(f"Match date must be YYYY-MM-DD, not {value!r}")
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"Invalid Match date: {value!r}") from None
+    check_match_date(parsed, required=True)
+    return parsed
+
+
 def check_video_frames(frames: int | None) -> None:
     if frames is not None and frames <= 0:
         raise ValueError("Source video frame count must be positive")
@@ -590,8 +625,8 @@ class OperatorSession:
 
     session_id: UUID
     workspace: OperatorWorkspace
-    started_at: datetime
-    ended_at: datetime
+    started_at: datetime.datetime
+    ended_at: datetime.datetime
     active_seconds: float
 
     def __post_init__(self) -> None:
@@ -748,10 +783,12 @@ class Match:
     team_ends: tuple[TeamEnd, ...] = ()
     annotation_mode: AnnotationMode = AnnotationMode.GOLD
     source_video_frames: int | None = None
+    date: datetime.date | None = None
 
     def __post_init__(self) -> None:
         if self.team_a_id == self.team_b_id:
             raise ValueError("a Match needs two different Teams")
+        check_match_date(self.date)
         check_video_frames(self.source_video_frames)
         if self.source_video_frames is not None and self.source_video is None:
             raise ValueError("Source video frames require a recorded source video")
@@ -783,6 +820,7 @@ class MatchSummary:
     franchise_a: str | None
     franchise_b: str | None
     source_video: SourceVideo | None
+    date: datetime.date | None = field(default=None, kw_only=True)
     annotation_mode: AnnotationMode = field(default=AnnotationMode.GOLD, kw_only=True)
     source_video_frames: int | None = field(default=None, kw_only=True)
     operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary, kw_only=True)

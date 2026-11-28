@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     team_a_id UUID NOT NULL REFERENCES teams (id),
     team_b_id UUID NOT NULL REFERENCES teams (id),
     franchise_match_id UUID REFERENCES franchise_matches (id),
+    date DATE,
     source_video_url VARCHAR,
     source_video_id VARCHAR,
     source_video_path VARCHAR,
@@ -96,10 +97,10 @@ def _migrate_matches(db: duckdb.DuckDBPyConnection) -> None:
             "SELECT column_name FROM duckdb_columns() WHERE table_name = 'matches'"
         ).fetchall()
     }
-    if {"source_video_frames", "annotation_mode"} <= columns:
+    if {"source_video_frames", "annotation_mode", "date"} <= columns:
         return
 
-    # Older logs can also predate SourceVideo. Absent columns take the new table defaults.
+    # Older logs can also predate SourceVideo or `date`. Absent columns take the new table defaults.
     copied = ", ".join(
         name
         for name in (
@@ -108,6 +109,7 @@ def _migrate_matches(db: duckdb.DuckDBPyConnection) -> None:
             "team_a_id",
             "team_b_id",
             "franchise_match_id",
+            "date",
             "source_video_url",
             "source_video_id",
             "source_video_path",

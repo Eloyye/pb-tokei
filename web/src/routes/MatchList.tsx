@@ -1,6 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ApiError, isRetryable, listMatches } from "../api/client";
+import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  ApiError,
+  getTabRallyLog,
+  isRetryable,
+  listMatches,
+  type Match,
+  type MatchDetail,
+  updateMatch,
+} from "../api/client";
 import {
   formatActiveTime,
   formatRatio,
@@ -8,12 +17,14 @@ import {
   ratioClassName,
 } from "../lib/operatorTime";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
-import { franchisesLabel, videoPill } from "./teams";
+import { isValidMatchDate } from "./matchDate";
+import { franchisesLabel, teamsLabel, videoPill } from "./teams";
 
 const POLL_MS = 1000;
 
 export function MatchList() {
   const openPicker = useOpenRallyLogPicker();
+  const [dateError, setDateError] = useState<{ matchId: string; message: string } | null>(null);
   const matches = useQuery({
     queryKey: ["matches"],
     queryFn: listMatches,
@@ -49,6 +60,15 @@ export function MatchList() {
     );
   }
 
+  function handleDateError(matchId: string, message: string | null) {
+    setDateError((current) => {
+      if (message === null) return current?.matchId === matchId ? null : current;
+      return { matchId, message };
+    });
+  }
+
+  const activeDateError =
+    dateError && matches.data.some((m) => m.id === dateError.matchId) ? dateError : null;
   const [firstMatch] = matches.data;
   return (
     <main className="home">
@@ -61,11 +81,17 @@ export function MatchList() {
           New Match
         </Link>
       </div>
+      {activeDateError && (
+        <p className="match-list-error" role="alert">
+          {activeDateError.message}
+        </p>
+      )}
       {matches.data.length === 0 ? (
         <p className="notice">No Matches yet.</p>
       ) : (
         <div className="match-table">
           <div className="tr thead">
+            <span>Date</span>
             <span>Tournament</span>
             <span>Match</span>
             <span>Franchise Match</span>
@@ -79,8 +105,10 @@ export function MatchList() {
             const pill = videoPill(match);
             const assisted = match.annotation_mode === "assisted";
             const budget = assisted ? match.assisted_ratio_budget : null;
+            const rowError = activeDateError?.matchId === match.id ? activeDateError.message : null;
             return (
               <div key={match.id} className="tr">
+                <MatchDateCell match={match} error={rowError} onError={handleDateError} />
                 <Link
                   to="/matches/$matchId/$workspace"
                   params={{ matchId: match.id, workspace: "annotate" }}
@@ -137,6 +165,123 @@ export function MatchList() {
         </p>
       )}
     </main>
+  );
+}
+
+/** Saves a Match's date serially per Match, updates the row in place, then refreshes server order. */
+function useMatchDateSave(
+  matchId: string,
+  onError: (matchId: string, message: string | null) => void,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    scope: { id: `match-date-${matchId}` },
+    mutationFn: ({ date, rallyLog }: { date: string; rallyLog: string | null }) =>
+      updateMatch(matchId, { date }, { rallyLog }),
+    onMutate: () => {
+      onError(matchId, null);
+    },
+    onSuccess: (updated, { rallyLog }) => {
+      if (getTabRallyLog() !== rallyLog) return;
+      onError(matchId, null);
+      queryClient.setQueryData<Match[]>(["matches"], (current) =>
+        current?.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      queryClient.setQueryData<MatchDetail>(
+        ["matches", updated.id],
+        (current) => current && { ...current, ...updated },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["matches"], exact: true });
+    },
+    onError: (error, { rallyLog }) => {
+      if (getTabRallyLog() !== rallyLog) return;
+      onError(matchId, error instanceof Error ? error.message : "Could not save Match date.");
+    },
+  });
+}
+
+/** Inline date display ("—" when empty) that opens a date input and saves immediately on change. */
+function MatchDateCell({
+  match,
+  error,
+  onError,
+}: {
+  match: Match;
+  error: string | null;
+  onError: (matchId: string, message: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const save = useMatchDateSave(match.id, onError);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  const pendingDate = save.isPending ? save.variables.date : null;
+  const displayed = pendingDate ?? match.date;
+  const inputValue = draft ?? displayed ?? "";
+
+  function startEditing() {
+    setDraft(null);
+    setEditing(true);
+  }
+
+  function finishEditing() {
+    setEditing(false);
+    setDraft(null);
+  }
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value;
+    setDraft(value);
+    // Clearing a Match's date is not allowed; wait for a full YYYY-MM-DD date or revert on blur.
+    if (!value || !isValidMatchDate(value) || value === displayed) return;
+    save.mutate({ date: value, rallyLog: getTabRallyLog() }, { onError: () => setDraft(null) });
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape" || event.key === "Enter") {
+      event.preventDefault();
+      finishEditing();
+    }
+  }
+
+  const label = teamsLabel(match);
+  if (editing) {
+    return (
+      <span className="match-date-cell">
+        <input
+          ref={inputRef}
+          type="date"
+          className={`match-date-input mono${error ? " error" : ""}`}
+          aria-label={`Date for ${label}`}
+          aria-invalid={error ? true : undefined}
+          aria-busy={save.isPending || undefined}
+          value={inputValue}
+          required
+          onChange={handleChange}
+          onBlur={finishEditing}
+          onKeyDown={handleKeyDown}
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span className="match-date-cell">
+      <button
+        type="button"
+        className={`match-date-button mono${displayed === null ? " dimmed" : ""}${error ? " error" : ""}`}
+        aria-label={`Date for ${label}`}
+        title={error ?? (displayed === null ? "Set Match date" : "Edit Match date")}
+        aria-busy={save.isPending || undefined}
+        onClick={startEditing}
+      >
+        {displayed ?? "—"}
+      </button>
+    </span>
   );
 }
 

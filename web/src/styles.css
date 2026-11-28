@@ -261,7 +261,7 @@ h1 {
 }
 
 .match-table {
-  min-width: 1180px;
+  min-width: 1320px;
   overflow: hidden;
   background: var(--panel);
   border-radius: 4px;
@@ -269,7 +269,7 @@ h1 {
 
 .match-table .tr {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(
+  grid-template-columns: 126px minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(
       140px,
       1.2fr
     ) 136px 68px 140px 60px 50px 60px;
@@ -287,7 +287,7 @@ h1 {
 }
 
 .match-table .match-row-main {
-  grid-column: 1 / -2;
+  grid-column: 2 / -2;
   display: grid;
   grid-template-columns: subgrid;
   align-items: center;
@@ -298,6 +298,54 @@ h1 {
 .match-table .tr:has(.match-row-main:hover),
 .match-table .tr:has(.match-row-main:focus-visible) {
   background: var(--hover);
+}
+
+.match-date-cell {
+  min-width: 0;
+}
+
+.match-date-button {
+  width: 100%;
+  padding: 2px 6px;
+  margin-inline: -6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.match-date-button:hover,
+.match-date-button:focus-visible {
+  border-color: var(--line-2);
+  background: var(--raised);
+  color: var(--text);
+}
+
+.match-date-button.error,
+.match-date-input.error {
+  border-color: var(--fail);
+  color: var(--fail);
+}
+
+.match-date-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--app);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.match-list-error {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--fail);
+  border-radius: 3px;
+  background: var(--fail-soft);
 }
 
 .match-report-link {
@@ -408,7 +456,10 @@ h1 {
   gap: 12px;
 }
 
-.new-match-tournament,
+.new-match-tournament {
+  grid-template-columns: minmax(0, 1fr) minmax(105px, 22%) minmax(140px, 24%);
+}
+
 .new-match-player {
   grid-template-columns: minmax(0, 1fr) minmax(105px, 28%);
 }
@@ -527,6 +578,7 @@ h1 {
 }
 
 @media (max-width: 650px) {
+  .new-match-tournament,
   .new-match-teams {
     grid-template-columns: minmax(0, 1fr);
   }

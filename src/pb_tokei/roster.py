@@ -10,6 +10,7 @@ a Player who is already in a Match from being renamed (its foreign keys reject t
 
 from __future__ import annotations
 
+import datetime
 import os
 import tomllib
 from collections.abc import Callable, Iterable
@@ -37,7 +38,10 @@ from pb_tokei.rally_log import (
     Tour,
     Tournament,
     TournamentId,
+    check_match_date,
+    is_calendar_date,
     new_id,
+    parse_match_date,
 )
 
 
@@ -74,6 +78,7 @@ class RosterFranchiseMatch:
 @dataclass(frozen=True)
 class Roster:
     match_id: MatchId
+    date: datetime.date
     tournament: str
     tour: Tour
     team_a: tuple[RosterPlayer, RosterPlayer]
@@ -82,6 +87,10 @@ class Roster:
     video: SourceVideo | None = None
 
     def __post_init__(self) -> None:
+        try:
+            check_match_date(self.date, required=True)
+        except ValueError as exc:
+            raise RosterError(str(exc)) from None
         team_a, team_b = _trim_team(self.team_a), _trim_team(self.team_b)
         names = [p.name for p in (*team_a, *team_b)]
         if not all(names):
@@ -135,7 +144,7 @@ def parse_roster(text: str) -> Roster:
     _only_keys(
         data,
         "the Roster File",
-        {"id", "tournament", "team_a", "team_b"},
+        {"id", "date", "tournament", "team_a", "team_b"},
         {"franchise_match", "video"},
     )
     tournament = _table(data, "tournament")
@@ -164,6 +173,7 @@ def parse_roster(text: str) -> Roster:
 
     return Roster(
         match_id=MatchId(_uuid(data, "id", "the Roster File")),
+        date=_date(data, "date", "the Roster File"),
         tournament=_text(tournament, "name", "[tournament]"),
         tour=tour,
         team_a=team_a,
@@ -248,6 +258,23 @@ def _uuid(table: dict[str, Any], key: str, where: str) -> UUID:
         raise RosterError(f"{where} {key} is not a UUID: {value!r}") from None
 
 
+def _date(table: dict[str, Any], key: str, where: str) -> datetime.date:
+    value = table.get(key)
+    if is_calendar_date(value):
+        try:
+            check_match_date(value, required=True)
+        except ValueError as exc:
+            raise RosterError(f"{where} {key}: {exc}") from None
+        return value
+    if not isinstance(value, str) or not value.strip():
+        raise RosterError(f"{where} {key} must be YYYY-MM-DD")
+    text = value.strip()
+    try:
+        return parse_match_date(text)
+    except ValueError:
+        raise RosterError(f"{where} {key} must be YYYY-MM-DD, not {text!r}") from None
+
+
 # --- Template -----------------------------------------------------------------------------
 
 
@@ -258,6 +285,7 @@ def roster_template(match_id: MatchId | None = None) -> str:
 # Use the exact stored names for existing Players, Franchises and Tournaments (across all Tours).
 # Outer spaces are trimmed. If a name differs only in case or internal spacing, use the suggestion.
 id = "{match_id}"
+date = ""            # YYYY-MM-DD, the day the Match was played
 
 [tournament]
 name = ""            # put the year in the name, e.g. "PPA Atlanta Open 2026"
@@ -384,6 +412,7 @@ def _set_up_match(log: RallyLog, roster: Roster, source_video_frames: int | None
         team_a_id=team_a.id,
         team_b_id=team_b.id,
         franchise_match_id=None if franchise_match is None else franchise_match.id,
+        date=roster.date,
         source_video=roster.video,
         source_video_frames=source_video_frames,
     )

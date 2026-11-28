@@ -13,6 +13,7 @@ import {
   subscribeTabRallyLog,
 } from "../api/client";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
+import { isValidMatchDate } from "./matchDate";
 import { NameField } from "./NameField";
 import { teamsLabel } from "./teams";
 
@@ -79,6 +80,7 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
   const queryClient = useQueryClient();
   const [tournamentName, setTournamentName] = useState("");
   const [tourChoice, setTourChoice] = useState<Tour | "">("");
+  const [date, setDate] = useState("");
   const [teamA, setTeamA] = useState(EMPTY_TEAM);
   const [teamB, setTeamB] = useState(EMPTY_TEAM);
   const [franchiseA, setFranchiseA] = useState("");
@@ -146,6 +148,8 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
     let error: string | null = null;
     if (!tournamentText) error = "Enter a Tournament name.";
     else if (!tour) error = "Choose a Tour.";
+    else if (!date) error = "Enter a Match date.";
+    else if (!isValidMatchDate(date)) error = "Enter a valid Match date (YYYY-MM-DD).";
     else if (names.some((name) => !name)) error = "Enter all four Player names.";
     else if (new Set(names).size !== names.length)
       error = "A Player can't appear twice in a Match.";
@@ -160,6 +164,7 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
 
     create.mutate(
       {
+        date,
         tournament: tournamentText,
         tour,
         team_a,
@@ -226,6 +231,15 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="new-match-field">
+                Date
+                <input
+                  type="date"
+                  value={date}
+                  required
+                  onChange={(event) => setDate(event.target.value)}
+                />
               </label>
             </div>
 

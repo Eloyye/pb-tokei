@@ -8,6 +8,7 @@ without restarting (`POST /api/rally-log`).
 
 from __future__ import annotations
 
+import datetime
 import math
 import shlex
 import threading
@@ -35,7 +36,13 @@ from pb_tokei.annotate.footage_jobs import (
 )
 from pb_tokei.annotate.frontend import STATIC_DIR
 from pb_tokei.annotate.games import GameIO, frames_in, games_from_domain
-from pb_tokei.annotate.match_setup import CreatedMatchOut, CreateMatchIn, RosterOut, roster_catalog
+from pb_tokei.annotate.match_setup import (
+    CreatedMatchOut,
+    CreateMatchIn,
+    RosterOut,
+    UpdateMatchIn,
+    roster_catalog,
+)
 from pb_tokei.annotate.motion import (
     CameraMotionFramesOut,
     CameraMotionOut,
@@ -186,6 +193,7 @@ class MatchOut(BaseModel):
     """A Match's roster, footage status and active operator time."""
 
     id: UUID
+    date: datetime.date | None
     tournament: str
     team_a: tuple[str, str]
     team_b: tuple[str, str]
@@ -211,6 +219,7 @@ class MatchOut(BaseModel):
     ) -> MatchOut:
         return MatchOut(
             id=summary.id,
+            date=summary.date,
             tournament=summary.tournament,
             team_a=summary.team_a,
             team_b=summary.team_b,
@@ -841,6 +850,20 @@ def create_app(
             source_url=None if summary.source_video is None else summary.source_video.url,
             original_present=video.original_present,
         )
+
+    @app.patch("/api/matches/{match_id}", operation_id="updateMatch")
+    def update_match(match_id: UUID, body: UpdateMatchIn, rally_log: OpenLog) -> MatchOut:
+        """Updates a Match's date and returns the updated Match summary."""
+        mid = MatchId(match_id)
+
+        def change(log: RallyLog) -> MatchSummary:
+            with log.transaction():
+                log.set_match_date(mid, body.date)
+                return log.get_match_summary(mid)
+
+        summary = rally_log.run(change)
+        [(match, _video)] = rally_log.match_views([summary])
+        return match
 
     @app.get(
         "/api/matches/{match_id}/report",

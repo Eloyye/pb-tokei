@@ -1,9 +1,11 @@
 """Roster data and Match creation inputs for the annotation app."""
 
+import datetime
 from collections import defaultdict
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from pb_tokei.rally_log import (
     Franchise,
@@ -12,9 +14,24 @@ from pb_tokei.rally_log import (
     RallyLog,
     Tour,
     Tournament,
+    check_match_date,
+    is_calendar_date,
     new_id,
+    parse_match_date,
 )
 from pb_tokei.roster import Roster, RosterFranchiseMatch, RosterPlayer
+
+
+def _validate_match_date(value: object) -> datetime.date:
+    if is_calendar_date(value):
+        check_match_date(value, required=True)
+        return value
+    if isinstance(value, str):
+        return parse_match_date(value)
+    raise ValueError("Match date must be YYYY-MM-DD")
+
+
+MatchDate = Annotated[datetime.date, BeforeValidator(_validate_match_date)]
 
 
 class FranchiseMatchIn(BaseModel):
@@ -36,6 +53,7 @@ class FranchiseMatchIn(BaseModel):
 
 
 class CreateMatchIn(BaseModel):
+    date: MatchDate
     tournament: str
     tour: Tour
     team_a: tuple[RosterPlayer, RosterPlayer]
@@ -46,12 +64,19 @@ class CreateMatchIn(BaseModel):
     def to_roster(self) -> Roster:
         return Roster(
             match_id=MatchId(new_id()),
+            date=self.date,
             tournament=self.tournament,
             tour=self.tour,
             team_a=self.team_a,
             team_b=self.team_b,
             franchise_match=self.franchise_match.to_roster() if self.franchise_match else None,
         )
+
+
+class UpdateMatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: MatchDate
 
 
 class CreatedMatchOut(BaseModel):

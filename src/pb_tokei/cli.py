@@ -35,8 +35,10 @@ from pb_tokei.footage import (
 from pb_tokei.rally_log import (
     DEFAULT_DB_PATH,
     MatchId,
+    MatchNotFound,
     MatchSummary,
     RallyLog,
+    parse_match_date,
     stored_video_path,
 )
 from pb_tokei.roster import (
@@ -139,6 +141,14 @@ def build_parser() -> argparse.ArgumentParser:
     list_.add_argument("--tournament", help="Only Matches at this Tournament (exact name).")
     _db_argument(list_)
     list_.set_defaults(handler=_match_list)
+
+    set_date = match_commands.add_parser(
+        "set-date", help="Set or change the day a Match was played (YYYY-MM-DD)."
+    )
+    set_date.add_argument("match_id", help="Match UUID in the Rally Log.")
+    set_date.add_argument("date", help="Date the Match was played (YYYY-MM-DD).")
+    _db_argument(set_date)
+    set_date.set_defaults(handler=_match_set_date)
 
     annotate = subparsers.add_parser(
         "annotate", help="Open the annotation web app on this machine (127.0.0.1 only)."
@@ -511,9 +521,34 @@ def _match_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _match_set_date(args: argparse.Namespace) -> int:
+    try:
+        match_id = MatchId(UUID(args.match_id))
+    except ValueError:
+        print(f"error: invalid Match UUID: {args.match_id}", file=sys.stderr)
+        return 1
+    try:
+        match_date = parse_match_date(args.date)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    db_path = _resolve_cli_db(args.db)
+    if db_path is None:
+        return 1
+    try:
+        with RallyLog.open(db_path) as log:
+            log.set_match_date(match_id, match_date)
+    except (MatchNotFound, ValueError, duckdb.Error, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"{match_id}  {match_date.isoformat()}")
+    return 0
+
+
 def _match_line(summary: MatchSummary) -> str:
     teams = f"{' / '.join(summary.team_a)}  vs  {' / '.join(summary.team_b)}"
-    parts = [str(summary.id), summary.tournament, teams]
+    match_date = summary.date.isoformat() if summary.date is not None else "—"
+    parts = [str(summary.id), match_date, summary.tournament, teams]
     if summary.franchise_a is not None:
         parts.append(f"({summary.franchise_a} vs {summary.franchise_b})")
     parts.append("video" if summary.has_video else "no video")

@@ -2,7 +2,7 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
 from uuid import UUID, uuid4
@@ -33,13 +33,17 @@ PPA = {"name": "PPA Atlanta Open 2026", "tour": "ppa"}
 def roster_toml(
     *,
     match_id: UUID | None = None,
+    match_date: str | None = "2026-04-12",
     tournament: dict[str, str] = PPA,
     team_a: tuple[tuple[str, str], ...] = (("Anna Bright", "right"), ("Ben Johns", "right")),
     team_b: tuple[tuple[str, str], ...] = (("Cara Lee", "left"), ("Dan Kim", "right")),
     franchise_match: dict[str, str] | None = None,
     video: dict[str, str] | None = None,
 ) -> str:
-    lines = [f'id = "{match_id or uuid4()}"', "", "[tournament]"]
+    lines = [f'id = "{match_id or uuid4()}"']
+    if match_date is not None:
+        lines.append(f'date = "{match_date}"')
+    lines += ["", "[tournament]"]
     lines += [f'{key} = "{value}"' for key, value in tournament.items()]
     for team, players in (("team_a", team_a), ("team_b", team_b)):
         for name, handedness in players:
@@ -77,6 +81,7 @@ def test_new_add_list_round_trip(
     assert out.strip() == str(roster_file)
     template = tomllib.loads(roster_file.read_text())
     match_id = UUID(template["id"])
+    assert template["date"] == ""
 
     filled = roster_toml(
         match_id=match_id,
@@ -111,10 +116,11 @@ def test_new_add_list_round_trip(
     assert code == 0
     assert f"Rally Log: {Path(db).resolve()}" in err
     assert out.splitlines() == [
-        f"{match_id}  PPA Atlanta Open 2026  Anna Bright / Ben Johns  vs  Cara Lee / Dan Kim"
-        "  video  Gold  active 15:00  ratio 0.25"
+        f"{match_id}  2026-04-12  PPA Atlanta Open 2026  Anna Bright / Ben Johns  vs  "
+        "Cara Lee / Dan Kim  video  Gold  active 15:00  ratio 0.25"
     ]
 
+    assert match.date == date(2026, 4, 12)
     assert match.games == ()
     assert match.source_video is not None
     assert match.source_video.path == Path("footage/abc.mp4")
@@ -202,12 +208,83 @@ def test_new_refuses_to_overwrite(tmp_path: Path, capsys: pytest.CaptureFixture[
 
 
 def test_template_is_a_roster_file_once_filled_in() -> None:
-    text = roster_template()
+    text = roster_template().replace('date = ""', 'date = "2026-04-12"', 1)
     for name in ["Open 2026", "A1", "A2", "B1", "B2"]:
         text = text.replace('name = ""', f'name = "{name}"', 1)
     roster = parse_roster(text)
+    assert roster.date == date(2026, 4, 12)
     assert roster.tour is Tour.PPA
     assert roster.video is None
+
+
+def test_roster_accepts_valid_string_and_toml_dates() -> None:
+    assert parse_roster(roster_toml(match_date="2026-04-12")).date == date(2026, 4, 12)
+    assert parse_roster(roster_toml(match_date=" 2026-04-12 ")).date == date(2026, 4, 12)
+    toml_literal = roster_toml(match_date=None).replace(
+        "\n[tournament]", "\ndate = 2026-04-12\n\n[tournament]", 1
+    )
+    assert parse_roster(toml_literal).date == date(2026, 4, 12)
+
+
+def test_match_set_date_updates_date_and_list_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "log.duckdb"
+    first_id = uuid4()
+    second_id = uuid4()
+    run(
+        capsys,
+        "match",
+        "add",
+        str(write(tmp_path, roster_toml(match_id=first_id, match_date="2026-03-01"), "a.toml")),
+        "--db",
+        str(db),
+    )
+    run(
+        capsys,
+        "match",
+        "add",
+        str(write(tmp_path, roster_toml(match_id=second_id, match_date="2026-03-10"), "b.toml")),
+        "--db",
+        str(db),
+    )
+    # Simulate an older Match whose date is null.
+    with RallyLog.open(db) as log:
+        log.save_match(replace(log.load_match(MatchId(first_id)), date=None))
+
+    code, out, _ = run(capsys, "match", "list", "--db", str(db))
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0].startswith(f"{second_id}  2026-03-10  ")
+    assert lines[1].startswith(f"{first_id}  —  ")
+
+    code, out, _ = run(capsys, "match", "set-date", str(first_id), "2026-04-20", "--db", str(db))
+    assert code == 0
+    assert out.strip() == f"{first_id}  2026-04-20"
+
+    code, out, _ = run(capsys, "match", "list", "--db", str(db))
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0].startswith(f"{first_id}  2026-04-20  ")
+    assert lines[1].startswith(f"{second_id}  2026-03-10  ")
+
+    # Rejects malformed date, bad UUID, unknown Match, and missing DB.
+    code, _, err = run(capsys, "match", "set-date", str(first_id), "2026-02-30", "--db", str(db))
+    assert code == 1 and "error:" in err
+    code, _, err = run(capsys, "match", "set-date", "not-a-uuid", "2026-04-20", "--db", str(db))
+    assert code == 1 and "invalid Match UUID" in err
+    code, _, err = run(capsys, "match", "set-date", str(uuid4()), "2026-04-20", "--db", str(db))
+    assert code == 1 and "Match not found" in err
+    code, _, err = run(
+        capsys,
+        "match",
+        "set-date",
+        str(first_id),
+        "2026-04-20",
+        "--db",
+        str(tmp_path / "no.duckdb"),
+    )
+    assert code == 1 and "not found" in err
 
 
 def test_list_without_database_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -578,6 +655,32 @@ def test_failed_write_rolls_back_the_whole_setup(
         (roster_toml(tournament={"name": " ", "tour": "ppa"}), "name must be non-empty"),
         ('id = "nope"\n' + roster_toml().split("\n", 1)[1], "not a UUID"),
         (roster_toml().split("\n", 1)[1], "missing id"),
+        (roster_toml(match_date=None), "missing date"),
+        (roster_toml(match_date=""), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="2026-02-30"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="0999-12-31"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="0026-04-12"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="20260412"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="2026/04/12"), "date must be YYYY-MM-DD"),
+        (roster_toml(match_date="not-a-date"), "date must be YYYY-MM-DD"),
+        (
+            roster_toml(match_date=None).replace(
+                "\n[tournament]", "\ndate = 0026-04-12\n\n[tournament]", 1
+            ),
+            "1000 or later",
+        ),
+        (
+            roster_toml(match_date=None).replace(
+                "\n[tournament]", "\ndate = 2026-04-12T10:00:00\n\n[tournament]", 1
+            ),
+            "date must be YYYY-MM-DD",
+        ),
+        (
+            roster_toml(match_date=None).replace(
+                "\n[tournament]", "\ndate = 20260412\n\n[tournament]", 1
+            ),
+            "date must be YYYY-MM-DD",
+        ),
         (roster_toml() + 'extra = "x"\n', "unknown keys: extra"),
         (roster_toml(video={"url": "u", "video_id": "v"}), "\\[video\\] is missing path"),
         ("id = [", "not valid TOML"),
@@ -630,7 +733,7 @@ def test_existing_match_error_does_not_blame_the_file(
     assert err.splitlines()[-1].startswith("error: Match ")
 
 
-@pytest.mark.parametrize("command", ["add", "list"])
+@pytest.mark.parametrize("command", ["add", "list", "set-date"])
 def test_a_database_that_is_not_duckdb_is_an_error_not_a_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
 ) -> None:
@@ -638,6 +741,8 @@ def test_a_database_that_is_not_duckdb_is_an_error_not_a_traceback(
     args = ["match", command]
     if command == "add":
         args.append(str(write(tmp_path, roster_toml())))
+    elif command == "set-date":
+        args.extend([str(uuid4()), "2026-04-12"])
     code, _, err = run(capsys, *args, "--db", str(db))
     assert code == 1
     assert err.splitlines()[-1].startswith("error: ")

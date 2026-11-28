@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 from collections import defaultdict
 from collections.abc import Callable, Generator, Sequence
@@ -67,6 +68,7 @@ from .model import (
     Zone,
     check_calibrations,
     check_games,
+    check_match_date,
     check_play_segments,
     check_player_anchors,
     check_team_ends,
@@ -345,17 +347,19 @@ class RallyLog:
                     team_a_id,
                     team_b_id,
                     franchise_match_id,
+                    date,
                     source_video_url,
                     source_video_id,
                     source_video_path,
                     source_video_frames,
                     annotation_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO UPDATE SET
                     tournament_id = excluded.tournament_id,
                     team_a_id = excluded.team_a_id,
                     team_b_id = excluded.team_b_id,
                     franchise_match_id = excluded.franchise_match_id,
+                    date = excluded.date,
                     source_video_url = COALESCE(
                         excluded.source_video_url, matches.source_video_url
                     ),
@@ -383,6 +387,7 @@ class RallyLog:
                     match.team_a_id,
                     match.team_b_id,
                     match.franchise_match_id,
+                    match.date,
                     None if video is None else video.url,
                     None if video is None else video.video_id,
                     None if video is None else str(video.path),
@@ -397,6 +402,12 @@ class RallyLog:
     def has_match(self, match_id: MatchId) -> bool:
         row = self._db.execute("SELECT 1 FROM matches WHERE id = ?", [match_id]).fetchone()
         return row is not None
+
+    def set_match_date(self, match_id: MatchId, match_date: datetime.date) -> None:
+        """Sets or changes the day a Match was played."""
+        check_match_date(match_date, required=True)
+        self._require_match(match_id)
+        self._db.execute("UPDATE matches SET date = ? WHERE id = ?", [match_date, match_id])
 
     def set_match_source_video(
         self, match_id: MatchId, source_video: SourceVideo, *, frames: int | None = None
@@ -529,7 +540,7 @@ class RallyLog:
     def _match_summaries(self, where: str, *params: Any) -> list[MatchSummary]:
         rows = self._all(
             f"""
-            SELECT m.id, t.name, m.source_video_frames, m.annotation_mode,
+            SELECT m.id, m.date, t.name, m.source_video_frames, m.annotation_mode,
                 COALESCE(ot.calibrate_seconds, 0), COALESCE(ot.annotate_seconds, 0),
                 COALESCE(ot.review_seconds, 0),
                 pa1.name, pa2.name, pb1.name, pb2.name,
@@ -558,13 +569,14 @@ class RallyLog:
                 GROUP BY match_id
             ) rc ON rc.match_id = m.id
             WHERE {where}
-            ORDER BY t.name, m.id
+            ORDER BY m.date DESC NULLS LAST, t.name, m.id
             """,
             *params,
         )
         return [
             MatchSummary(
                 id=MatchId(id_),
+                date=match_date,
                 tournament=tournament_name,
                 annotation_mode=AnnotationMode(mode),
                 source_video_frames=frames,
@@ -580,6 +592,7 @@ class RallyLog:
             )
             for (
                 id_,
+                match_date,
                 tournament_name,
                 frames,
                 mode,
@@ -607,13 +620,14 @@ class RallyLog:
             team_a,
             team_b,
             franchise_match,
+            match_date,
             video_url,
             video_id,
             video_path,
             video_frames,
             mode,
         ) = self._one(
-            "SELECT tournament_id, team_a_id, team_b_id, franchise_match_id, "
+            "SELECT tournament_id, team_a_id, team_b_id, franchise_match_id, date, "
             "source_video_url, source_video_id, source_video_path, "
             "source_video_frames, annotation_mode "
             "FROM matches WHERE id = ?",
@@ -628,6 +642,7 @@ class RallyLog:
             franchise_match_id=None
             if franchise_match is None
             else FranchiseMatchId(franchise_match),
+            date=match_date,
             source_video=source_video,
             source_video_frames=video_frames,
             annotation_mode=AnnotationMode(mode),

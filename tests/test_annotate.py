@@ -41,9 +41,12 @@ NO_OPERATOR_TIME = {
 }
 
 
-def add_match(db: Path, *, tournament: str = "PPA Atlanta Open 2026") -> MatchId:
+def add_match(
+    db: Path, *, tournament: str = "PPA Atlanta Open 2026", match_date: str = "2026-04-12"
+) -> MatchId:
     roster = parse_roster(
         f'id = "{uuid4()}"\n'
+        f'date = "{match_date}"\n'
         f'[tournament]\nname = "{tournament}"\ntour = "ppa"\n'
         '[[team_a.players]]\nname = "Ben Johns"\nhandedness = "right"\n'
         '[[team_a.players]]\nname = "Anna Bright"\nhandedness = "right"\n'
@@ -110,6 +113,7 @@ def test_lists_matches_with_roster_and_video_status(
     assert response.json() == [
         {
             "id": str(no_video),
+            "date": "2026-04-12",
             "tournament": "APP Chicago 2026",
             "team_a": ["Anna Bright", "Ben Johns"],
             "team_b": ["Cara Lee", "Dan Kim"],
@@ -127,6 +131,7 @@ def test_lists_matches_with_roster_and_video_status(
         },
         {
             "id": str(ready),
+            "date": "2026-04-12",
             "tournament": "PPA Atlanta Open 2026",
             "team_a": ["Anna Bright", "Ben Johns"],
             "team_b": ["Cara Lee", "Dan Kim"],

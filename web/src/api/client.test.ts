@@ -102,6 +102,7 @@ describe("the tab's Rally Log", () => {
     await client.openRallyLog(TWO, false);
     await client.createMatch(
       {
+        date: "2026-04-12",
         tournament: "Atlanta Open",
         tour: "ppa",
         team_a: [
@@ -143,5 +144,39 @@ describe("the tab's Rally Log", () => {
     expect(request.keepalive).toBe(true);
     expect(request.headers.get("X-Rally-Log")).toBe(encodeURIComponent(ONE));
     expect(await request.json()).toEqual(body);
+  });
+
+  it("sends PATCH /api/matches/{id} bound to the tab Rally Log when updating a date", async () => {
+    const client = await freshClient();
+    await client.getRallyLog();
+
+    await client.updateMatch("match-1", { date: "2026-04-18" });
+
+    const request = requests.at(-1)!;
+    expect(new URL(request.url).pathname).toBe("/api/matches/match-1");
+    expect(request.method).toBe("PATCH");
+    expect(request.headers.get("X-Rally-Log")).toBe(encodeURIComponent(ONE));
+    expect(await request.json()).toEqual({ date: "2026-04-18" });
+  });
+
+  it.each([
+    [409, "The app has switched to another Rally Log"],
+    [422, "Match date must be YYYY-MM-DD"],
+  ])("throws ApiError(%i) when updateMatch fails", async (status, detail) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ detail }), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+    const client = await freshClient();
+
+    await expect(
+      client.updateMatch("match-1", { date: "2026-04-18" }, { rallyLog: ONE }),
+    ).rejects.toMatchObject({ status, message: detail });
   });
 });

@@ -43,9 +43,12 @@ URL_B = "https://www.youtube.com/watch?v=vidBBBBBBB"
 URL_C = "https://www.youtube.com/watch?v=vidCCCCCCC"
 
 
-def _add_match(db: Path, *, tournament: str = "PPA Test Open") -> MatchId:
+def _add_match(
+    db: Path, *, tournament: str = "PPA Test Open", match_date: str = "2026-04-12"
+) -> MatchId:
     roster = parse_roster(
         f'id = "{uuid4()}"\n'
+        f'date = "{match_date}"\n'
         f'[tournament]\nname = "{tournament}"\ntour = "ppa"\n'
         '[[team_a.players]]\nname = "Ben Johns"\nhandedness = "right"\n'
         '[[team_a.players]]\nname = "Anna Bright"\nhandedness = "right"\n'
