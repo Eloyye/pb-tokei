@@ -562,6 +562,12 @@
   text-align: right;
 }
 
+.subject-list .subject-actions {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .subject-number,
 .subject-date,
 .subject-scores {

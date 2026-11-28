@@ -31,10 +31,17 @@ type Step =
   | { stage: "conflict"; conflict: ExactNameConflict; message: string }
   | { stage: "confirm-merge"; conflict: ExactNameConflict; affectedMatches: number };
 
+export type EditRecordScope = "match" | "global";
+
 function otherMatchesNote(affectedMatches: number): string {
   const others = Math.max(0, affectedMatches - 1);
   if (others === 0) return "Only affects this Match.";
   return `Also changes ${others} other ${others === 1 ? "Match" : "Matches"}.`;
+}
+
+function globalMatchesNote(affectedMatches: number): string {
+  if (affectedMatches === 0) return "Doesn't affect any existing Matches yet.";
+  return `Affects ${affectedMatches} ${affectedMatches === 1 ? "Match" : "Matches"}.`;
 }
 
 /**
@@ -45,13 +52,15 @@ function otherMatchesNote(affectedMatches: number): string {
 export function EditRecordDialog({
   record,
   rallyLog,
+  scope = "match",
   onClose,
   onSaved,
 }: {
   record: EditableRecord;
-  rallyLog: string;
+  rallyLog?: string | null;
+  scope?: EditRecordScope;
   onClose: () => void;
-  onSaved: (message: string) => void;
+  onSaved: (message: string, savedId: string, savedName: string) => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -128,8 +137,14 @@ export function EditRecordDialog({
     setError(null);
     setBusy(true);
     try {
-      await runEdit(false);
-      onSaved(`Updated ${kindLabel} "${trimmedName}".`);
+      const result = await runEdit(false);
+      const saved =
+        "player" in result
+          ? result.player
+          : "tournament" in result
+            ? result.tournament
+            : result.franchise;
+      onSaved(`Updated ${kindLabel} "${trimmedName}".`, saved.id, saved.name);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -160,8 +175,18 @@ export function EditRecordDialog({
     setError(null);
     setBusy(true);
     try {
-      await runMerge(conflict.id, false);
-      onSaved(`Merged ${kindLabel} "${record.name}" into "${conflict.name}".`);
+      const result = await runMerge(conflict.id, false);
+      const saved =
+        "player" in result
+          ? result.player
+          : "tournament" in result
+            ? result.tournament
+            : result.franchise;
+      onSaved(
+        `Merged ${kindLabel} "${record.name}" into "${conflict.name}".`,
+        saved.id,
+        saved.name,
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -272,7 +297,9 @@ export function EditRecordDialog({
         {step.stage === "confirm-edit" && (
           <div className="edit-dialog-confirm">
             <p className="edit-dialog-warning">
-              {otherMatchesNote(step.affectedMatches)}
+              {scope === "global"
+                ? globalMatchesNote(step.affectedMatches)
+                : otherMatchesNote(step.affectedMatches)}
               {clearingFranchiseMatches &&
                 " Changing this Tournament away from MLP clears Franchise Matches on its Matches."}
             </p>
@@ -364,8 +391,14 @@ export function EditRecordDialog({
         {step.stage === "confirm-merge" && (
           <div className="edit-dialog-confirm">
             <p className="edit-dialog-warning">
-              Affects {step.affectedMatches} {step.affectedMatches === 1 ? "Match" : "Matches"}.{" "}
-              {otherMatchesNote(step.affectedMatches)}
+              {scope === "global" ? (
+                globalMatchesNote(step.affectedMatches)
+              ) : (
+                <>
+                  Affects {step.affectedMatches} {step.affectedMatches === 1 ? "Match" : "Matches"}.{" "}
+                  {otherMatchesNote(step.affectedMatches)}
+                </>
+              )}
             </p>
             <p>
               Merge <strong>{record.name}</strong> into <strong>{step.conflict.name}</strong> and
