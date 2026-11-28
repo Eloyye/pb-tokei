@@ -319,6 +319,94 @@
   margin-bottom: 14px;
 }
 
+.leaderboard {
+  max-width: 1060px;
+}
+
+.leaderboard-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.leaderboard-kind {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.leaderboard-kind legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 650;
+}
+
+.leaderboard-kind label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.leaderboard-kind label:has(:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.leaderboard-kind input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.leaderboard-minimum {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: end;
+  gap: 5px;
+}
+
+.leaderboard-minimum label {
+  flex: 0 0 120px;
+}
+
+.leaderboard-results {
+  margin-top: 20px;
+}
+
+.leaderboard-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-bottom: 8px;
+  color: var(--dim);
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+  vertical-align: middle;
+}
+
+.leaderboard-table th:first-child {
+  width: 4em;
+}
+
+.leaderboard-rate {
+  width: 50%;
+  font-variant-numeric: tabular-nums;
+}
+
+.leaderboard-interval-note {
+  margin: 8px 0 0;
+  color: var(--dim);
+}
+
 .subject-connections {
   display: flex;
   flex-wrap: wrap;

@@ -141,6 +141,22 @@ class ReportStat(ReportRow):
     rows: list[ReportSubRow]
 
 
+class LeaderboardStat(BaseModel):
+    id: Stat
+    label: str
+    group: ReportGroup
+    kind: ReportKind
+    applies_to: ReportSubject
+    splits_by: tuple[ReportSplit, ...]
+
+    def supports(self, kind: SubjectKind, by: ReportSplit | None) -> bool:
+        return (
+            (self.applies_to is ReportSubject.BOTH or self.applies_to.value == kind.value)
+            and (by is None or by in self.splits_by)
+            and (by is not ReportSplit.COURT_HALF or kind is SubjectKind.PLAYER)
+        )
+
+
 class ReportPlayer(BaseModel):
     id: UUID
     name: str
@@ -317,6 +333,21 @@ STAT_DEFINITIONS = {
     Stat.CHALLENGE_SUCCESS: _StatDefinition("Challenge success", ReportGroup.OTHER, splits_by=()),
 }
 
+# Shot Disadvantage is a category in the Shot Outcome mix on the report.
+RANKABLE_STATS: dict[str, LeaderboardStat] = {
+    stat.value: LeaderboardStat(
+        id=stat,
+        label=definition.label,
+        group=definition.group,
+        kind=kind,
+        applies_to=definition.applies_to,
+        splits_by=definition.splits_by,
+    )
+    for stat, definition in STAT_DEFINITIONS.items()
+    if stat is not Stat.SHOT_DISADVANTAGE
+    and (kind := definition.kind(stat)) in (ReportKind.RATE, ReportKind.PER100)
+}
+
 _UNKNOWN = "Unknown"
 _IN_OPENING = "In the Opening (Shots 1–5)"
 _AFTER_OPENING = "After the Opening (6+)"
@@ -335,6 +366,7 @@ _SPLIT_BUCKETS = {
     ReportSplit.OPENING: (_IN_OPENING, _AFTER_OPENING),
     ReportSplit.COURT_HALF: tuple(_COURT_HALF_LABELS.values()),
 }
+LEADERBOARD_BUCKETS = {split: (*buckets, _UNKNOWN) for split, buckets in _SPLIT_BUCKETS.items()}
 _FIXED_BUCKETS = {
     ReportDimension.SHOT_TYPE: tuple(shot.value for shot in ShotType),
     ReportDimension.RALLY_ROLE: tuple(role.value for role in RallyRole),
@@ -698,13 +730,10 @@ def build_report(
     )
 
 
-def build_multi_match_report(
-    matches: Sequence[tuple[MatchGames, MatchRoster]], subjects: Mapping[UUID, SubjectKind]
-) -> MultiMatchReport:
-    """Pool the selected Matches for the subjects present in every one of them."""
-    # Matches with no Rallies still appear in the report history. The stats engine takes
-    # Matches, so build inputs for it here from the read-only Rally Log snapshots.
-    stats_matches = [
+def _matches_with_rallies(
+    matches: Iterable[tuple[MatchGames, MatchRoster]],
+) -> list[tuple[Match, MatchRoster]]:
+    return [
         (
             Match(
                 id=match.id,
@@ -720,6 +749,14 @@ def build_multi_match_report(
         for match, roster in matches
         if any(game.rallies for game in match.games)
     ]
+
+
+def build_multi_match_report(
+    matches: Sequence[tuple[MatchGames, MatchRoster]], subjects: Mapping[UUID, SubjectKind]
+) -> MultiMatchReport:
+    """Pool the selected Matches for the subjects present in every one of them."""
+    # Matches with no Rallies still appear in the report history.
+    stats_matches = _matches_with_rallies(matches)
     rallies = rally_counts(game for match, _ in matches for game in match.games)
     tallies = _ReportTallies(
         compute_stats(stats_matches),
@@ -732,3 +769,32 @@ def build_multi_match_report(
         ),
         stats=tallies.report_stats() if rallies.counted else [],
     )
+
+
+def leaderboard_rates(
+    matches: Iterable[tuple[MatchGames, MatchRoster]],
+    stat: LeaderboardStat,
+    kind: SubjectKind,
+    by: ReportSplit | None,
+    bucket: str | None,
+) -> dict[UUID, ReportRate]:
+    """Pool a single stat's opportunities across Matches and, for a Player, across Teams."""
+    parts: defaultdict[UUID, list[StatRow]] = defaultdict(list)
+    for row in compute_stats(_matches_with_rallies(matches)):
+        if row.stat is not stat.id or row.subject.kind is not kind or row.subject.team_id is None:
+            continue
+        shot = row.breakdown.shot
+        # Each Shot contributes to an overall row as well as a Shot breakdown row.
+        # Use one set of rows so every opportunity, including fixed sub-rows, counts once.
+        if by is None:
+            if shot is not None:
+                continue
+        elif shot is None or _bucket(shot, by) != bucket:
+            continue
+        subject_id = row.subject.player_id if kind is SubjectKind.PLAYER else row.subject.team_id
+        if subject_id is not None:
+            parts[subject_id].append(row)
+    scale = 100 if stat.kind is ReportKind.PER100 else 1
+    return {
+        subject: _Tally.from_rows(rows, pooled=True).rate(scale) for subject, rows in parts.items()
+    }

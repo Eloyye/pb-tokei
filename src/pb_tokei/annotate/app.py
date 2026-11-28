@@ -70,6 +70,12 @@ from pb_tokei.annotate.players import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.events.leaderboard import (
+    Leaderboard,
+    LeaderboardQuery,
+    build_leaderboard,
+    load_leaderboard_matches,
+)
 from pb_tokei.events.match_filters import PlayerMatchFilters, TeamMatchFilters
 from pb_tokei.events.report import MatchReport, build_report
 from pb_tokei.events.stats import compute_stats
@@ -1089,6 +1095,14 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"Team not found: {team_id}")
         response.headers["Cache-Control"] = "no-store"
         return build_team_report(*snapshot)
+
+    @app.get("/api/leaderboard", operation_id="getLeaderboard")
+    def get_leaderboard(
+        response: Response, rally_log: OpenLog, query: Annotated[LeaderboardQuery, Query()]
+    ) -> Leaderboard:
+        snapshot = rally_log.run(lambda log: load_leaderboard_matches(log, query))
+        response.headers["Cache-Control"] = "no-store"
+        return build_leaderboard(snapshot, query)
 
     # --- Matches -------------------------------------------------------------------------
 

@@ -23,7 +23,12 @@ from pb_tokei.rally_log import (
     Tournament,
 )
 
-from .match_filters import PlayerMatchFilters, TeamMatchFilters
+from .match_filters import (
+    FilterTournament,
+    MatchFilterOptions,
+    PlayerMatchFilters,
+    TeamMatchFilters,
+)
 from .report import (
     MultiMatchReport,
     ReportGame,
@@ -77,14 +82,7 @@ class SubjectMatch(BaseModel):
     rallies: ReportRallies
 
 
-class FilterTournament(BaseModel):
-    id: UUID
-    name: str
-    tour: Tour
-
-
-class SubjectFilterOptions(BaseModel):
-    tournaments: list[FilterTournament]
+class SubjectFilterOptions(MatchFilterOptions):
     partners: list[ReportPlayer]
     opponents: list[ReportPlayer]
 
@@ -169,8 +167,7 @@ def _load_matches(
     available_tournaments: set[Tournament] = set()
     available_partners: set[Player] = set()
     available_opponents: set[Player] = set()
-    selected = []
-    undated_excluded = 0
+    candidates = []
 
     # Keep the choices available even when filters leave no Matches. Only load Games for
     # Matches that pass all filters, and count undated Matches among the other filters' results.
@@ -185,19 +182,14 @@ def _load_matches(
         if partner is not None:
             available_partners.add(partner)
 
-        if not filters.includes_tournament(tournament):
-            continue
         if partner_id is not None and (partner is None or partner.id != partner_id):
             continue
         if filters.opponent is not None and all(p.id != filters.opponent for p in opponents):
             continue
-        if not filters.includes_date(match.date):
-            if match.date is None:
-                undated_excluded += 1
-            continue
-        selected.append(roster)
+        candidates.append(match)
 
-    matches = log.load_match_games_from_metadata([metadata[roster.match_id] for roster in selected])
+    selected, undated_excluded = filters.select_matches(candidates, tournaments)
+    matches = log.load_match_games_from_metadata(selected)
     franchise_matches = {}
     franchises = {}
     if player_id is not None and any(m.franchise_match_id is not None for m in matches.values()):
@@ -205,8 +197,10 @@ def _load_matches(
         franchises = {f.id: f for f in log.list_franchises()}
 
     sources = []
-    for roster in selected:
-        match = matches[roster.match_id]
+    for roster in rosters:
+        match = matches.get(roster.match_id)
+        if match is None:
+            continue
         tournament = tournaments[match.tournament_id]
         franchise = None
         if (
@@ -226,7 +220,7 @@ def _load_matches(
         sources=sources,
         filter_options=SubjectFilterOptions(
             tournaments=[
-                FilterTournament(id=t.id, name=t.name, tour=t.tour)
+                FilterTournament.from_tournament(t)
                 for t in sorted(available_tournaments, key=lambda t: (t.name, t.tour, t.id))
             ],
             partners=_player_options(available_partners),
