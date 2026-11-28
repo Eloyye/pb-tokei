@@ -5,9 +5,9 @@ export const ROSTER: Roster = {
   teamA: "A",
   teamB: "B",
   players: [
-    { id: "a1", name: "Anna Bright", team_id: "A", team: "a" },
-    { id: "a2", name: "Ben Johns", team_id: "A", team: "a" },
-    { id: "b1", name: "Cara Lee", team_id: "B", team: "b" },
-    { id: "b2", name: "Dan Kim", team_id: "B", team: "b" },
+    { id: "a1", name: "Anna Bright", handedness: "right", team_id: "A", team: "a" },
+    { id: "a2", name: "Ben Johns", handedness: "right", team_id: "A", team: "a" },
+    { id: "b1", name: "Cara Lee", handedness: "left", team_id: "B", team: "b" },
+    { id: "b2", name: "Dan Kim", handedness: "right", team_id: "B", team: "b" },
   ],
 };

@@ -1,4 +1,4 @@
-import type { MatchDetail } from "../api/client";
+import { type MatchDetail, STALE_MATCH_MESSAGE } from "../api/client";
 import { FPS, formatLength } from "../lib/frames";
 import {
   formatActiveTime,
@@ -50,6 +50,7 @@ export function StatusBar({
 }) {
   const openHelp = useOpenHelp();
   const failed = saveStatus.state === "retrying" || saveStatus.state === "refused";
+  const stale = saveStatus.state === "refused" && saveStatus.error === STALE_MATCH_MESSAGE;
   const { time, idle } = useOperatorTime(match, workspace);
   const ratio = operatorRatio(time.active_seconds, match.broadcast_seconds);
   const budget =
@@ -71,6 +72,11 @@ export function StatusBar({
       >
         {SAVE_LABELS[saveStatus.state]}
         {failed && "error" in saveStatus && `: ${saveStatus.error}`}
+        {stale && (
+          <button type="button" className="sb-reload" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        )}
       </output>
       <span className="message">{message}</span>
       {calibrationFitRetry && (

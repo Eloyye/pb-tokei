@@ -42,9 +42,32 @@ export type Match = Awaited<ReturnType<typeof listMatches>>[number];
 export type MatchDetail = Awaited<ReturnType<typeof getMatch>>;
 export type CreateMatchIn = Schemas["CreateMatchIn"];
 export type UpdateMatchIn = Schemas["UpdateMatchIn"];
+export type ReplacePlayerIn = Schemas["ReplacePlayerIn"];
+export type UpdatePlayerIn = Schemas["UpdatePlayerIn"];
+export type UpdateTournamentIn = Schemas["UpdateTournamentIn"];
+export type UpdateFranchiseIn = Schemas["UpdateFranchiseIn"];
+export type MergeIn = Schemas["MergeIn"];
+export type PlayerEditOut = Schemas["PlayerEditOut"];
+export type TournamentEditOut = Schemas["TournamentEditOut"];
+export type FranchiseEditOut = Schemas["FranchiseEditOut"];
+export type DeletedMatchOut = Schemas["DeletedMatchOut"];
+export type Handedness = Schemas["Handedness"];
+export type Tour = Schemas["Tour"];
 export type Roster = Awaited<ReturnType<typeof getRoster>>;
 export type OperatorTime = Schemas["OperatorTimeOut"];
 export type OperatorSessionIn = Schemas["OperatorSessionIn"];
+
+export const STALE_MATCH_MESSAGE = "This Match was edited elsewhere; reload";
+
+export interface ExactNameConflict {
+  id: string;
+  name: string;
+}
+
+function rallyLogHeaders(rallyLog?: string | null): Record<string, string> | undefined {
+  const path = rallyLog === undefined ? tabRallyLog : rallyLog;
+  return path === null ? undefined : { [RALLY_LOG_HEADER]: encodeURIComponent(path) };
+}
 
 /** The Rally Log the app has open. A tab that hasn't loaded one yet takes it as its own. */
 export async function getRallyLog(): Promise<RallyLogInfo> {
@@ -85,9 +108,10 @@ export async function createMatch(body: CreateMatchIn, rallyLog: string) {
   return data;
 }
 
-export async function getMatch(matchId: string) {
+export async function getMatch(matchId: string, options?: { rallyLog?: string | null }) {
   const { data, error, response } = await api.GET("/api/matches/{match_id}", {
     params: { path: { match_id: matchId } },
+    headers: rallyLogHeaders(options?.rallyLog),
   });
   if (data === undefined) throw apiError(response, error);
   return data;
@@ -97,12 +121,139 @@ export async function updateMatch(
   matchId: string,
   body: UpdateMatchIn,
   options?: { rallyLog?: string | null },
-): Promise<Match> {
-  const rallyLog = options?.rallyLog ?? tabRallyLog;
+): Promise<MatchDetail> {
   const { data, error, response } = await api.PATCH("/api/matches/{match_id}", {
     params: { path: { match_id: matchId } },
     body,
-    headers: rallyLog === null ? undefined : { [RALLY_LOG_HEADER]: encodeURIComponent(rallyLog) },
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function deleteMatch(
+  matchId: string,
+  options?: { rallyLog?: string | null },
+): Promise<DeletedMatchOut> {
+  const { data, error, response } = await api.DELETE("/api/matches/{match_id}", {
+    params: { path: { match_id: matchId } },
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function replaceMatchPlayer(
+  matchId: string,
+  body: ReplacePlayerIn,
+  options?: { rallyLog?: string | null },
+): Promise<MatchDetail> {
+  const { data, error, response } = await api.POST("/api/matches/{match_id}/replace-player", {
+    params: { path: { match_id: matchId } },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function updatePlayer(
+  playerId: string,
+  body: UpdatePlayerIn,
+  options?: { dryRun?: boolean; rallyLog?: string | null },
+): Promise<PlayerEditOut> {
+  const { data, error, response } = await api.PATCH("/api/players/{player_id}", {
+    params: {
+      path: { player_id: playerId },
+      query: options?.dryRun ? { dry_run: true } : undefined,
+    },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function mergePlayer(
+  playerId: string,
+  body: MergeIn,
+  options?: { dryRun?: boolean; rallyLog?: string | null },
+): Promise<PlayerEditOut> {
+  const { data, error, response } = await api.POST("/api/players/{player_id}/merge", {
+    params: {
+      path: { player_id: playerId },
+      query: options?.dryRun ? { dry_run: true } : undefined,
+    },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function updateTournament(
+  tournamentId: string,
+  body: UpdateTournamentIn,
+  options?: { dryRun?: boolean; rallyLog?: string | null },
+): Promise<TournamentEditOut> {
+  const { data, error, response } = await api.PATCH("/api/tournaments/{tournament_id}", {
+    params: {
+      path: { tournament_id: tournamentId },
+      query: options?.dryRun ? { dry_run: true } : undefined,
+    },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function mergeTournament(
+  tournamentId: string,
+  body: MergeIn,
+  options?: { dryRun?: boolean; rallyLog?: string | null },
+): Promise<TournamentEditOut> {
+  const { data, error, response } = await api.POST("/api/tournaments/{tournament_id}/merge", {
+    params: {
+      path: { tournament_id: tournamentId },
+      query: options?.dryRun ? { dry_run: true } : undefined,
+    },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function updateFranchise(
+  franchiseId: string,
+  body: UpdateFranchiseIn,
+  options?: { dryRun?: boolean; rallyLog?: string | null },
+): Promise<FranchiseEditOut> {
+  const { data, error, response } = await api.PATCH("/api/franchises/{franchise_id}", {
+    params: {
+      path: { franchise_id: franchiseId },
+      query: options?.dryRun ? { dry_run: true } : undefined,
+    },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function mergeFranchise(
+  franchiseId: string,
+  body: MergeIn,
+  options?: { dryRun?: boolean; rallyLog?: string | null },
+): Promise<FranchiseEditOut> {
+  const { data, error, response } = await api.POST("/api/franchises/{franchise_id}/merge", {
+    params: {
+      path: { franchise_id: franchiseId },
+      query: options?.dryRun ? { dry_run: true } : undefined,
+    },
+    body,
+    headers: rallyLogHeaders(options?.rallyLog),
   });
   if (data === undefined) throw apiError(response, error);
   return data;
@@ -480,6 +631,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly conflict?: ExactNameConflict,
   ) {
     super(message);
   }
@@ -490,9 +642,30 @@ export function isRetryable(error: unknown): boolean {
   return !(error instanceof ApiError && error.status >= 400 && error.status < 500);
 }
 
+/** Whether a workspace save failed because the Match was edited or deleted elsewhere. */
+export function isStaleMatchError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 404) return true;
+  if (error.status === 422) {
+    return error.message.startsWith(STALE_MATCH_MESSAGE) || error.message.includes("not in Match");
+  }
+  return false;
+}
+
 function apiError(response: Response, body: unknown): ApiError {
   const detail =
     typeof body === "object" && body !== null && "detail" in body ? body.detail : undefined;
   const message = typeof detail === "string" ? detail : `${response.status} ${response.statusText}`;
-  return new ApiError(response.status, message);
+  let conflict: ExactNameConflict | undefined;
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "existing_id" in body &&
+    typeof body.existing_id === "string" &&
+    "existing_name" in body &&
+    typeof body.existing_name === "string"
+  ) {
+    conflict = { id: body.existing_id, name: body.existing_name };
+  }
+  return new ApiError(response.status, message, conflict);
 }

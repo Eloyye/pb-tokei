@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
+import { STALE_MATCH_MESSAGE } from "../api/client";
 import { StatusBar } from "./StatusBar";
 
 type StatusMatch = ComponentProps<typeof StatusBar>["match"];
@@ -23,25 +24,36 @@ const match: StatusMatch = {
 function renderBar(
   overrides: Partial<StatusMatch> = {},
   workspace: ComponentProps<typeof StatusBar>["workspace"] = "annotate",
-  extra: Pick<
-    ComponentProps<typeof StatusBar>,
-    "issueCounts" | "onNextIssue" | "calibrationFitRetry"
+  extra: Partial<
+    Pick<
+      ComponentProps<typeof StatusBar>,
+      "issueCounts" | "onNextIssue" | "calibrationFitRetry" | "saveStatus"
+    >
   > = {},
 ) {
+  const { saveStatus = { state: "saved" }, ...rest } = extra;
   render(
     <QueryClientProvider client={new QueryClient()}>
       <StatusBar
         match={{ ...match, ...overrides }}
         workspace={workspace}
         message="Calibrate"
-        saveStatus={{ state: "saved" }}
-        {...extra}
+        saveStatus={saveStatus}
+        {...rest}
       />
     </QueryClientProvider>,
   );
 }
 
 afterEach(cleanup);
+
+it("shows the stale-workspace reload message and Reload button when refused", () => {
+  renderBar({}, "annotate", {
+    saveStatus: { state: "refused", error: STALE_MATCH_MESSAGE },
+  });
+  expect(screen.getByRole("status").textContent).toContain(`Save refused: ${STALE_MATCH_MESSAGE}`);
+  expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+});
 
 it("offers a retry when Calibration fits cannot be refreshed", () => {
   const onRetry = vi.fn<() => void>();

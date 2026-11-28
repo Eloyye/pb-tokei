@@ -144,14 +144,24 @@ export function MatchList() {
                     {formatRatio(match.operator_time_ratio)}
                   </span>
                 </Link>
-                <Link
-                  to="/matches/$matchId/$workspace"
-                  params={{ matchId: match.id, workspace: "report" }}
-                  className="button match-report-link"
-                  title={`Report for ${match.team_a.join(" / ")} vs ${match.team_b.join(" / ")}`}
-                >
-                  Report
-                </Link>
+                <span className="match-row-actions">
+                  <Link
+                    to="/matches/$matchId/edit"
+                    params={{ matchId: match.id }}
+                    className="button match-report-link"
+                    title={`Edit ${teamsLabel(match)}`}
+                  >
+                    Edit
+                  </Link>
+                  <Link
+                    to="/matches/$matchId/$workspace"
+                    params={{ matchId: match.id, workspace: "report" }}
+                    className="button match-report-link"
+                    title={`Report for ${teamsLabel(match)}`}
+                  >
+                    Report
+                  </Link>
+                </span>
               </div>
             );
           })}

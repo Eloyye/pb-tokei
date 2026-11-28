@@ -460,6 +460,34 @@ describe("useRecording", () => {
     expect(result.current[0].recording?.games).toEqual(started!.games);
   });
 
+  it("shows the reload message without retrying when a save hits a stale or deleted Match", async () => {
+    vi.mocked(replaceGames).mockRejectedValueOnce(
+      new ApiError(422, "This Match was edited elsewhere; reload (Player a1 is not in Match)"),
+    );
+    const { result } = await loaded();
+
+    act(() => {
+      result.current[1].editGames((games) => markRallyStart(ctx(games)));
+    });
+    await flush();
+
+    expect(result.current[0].saveStatus).toEqual({
+      state: "refused",
+      error: "This Match was edited elsewhere; reload",
+    });
+    expect(replaceGames).toHaveBeenCalledTimes(1);
+
+    // Deleted Match (404) on another queue also shows the reload message.
+    vi.mocked(replacePlaySegments).mockRejectedValueOnce(new ApiError(404, "Match not found"));
+    act(() => result.current[1].editSegments((s, p) => markIn(s, p, 500)));
+    act(() => result.current[1].editSegments((s, p) => markOut(s, p, 600)));
+    await flush();
+    expect(result.current[0].saveStatus).toEqual({
+      state: "refused",
+      error: "This Match was edited elsewhere; reload",
+    });
+  });
+
   it("records a Swap on the anchors and the selected Shot as one undo step", async () => {
     const { result } = await loaded();
     let selection = NO_SELECTION;
