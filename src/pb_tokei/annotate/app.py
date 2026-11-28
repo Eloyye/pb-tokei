@@ -153,7 +153,9 @@ from pb_tokei.roster import (
     merge_player,
     merge_tournament,
     replace_match_player,
-    set_up_match,
+)
+from pb_tokei.roster import (
+    create_match as create_match_record,
 )
 from pb_tokei.roster import (
     delete_match as delete_match_record,
@@ -1133,7 +1135,19 @@ def create_app(
     @app.post("/api/matches", operation_id="createMatch", status_code=201)
     def create_match(body: CreateMatchIn, rally_log: OpenLog) -> CreatedMatchOut:
         """Sets up a Match and optionally starts fetching its footage after it is saved."""
-        match = rally_log.run(lambda log: set_up_match(log, body.to_roster()))
+        team_a, team_b = body.resolved_teams()
+        franchise_match = None if body.franchise_match is None else body.franchise_match.to_roster()
+        match = rally_log.run(
+            lambda log: create_match_record(
+                log,
+                date=body.date,
+                tournament=body.tournament,
+                tour=body.tour,
+                team_a=team_a,
+                team_b=team_b,
+                franchise_match=franchise_match,
+            )
+        )
         if url := (body.footage_url or "").strip():
             try:
                 validate_url(url)

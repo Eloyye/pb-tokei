@@ -1,6 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -12,8 +15,15 @@ from test_roster import DALLAS_VS_MIAMI, MLP, roster_toml
 
 from pb_tokei.annotate.app import create_app
 from pb_tokei.annotate.footage_jobs import FootageJobService
-from pb_tokei.rally_log import Handedness, MatchId, RallyLog
-from pb_tokei.roster import Roster, parse_roster, set_up_match
+from pb_tokei.rally_log import Handedness, MatchId, Player, PlayerId, RallyLog, Tour
+from pb_tokei.roster import (
+    Roster,
+    RosterError,
+    RosterPlayer,
+    create_match,
+    parse_roster,
+    set_up_match,
+)
 from pb_tokei.state import read_cookies_from_browser, write_cookies_from_browser
 
 
@@ -30,14 +40,25 @@ def client(db: Path) -> TestClient:
     return TestClient(create_app(db), base_url=LOCAL, headers={"Origin": LOCAL})
 
 
-def form(roster: Roster | None = None) -> dict[str, Any]:
+def form(
+    roster: Roster | None = None,
+    *,
+    existing_ids: dict[str, PlayerId] | None = None,
+) -> dict[str, Any]:
     roster = roster or parse_roster(roster_toml())
+    ids = existing_ids or {}
+
+    def slot(player: RosterPlayer) -> str | dict[str, Any]:
+        if player.name in ids:
+            return str(ids[player.name])
+        return asdict(player)
+
     body: dict[str, Any] = {
         "date": roster.date.isoformat(),
         "tournament": roster.tournament,
         "tour": roster.tour,
-        "team_a": [asdict(player) for player in roster.team_a],
-        "team_b": [asdict(player) for player in roster.team_b],
+        "team_a": [slot(player) for player in roster.team_a],
+        "team_b": [slot(player) for player in roster.team_b],
     }
     if roster.franchise_match is not None:
         fm = roster.franchise_match
@@ -47,13 +68,21 @@ def form(roster: Roster | None = None) -> dict[str, Any]:
     return body
 
 
-def test_create_match_is_equivalent_to_its_roster_file(client: TestClient, db: Path) -> None:
+def stored_player_ids(db: Path) -> dict[str, PlayerId]:
+    with RallyLog.open(db) as log:
+        return {player.name: player.id for player in log.list_players()}
+
+
+def test_create_match_mixes_existing_player_ids_and_new_players(
+    client: TestClient, db: Path
+) -> None:
     with RallyLog.open(db) as log:
         first = set_up_match(log, parse_roster(roster_toml()))
+    ids = stored_player_ids(db)
     roster = parse_roster(roster_toml(team_b=(("Eve Park", "left"), ("Dan Kim", "right"))))
-    body = form(roster)
+    body = form(roster, existing_ids=ids)
     body["tournament"] += " "
-    body["team_a"][0]["name"] += " "
+    body["team_b"][0]["name"] = "  Eve Park  "
 
     response = client.post("/api/matches", json=body)
 
@@ -66,21 +95,165 @@ def test_create_match_is_equivalent_to_its_roster_file(client: TestClient, db: P
         assert match.team_a_id == first.team_a_id
         eve = log.find_player("Eve Park")
         assert eve is not None and eve.handedness is Handedness.LEFT
+        assert set(log.get_team(match.team_b_id).player_ids) == {eve.id, ids["Dan Kim"]}
         assert len(log.list_players()) == 5
         expected = set_up_match(log, roster)
         assert replace(match, id=expected.id) == expected
+
+
+@pytest.mark.parametrize(
+    "colliding_name",
+    ["Anna Bright", "  Anna Bright  ", "anna   BRIGHT"],
+)
+def test_create_match_rejects_new_player_colliding_with_existing_without_writing(
+    client: TestClient, db: Path, colliding_name: str
+) -> None:
+    with RallyLog.open(db) as log:
+        set_up_match(log, parse_roster(roster_toml()))
+    ids = stored_player_ids(db)
+    body = {
+        "date": "2026-04-15",
+        "tournament": "Brand New Open 2026",
+        "tour": "ppa",
+        "team_a": [
+            {"name": colliding_name, "handedness": "right"},
+            {"name": "Zoe Fresh", "handedness": "left"},
+        ],
+        "team_b": [str(ids["Cara Lee"]), str(ids["Dan Kim"])],
+    }
+
+    response = client.post("/api/matches", json=body)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Player 'Anna Bright' already exists"
+    with RallyLog.open(db) as log:
+        assert len(log.list_matches()) == 1
+        assert len(log.list_players()) == 4
+        assert log.find_player("Zoe Fresh") is None
+        assert log.find_tournament("Brand New Open 2026", Tour.PPA) is None
+
+
+def test_create_match_rejects_unknown_player_uuid_without_writing(
+    client: TestClient, db: Path
+) -> None:
+    missing_id = uuid4()
+    body = {
+        "date": "2026-04-15",
+        "tournament": "PPA Atlanta Open 2026",
+        "tour": "ppa",
+        "team_a": [str(missing_id), {"name": "New One", "handedness": "right"}],
+        "team_b": [
+            {"name": "New Two", "handedness": "left"},
+            {"name": "New Three", "handedness": "right"},
+        ],
+    }
+
+    response = client.post("/api/matches", json=body)
+
+    assert response.status_code == 422
+    assert str(missing_id) in response.json()["detail"]
+    with RallyLog.open(db) as log:
+        assert not log.list_matches()
+        assert not log.list_players()
+        assert not log.list_tournaments()
+
+
+def test_create_match_rejects_duplicate_uuids_and_duplicate_normalized_new_names(
+    client: TestClient, db: Path
+) -> None:
+    with RallyLog.open(db) as log:
+        set_up_match(log, parse_roster(roster_toml()))
+    ids = stored_player_ids(db)
+
+    duplicate_uuid = {
+        "date": "2026-04-15",
+        "tournament": "PPA Atlanta Open 2026",
+        "tour": "ppa",
+        "team_a": [str(ids["Anna Bright"]), str(ids["Ben Johns"])],
+        "team_b": [str(ids["Cara Lee"]), str(ids["Anna Bright"])],
+    }
+    resp_uuid = client.post("/api/matches", json=duplicate_uuid)
+    assert resp_uuid.status_code == 422
+    assert resp_uuid.json()["detail"] == "a Player can't appear twice in a Match"
+
+    duplicate_new = {
+        "date": "2026-04-15",
+        "tournament": "Brand New Open 2026",
+        "tour": "ppa",
+        "team_a": [
+            {"name": "Eve Park", "handedness": "left"},
+            str(ids["Ben Johns"]),
+        ],
+        "team_b": [
+            {"name": "  eve   PARK ", "handedness": "right"},
+            str(ids["Dan Kim"]),
+        ],
+    }
+    resp_new = client.post("/api/matches", json=duplicate_new)
+    assert resp_new.status_code == 422
+    assert resp_new.json()["detail"] == "a Player can't appear twice in a Match"
+
+    blank_new = {
+        "date": "2026-04-15",
+        "tournament": "Brand New Open 2026",
+        "tour": "ppa",
+        "team_a": [{"name": "   ", "handedness": "left"}, str(ids["Ben Johns"])],
+        "team_b": [str(ids["Cara Lee"]), str(ids["Dan Kim"])],
+    }
+    resp_blank = client.post("/api/matches", json=blank_new)
+    assert resp_blank.status_code == 422
+    assert resp_blank.json()["detail"] == "each Player needs a name"
+
+    with RallyLog.open(db) as log:
+        assert len(log.list_matches()) == 1
+        assert len(log.list_players()) == 4
+        assert log.find_tournament("Brand New Open 2026", Tour.PPA) is None
+
+
+def test_create_match_disambiguates_legacy_duplicate_name_players_by_id(
+    client: TestClient, db: Path
+) -> None:
+    first_id = PlayerId(uuid4())
+    second_id = PlayerId(uuid4())
+    p3 = PlayerId(uuid4())
+    p4 = PlayerId(uuid4())
+    with RallyLog.open(db) as log:
+        log.save_player(Player(first_id, "Anna Bright", Handedness.RIGHT))
+        log.save_player(Player(second_id, "Anna Bright", Handedness.LEFT))
+        log.save_player(Player(p3, "Cara Lee", Handedness.LEFT))
+        log.save_player(Player(p4, "Dan Kim", Handedness.RIGHT))
+
+    # Selecting the second duplicate-name row by UUID uses that exact id, and both ids are distinct.
+    response = client.post(
+        "/api/matches",
+        json={
+            "date": "2026-04-16",
+            "tournament": "PPA Atlanta Open 2026",
+            "tour": "ppa",
+            "team_a": [str(second_id), str(p3)],
+            "team_b": [str(first_id), str(p4)],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    with RallyLog.open(db) as log:
+        match = log.load_match(MatchId(UUID(response.json()["id"])))
+        assert set(log.get_team(match.team_a_id).player_ids) == {second_id, p3}
+        assert set(log.get_team(match.team_b_id).player_ids) == {first_id, p4}
 
 
 def test_create_mlp_match_can_pick_or_create_a_franchise_match(
     client: TestClient, db: Path
 ) -> None:
     roster = parse_roster(roster_toml(tournament=MLP, franchise_match=DALLAS_VS_MIAMI))
-    body = form(roster)
-    first = client.post("/api/matches", json=body)
+    first = client.post("/api/matches", json=form(roster))
     assert first.status_code == 201, first.text
     with RallyLog.open(db) as log:
         initial = log.load_match(MatchId(UUID(first.json()["id"])))
         assert initial.franchise_match_id is not None
+
+    # Subsequent matches reference the stored Players by UUID.
+    body = form(roster, existing_ids=stored_player_ids(db))
 
     # A form opened before the first request omits the id and reuses the meeting it created.
     automatic = client.post("/api/matches", json=body)
@@ -118,6 +291,56 @@ def test_create_mlp_match_can_pick_or_create_a_franchise_match(
         assert len(log.list_matches()) == 4
 
 
+def test_concurrent_explicit_match_creation_prevents_duplicate_players(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with RallyLog.open(db) as log:
+        set_up_match(log, parse_roster(roster_toml()))
+    ids = stored_player_ids(db)
+    start = Barrier(2)
+    reads = Barrier(2)
+    original_list_players = RallyLog.list_players
+
+    def read_players_together(log: RallyLog) -> list[Player]:
+        players = original_list_players(log)
+        with suppress(BrokenBarrierError):
+            reads.wait(timeout=1.0)
+        return players
+
+    monkeypatch.setattr(RallyLog, "list_players", read_players_together)
+
+    def create(new_name: str) -> MatchId:
+        with RallyLog.open(db) as log:
+            start.wait(timeout=5)
+            return create_match(
+                log,
+                date=date(2026, 4, 15),
+                tournament="PPA Atlanta Open 2026",
+                tour=Tour.PPA,
+                team_a=(ids["Anna Bright"], RosterPlayer(new_name, Handedness.LEFT)),
+                team_b=(ids["Cara Lee"], ids["Dan Kim"]),
+            ).id
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(create, "Eve Park")
+        second = pool.submit(create, "  eve   park ")
+        outcomes: list[MatchId | Exception] = []
+        for future in (first, second):
+            try:
+                outcomes.append(future.result())
+            except RosterError as exc:
+                outcomes.append(exc)
+
+    succeeded = [item for item in outcomes if isinstance(item, UUID)]
+    failed = [item for item in outcomes if isinstance(item, RosterError)]
+    assert len(succeeded) == 1
+    assert len(failed) == 1
+    assert "already exists" in str(failed[0])
+    with RallyLog.open(db) as log:
+        assert len(log.list_matches()) == 2
+        assert len(log.list_players()) == 5
+
+
 def test_match_creation_reports_roster_errors_without_writing(client: TestClient, db: Path) -> None:
     body = form()
     body["team_b"][1] = {**body["team_a"][0], "name": body["team_a"][0]["name"] + " "}
@@ -131,11 +354,84 @@ def test_match_creation_reports_roster_errors_without_writing(client: TestClient
         assert not log.list_players()
 
 
-def test_match_creation_rejects_a_foreign_origin(client: TestClient, db: Path) -> None:
-    response = client.post("/api/matches", json=form(), headers={"Origin": "https://example.com"})
+@pytest.mark.parametrize(
+    ("overrides", "expected_detail"),
+    [
+        ({"foo": 1}, None),
+        (
+            {
+                "team_a": [
+                    {"name": "Anna Bright", "handedness": "right", "extra": True},
+                    {"name": "Ben Johns", "handedness": "right"},
+                ]
+            },
+            None,
+        ),
+        (
+            {"team_a": ["not-a-uuid", {"name": "Ben Johns", "handedness": "right"}]},
+            None,
+        ),
+        ({"tournament": "   "}, "Tournament name must be non-empty text"),
+        ({"tour": "mlp"}, "an MLP Match needs a Franchise Match"),
+        (
+            {"tour": "ppa", "franchise_match": DALLAS_VS_MIAMI},
+            "only MLP Matches have a Franchise Match",
+        ),
+        (
+            {
+                "tour": "mlp",
+                "franchise_match": {"franchise_a": "   ", "franchise_b": "Miami Pickleball Club"},
+            },
+            "each Franchise needs a name",
+        ),
+        (
+            {
+                "tour": "mlp",
+                "franchise_match": {
+                    "franchise_a": "Dallas Flash",
+                    "franchise_b": "Dallas Flash ",
+                },
+            },
+            "a Franchise can't play itself",
+        ),
+    ],
+)
+def test_create_match_rejects_extra_fields_malformed_slots_and_metadata_errors(
+    client: TestClient, db: Path, overrides: dict[str, Any], expected_detail: str | None
+) -> None:
+    body = {**form(), **overrides}
 
-    assert response.status_code == 403
+    response = client.post("/api/matches", json=body)
+
+    assert response.status_code == 422
+    if expected_detail is not None:
+        assert response.json()["detail"] == expected_detail
     with RallyLog.open(db) as log:
+        assert not log.list_matches()
+        assert not log.list_players()
+        assert not log.list_tournaments()
+        assert not log.list_franchises()
+
+
+def test_match_creation_rejects_foreign_origin_and_stale_rally_log(
+    client: TestClient, db: Path, tmp_path: Path
+) -> None:
+    response = client.post("/api/matches", json=form(), headers={"Origin": "https://example.com"})
+    assert response.status_code == 403
+
+    other = tmp_path / "other.duckdb"
+    assert (
+        client.post("/api/rally-log", json={"path": str(other), "create": True}).status_code == 200
+    )
+    stale = client.post(
+        "/api/matches",
+        json=form(),
+        headers={"X-Rally-Log": quote(str(db.resolve()))},
+    )
+    assert stale.status_code == 409
+    with RallyLog.open(db) as log:
+        assert not log.list_matches()
+    with RallyLog.open(other) as log:
         assert not log.list_matches()
 
 

@@ -3,7 +3,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApiError, getPlayerReport, getTeamReport, listPlayers, listTeams } from "../api/client";
+import {
+  ApiError,
+  getPlayerReport,
+  getTeamReport,
+  listPlayers,
+  listTeams,
+  mergePlayer,
+  updatePlayer,
+} from "../api/client";
 import type { components } from "../api/schema";
 import { router as appRouter } from "../router";
 
@@ -18,6 +26,8 @@ vi.mock("../api/client", async (importOriginal) => ({
   getTeamReport: vi.fn<Client["getTeamReport"]>(),
   listPlayers: vi.fn<Client["listPlayers"]>(),
   listTeams: vi.fn<Client["listTeams"]>(),
+  updatePlayer: vi.fn<Client["updatePlayer"]>(),
+  mergePlayer: vi.fn<Client["mergePlayer"]>(),
   listMatches: vi.fn<Client["listMatches"]>().mockResolvedValue([]),
   getRallyLog: vi.fn<Client["getRallyLog"]>().mockResolvedValue({
     path: "/tmp/demo.duckdb",
@@ -136,7 +146,7 @@ it("opens both indexes from the Dashboard and links to their reports", async () 
   );
   fireEvent.click(dashboard.getByRole("link", { name: "Players" }));
   const players = within(await screen.findByRole("table", { name: "Players" }));
-  const player = players.getByRole("row", { name: "Alex One Left 2" });
+  const player = players.getByRole("row", { name: /^Alex One Left 2\b/ });
   const playerLink = within(player).getByRole("link");
   expect(playerLink.getAttribute("href")).toBe("/players/alex");
   fireEvent.click(playerLink);
@@ -452,4 +462,74 @@ it("keeps the Matches tab highlighted on New Match", async () => {
   expect(dashboard.getByRole("link", { name: "Matches" }).getAttribute("aria-current")).toBe(
     "page",
   );
+});
+
+it("edits and merges Players from /players using global affected-Match wording and refetches", async () => {
+  vi.mocked(listPlayers)
+    .mockResolvedValueOnce([
+      { id: "alex", name: "Alex One", handedness: "left", match_count: 2 },
+      { id: "avery", name: "Avery Two", handedness: "right", match_count: 1 },
+    ])
+    .mockResolvedValueOnce([
+      { id: "alex", name: "Alex Renamed", handedness: "right", match_count: 2 },
+      { id: "avery", name: "Avery Two", handedness: "right", match_count: 1 },
+    ])
+    .mockResolvedValueOnce([
+      { id: "avery", name: "Avery Two", handedness: "right", match_count: 3 },
+    ]);
+
+  vi.mocked(updatePlayer)
+    .mockResolvedValueOnce({
+      player: { id: "alex", name: "Alex Renamed", handedness: "right" },
+      affected_matches: 2,
+      dry_run: true,
+    })
+    .mockResolvedValueOnce({
+      player: { id: "alex", name: "Alex Renamed", handedness: "right" },
+      affected_matches: 2,
+      dry_run: false,
+    });
+
+  renderDashboard("/players");
+  const table = within(await screen.findByRole("table", { name: "Players" }));
+  fireEvent.click(table.getByRole("button", { name: "Edit Player Alex One" }));
+
+  let dialog = within(await screen.findByRole("dialog"));
+  fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Alex Renamed" } });
+  fireEvent.change(dialog.getByLabelText("Handedness"), { target: { value: "right" } });
+  fireEvent.click(dialog.getByRole("button", { name: "Continue" }));
+  expect(await dialog.findByText("Affects 2 Matches.")).toBeTruthy();
+
+  fireEvent.click(dialog.getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(await screen.findByRole("link", { name: "Alex Renamed" })).toBeTruthy();
+  expect(listPlayers).toHaveBeenCalledTimes(2);
+
+  // Merge Alex Renamed into Avery Two.
+  vi.mocked(updatePlayer).mockRejectedValueOnce(
+    new ApiError(409, "Player 'Avery Two' already exists", { id: "avery", name: "Avery Two" }),
+  );
+  vi.mocked(mergePlayer)
+    .mockResolvedValueOnce({
+      player: { id: "avery", name: "Avery Two", handedness: "right" },
+      affected_matches: 2,
+      dry_run: true,
+    })
+    .mockResolvedValueOnce({
+      player: { id: "avery", name: "Avery Two", handedness: "right" },
+      affected_matches: 2,
+      dry_run: false,
+    });
+
+  fireEvent.click(screen.getByRole("button", { name: "Edit Player Alex Renamed" }));
+  dialog = within(await screen.findByRole("dialog"));
+  fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Avery Two" } });
+  fireEvent.click(dialog.getByRole("button", { name: "Continue" }));
+  fireEvent.click(await dialog.findByRole("button", { name: 'Merge into "Avery Two"' }));
+  expect(await dialog.findByText("Affects 2 Matches.")).toBeTruthy();
+
+  fireEvent.click(dialog.getByRole("button", { name: 'Confirm Merge into "Avery Two"' }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Alex Renamed" })).toBeNull());
+  expect(listPlayers).toHaveBeenCalledTimes(3);
 });

@@ -914,9 +914,15 @@ export interface components {
       footage_url?: string | null;
       franchise_match?: components["schemas"]["FranchiseMatchIn"] | null;
       /** Team A */
-      team_a: [components["schemas"]["RosterPlayer"], components["schemas"]["RosterPlayer"]];
+      team_a: [
+        string | components["schemas"]["NewPlayerIn"],
+        string | components["schemas"]["NewPlayerIn"],
+      ];
       /** Team B */
-      team_b: [components["schemas"]["RosterPlayer"], components["schemas"]["RosterPlayer"]];
+      team_b: [
+        string | components["schemas"]["NewPlayerIn"],
+        string | components["schemas"]["NewPlayerIn"],
+      ];
       tour: components["schemas"]["Tour"];
       /** Tournament */
       tournament: string;
@@ -2040,12 +2046,6 @@ export interface components {
       players: components["schemas"]["Player"][];
       /** Tournaments */
       tournaments: components["schemas"]["Tournament"][];
-    };
-    /** RosterPlayer */
-    RosterPlayer: {
-      handedness: components["schemas"]["Handedness"];
-      /** Name */
-      name: string;
     };
     /**
      * Ruling
