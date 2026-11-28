@@ -10,12 +10,12 @@ import {
 } from "./playerMatching";
 
 const PLAYERS: RosterPlayerOption[] = [
-  { id: "p-ab", name: "Anna Bright", handedness: "right" },
-  { id: "p-alw", name: "Anna-Leigh Waters", handedness: "right" },
-  { id: "p-bj", name: "Ben Johns", handedness: "right" },
-  { id: "p-jw", name: "J.W. Johnson", handedness: "right" },
-  { id: "p-jk", name: "Jade Kawamoto", handedness: "right" },
-  { id: "p-ob", name: "Liam O'Brien", handedness: "left" },
+  { id: "p-ab", name: "Anna Bright", handedness: "right", gender: "female" },
+  { id: "p-alw", name: "Anna-Leigh Waters", handedness: "right", gender: "female" },
+  { id: "p-bj", name: "Ben Johns", handedness: "right", gender: "male" },
+  { id: "p-jw", name: "J.W. Johnson", handedness: "right", gender: "male" },
+  { id: "p-jk", name: "Jade Kawamoto", handedness: "right", gender: "female" },
+  { id: "p-ob", name: "Liam O'Brien", handedness: "left", gender: "male" },
 ];
 
 const NO_OTHERS: OtherSlotUsage = { existingIds: new Map(), stagedNew: [] };
@@ -70,8 +70,8 @@ describe("playerMatching", () => {
     const prefixVsSub = buildPlayerDropdown(
       "ann",
       [
-        { id: "sub", name: "Hannah Lee", handedness: "left" },
-        { id: "pre", name: "Anna Bright", handedness: "right" },
+        { id: "sub", name: "Hannah Lee", handedness: "left", gender: "female" },
+        { id: "pre", name: "Anna Bright", handedness: "right", gender: "female" },
       ],
       NO_OTHERS,
     );
@@ -90,7 +90,13 @@ describe("playerMatching", () => {
     const withStaged: OtherSlotUsage = {
       existingIds: new Map([["p-ab", "Team A"]]),
       stagedNew: [
-        { name: "Eve Park", normalizedName: "eve park", handedness: "left", slotLabel: "Team A" },
+        {
+          name: "Eve Park",
+          normalizedName: "eve park",
+          handedness: "left",
+          gender: "female",
+          slotLabel: "Team A",
+        },
       ],
     };
     const stagedHit = buildPlayerDropdown("eve  park", PLAYERS, withStaged);
@@ -107,8 +113,8 @@ describe("playerMatching", () => {
 
   it("prefers an unused Player when legacy duplicate names collide", () => {
     const legacy: RosterPlayerOption[] = [
-      { id: "p-1", name: "Anna Bright", handedness: "right" },
-      { id: "p-2", name: "Anna Bright", handedness: "left" },
+      { id: "p-1", name: "Anna Bright", handedness: "right", gender: "female" },
+      { id: "p-2", name: "Anna Bright", handedness: "left", gender: "female" },
     ];
     const used: OtherSlotUsage = { existingIds: new Map([["p-1", "Team A"]]), stagedNew: [] };
     expect(checkNewPlayerDraft("Anna Bright", legacy, used)).toEqual({
@@ -116,5 +122,19 @@ describe("playerMatching", () => {
       player: legacy[1],
       usedInSlot: undefined,
     });
+  });
+
+  it("disables gender-ineligible Players without allowing accidental re-creation", () => {
+    const res = buildPlayerDropdown("Ben Johns", PLAYERS, NO_OTHERS, "female");
+    expect(res.canCreate).toBe(false);
+    expect(res.options).toEqual([
+      {
+        kind: "existing",
+        player: PLAYERS[2],
+        disabled: true,
+        disabledReason: undefined,
+        ineligible: true,
+      },
+    ]);
   });
 });

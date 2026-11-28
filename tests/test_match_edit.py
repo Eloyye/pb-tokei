@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import threading
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,9 +30,11 @@ from pb_tokei.rally_log import (
     Challenge,
     ContactKind,
     CourtPoint,
+    Discipline,
     Error,
     ErrorKind,
     Game,
+    Gender,
     Landmark,
     MatchId,
     ObservationGap,
@@ -266,7 +269,10 @@ def test_replace_player_rewrites_every_reference_column_and_updates_report(
 
     resp = client.post(
         f"/api/matches/{m1}/replace-player",
-        json={"from": str(old_player.id), "to": {"name": "Eve Park", "handedness": "left"}},
+        json={
+            "from": str(old_player.id),
+            "to": {"name": "Eve Park", "handedness": "left", "gender": "female"},
+        },
     )
     assert resp.status_code == 200, resp.text
     detail = resp.json()
@@ -323,8 +329,8 @@ def test_replace_player_reuses_existing_team_deletes_orphans_and_refuses_duplica
     # Second match already pairs Eve Park with Ben Johns -> Team(Eve, Ben) exists.
     m2 = _add_match(
         db,
-        team_a=(("Eve Park", "left"), ("Ben Johns", "right")),
-        team_b=(("Cara Lee", "left"), ("Dan Kim", "right")),
+        team_a=(("Eve Park", "left", "female"), ("Ben Johns", "right", "male")),
+        team_b=(("Cara Lee", "left", "female"), ("Dan Kim", "right", "male")),
     )
     with RallyLog.open(db) as log:
         r1 = log.get_match_roster(m1)
@@ -346,7 +352,10 @@ def test_replace_player_reuses_existing_team_deletes_orphans_and_refuses_duplica
     # Near-duplicate new Player name is refused.
     near = client.post(
         f"/api/matches/{m1}/replace-player",
-        json={"from": str(anna.id), "to": {"name": "eve  park", "handedness": "left"}},
+        json={
+            "from": str(anna.id),
+            "to": {"name": "eve  park", "handedness": "left", "gender": "female"},
+        },
     )
     assert near.status_code == 422
     assert "did you mean" in near.json()["detail"]
@@ -528,16 +537,19 @@ def test_patch_match_franchise_match_set_change_swap_ambiguous_and_clear(
 
 
 def test_player_rename_handedness_dry_run_and_merge(client: TestClient, db: Path) -> None:
-    m1 = _add_match(db, team_a=(("Anna Brigth", "left"), ("Ben Johns", "right")))
+    m1 = _add_match(
+        db,
+        team_a=(("Anna Brigth", "left", "female"), ("Ben Johns", "right", "male")),
+    )
     m2 = _add_match(
         db,
-        team_a=(("Anna Brigth", "left"), ("Cara Lee", "left")),
-        team_b=(("Dan Kim", "right"), ("Eve Park", "right")),
+        team_a=(("Anna Brigth", "left", "female"), ("Cara Lee", "left", "female")),
+        team_b=(("Grace Lin", "right", "female"), ("Eve Park", "right", "female")),
     )
     m3 = _add_match(
         db,
-        team_a=(("Anna Bright", "right"), ("Frank Wu", "right")),
-        team_b=(("Cara Lee", "left"), ("Dan Kim", "right")),
+        team_a=(("Anna Bright", "right", "female"), ("Frank Wu", "right", "male")),
+        team_b=(("Cara Lee", "left", "female"), ("Dan Kim", "right", "male")),
     )
     _populate_full_match(db, m1)
     with RallyLog.open(db) as log:
@@ -554,7 +566,12 @@ def test_player_rename_handedness_dry_run_and_merge(client: TestClient, db: Path
     )
     assert dry.status_code == 200, dry.text
     assert dry.json() == {
-        "player": {"id": str(typo.id), "name": "Anna B.", "handedness": "right"},
+        "player": {
+            "id": str(typo.id),
+            "name": "Anna B.",
+            "handedness": "right",
+            "gender": "female",
+        },
         "affected_matches": 2,
         "dry_run": True,
     }
@@ -591,7 +608,12 @@ def test_player_rename_handedness_dry_run_and_merge(client: TestClient, db: Path
     )
     assert merge_dry.status_code == 200, merge_dry.text
     assert merge_dry.json() == {
-        "player": {"id": str(real.id), "name": "Anna Bright", "handedness": "right"},
+        "player": {
+            "id": str(real.id),
+            "name": "Anna Bright",
+            "handedness": "right",
+            "gender": "female",
+        },
         "affected_matches": 2,
         "dry_run": True,
     }
@@ -789,8 +811,8 @@ def test_delete_match_clears_all_tables_and_orphans_keeps_footage_and_cancels_jo
     m2 = _add_match(
         db,
         tournament={"name": "PPA Other 2026", "tour": "ppa"},
-        team_a=(("Anna Bright", "right"), ("Zoe Smith", "left")),
-        team_b=(("Max Lee", "right"), ("Sam Park", "right")),
+        team_a=(("Anna Bright", "right", "female"), ("Zoe Smith", "left", "male")),
+        team_b=(("Max Lee", "right", "female"), ("Sam Park", "right", "male")),
     )
     _populate_full_match(db, m1)
     _populate_full_match(db, m2)
@@ -904,7 +926,10 @@ def test_stale_workspace_writes_are_rejected_after_replace_and_delete(
     # Replace Anna Bright with Eve Park in another tab.
     resp = client.post(
         f"/api/matches/{m1}/replace-player",
-        json={"from": str(refs["a1"].id), "to": {"name": "Eve Park", "handedness": "left"}},
+        json={
+            "from": str(refs["a1"].id),
+            "to": {"name": "Eve Park", "handedness": "left", "gender": "female"},
+        },
     )
     assert resp.status_code == 200
 
@@ -950,8 +975,14 @@ def test_concurrent_workspace_write_and_replace_player_never_commits_deleted_pla
             m1 = _add_match(
                 db,
                 tournament={"name": f"PPA Race {iteration}", "tour": "ppa"},
-                team_a=((f"Old Player {iteration}", "right"), (f"Partner {iteration}", "right")),
-                team_b=((f"Opp A {iteration}", "left"), (f"Opp B {iteration}", "right")),
+                team_a=(
+                    (f"Old Player {iteration}", "right", "female"),
+                    (f"Partner {iteration}", "right", "male"),
+                ),
+                team_b=(
+                    (f"Opp A {iteration}", "left", "female"),
+                    (f"Opp B {iteration}", "right", "male"),
+                ),
             )
             with RallyLog.open(db) as log:
                 roster = log.get_match_roster(m1)
@@ -1005,7 +1036,11 @@ def test_concurrent_workspace_write_and_replace_player_never_commits_deleted_pla
                     f"/api/matches/{mid}/replace-player",
                     json={
                         "from": str(pid),
-                        "to": {"name": f"New Player {idx}", "handedness": "left"},
+                        "to": {
+                            "name": f"New Player {idx}",
+                            "handedness": "left",
+                            "gender": "female",
+                        },
                     },
                 )
 
@@ -1126,7 +1161,10 @@ def test_every_edit_merge_and_delete_endpoint_checks_origin_and_rally_log(
         (
             "POST",
             f"/api/matches/{m1}/replace-player",
-            {"from": str(p1.id), "to": {"name": "New Player", "handedness": "left"}},
+            {
+                "from": str(p1.id),
+                "to": {"name": "New Player", "handedness": "left", "gender": "female"},
+            },
         ),
         ("DELETE", f"/api/matches/{m1}", None),
         ("PATCH", f"/api/players/{p1.id}", {"name": "Renamed Player"}),
@@ -1161,3 +1199,205 @@ def test_every_edit_merge_and_delete_endpoint_checks_origin_and_rally_log(
         assert log.get_player(p1.id).name == p1.name
         assert log.get_tournament(t1.id).name == t1.name
         assert log.get_franchise(f1).name == "Dallas Flash"
+
+
+# --- Gender and Discipline invariants on edit / replace / merge (#119) ----------------------
+
+
+def test_patch_player_sets_and_changes_gender_refuses_clear_and_names_conflicts(
+    client: TestClient, db: Path
+) -> None:
+    m1 = _add_match(db)
+    with RallyLog.open(db) as log:
+        anna = log.find_player("Anna Bright")
+        ben = log.find_player("Ben Johns")
+        assert anna is not None and ben is not None
+        log.save_player(replace(anna, gender=None))
+        log.save_player(replace(ben, gender=None))
+
+    # Clearing gender explicitly is rejected with 422.
+    assert client.patch(f"/api/players/{anna.id}", json={"gender": None}).status_code == 422
+
+    # While Ben still has gender=None, setting or changing Anna's gender keeps m1 partially
+    # unclassified so both dry-run and real PATCH succeed.
+    dry = client.patch(
+        f"/api/players/{anna.id}", params={"dry_run": "true"}, json={"gender": "male"}
+    )
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["player"]["gender"] == "male"
+    assert dry.json()["affected_matches"] == 1
+    assert client.patch(f"/api/players/{anna.id}", json={"gender": "male"}).status_code == 200
+
+    # Changing Anna back to female and then setting Ben to male completes Mixed Doubles.
+    assert client.patch(f"/api/players/{anna.id}", json={"gender": "female"}).status_code == 200
+    assert client.patch(f"/api/players/{ben.id}", json={"gender": "male"}).status_code == 200
+    assert client.get(f"/api/matches/{m1}").json()["discipline"] == "mixed_doubles"
+
+    # Now flipping Anna to male breaks m1 (Men's Doubles vs Mixed Doubles) -> 422 on both
+    # dry_run=true and dry_run=false, naming the conflicting Match and leaving DB untouched.
+    for dry_flag in ("true", "false"):
+        bad = client.patch(
+            f"/api/players/{anna.id}",
+            params={"dry_run": dry_flag},
+            json={"gender": "male"},
+        )
+        assert bad.status_code == 422
+        assert "PPA Atlanta Open 2026" in bad.json()["detail"]
+
+    # Clearing once set is still refused with 422.
+    assert client.patch(f"/api/players/{anna.id}", json={"gender": None}).status_code == 422
+    with RallyLog.open(db) as log:
+        assert log.get_player(anna.id).gender is Gender.FEMALE
+
+
+def test_replace_player_and_merge_enforce_match_discipline_invariant(
+    client: TestClient, db: Path
+) -> None:
+    m1 = _add_match(db)
+    # Create a second Match introducing Male & Female Players we can try replacing/merging with.
+    _add_match(
+        db,
+        tournament={"name": "PPA Austin 2026", "tour": "ppa"},
+        team_a=(("Male Sub", "right", "male"), ("Male Partner", "right", "male")),
+        team_b=(("Male Opp A", "right", "male"), ("Male Opp B", "right", "male")),
+    )
+    with RallyLog.open(db) as log:
+        anna = log.find_player("Anna Bright")
+        male_sub = log.find_player("Male Sub")
+        assert anna is not None and male_sub is not None
+
+    # Replace Anna (female) with Male Sub (existing UUID) in Mixed Doubles -> 422 without writing.
+    bad_existing = client.post(
+        f"/api/matches/{m1}/replace-player",
+        json={"from": str(anna.id), "to": str(male_sub.id)},
+    )
+    assert bad_existing.status_code == 422
+    assert "Invalid Match lineup" in bad_existing.json()["detail"]
+
+    # Replace Anna (female) with a brand-new male Player -> 422 without writing.
+    bad_new = client.post(
+        f"/api/matches/{m1}/replace-player",
+        json={
+            "from": str(anna.id),
+            "to": {"name": "New Man", "handedness": "right", "gender": "male"},
+        },
+    )
+    assert bad_new.status_code == 422
+    assert "Invalid Match lineup" in bad_new.json()["detail"]
+
+    # Merging Anna (female in Mixed Doubles m1) into Male Sub (male) breaks m1 on both
+    # dry_run=true and dry_run=false, naming m1 and leaving DB untouched.
+    for dry_flag in ("true", "false"):
+        bad_merge = client.post(
+            f"/api/players/{anna.id}/merge",
+            params={"dry_run": dry_flag},
+            json={"into": str(male_sub.id)},
+        )
+        assert bad_merge.status_code == 422
+        assert "PPA Atlanta Open 2026" in bad_merge.json()["detail"]
+
+    with RallyLog.open(db) as log:
+        assert log.find_player("New Man") is None
+        assert log.get_player(anna.id).gender is Gender.FEMALE
+        assert log.get_match_summary(m1).discipline is Discipline.MIXED_DOUBLES
+
+    # Replacing by exact name of a legacy gender=None Player backfills gender atomically.
+    with RallyLog.open(db) as log:
+        log.save_player(replace(male_sub, gender=None))
+    legacy_sub = PlayerId(new_id())
+    with RallyLog.open(db) as log:
+        log.save_player(Player(legacy_sub, "Legacy Sub", anna.handedness, None))
+    ok = client.post(
+        f"/api/matches/{m1}/replace-player",
+        json={
+            "from": str(anna.id),
+            "to": {"name": "Legacy Sub", "handedness": "right", "gender": "female"},
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    with RallyLog.open(db) as log:
+        assert log.get_player(legacy_sub).gender is Gender.FEMALE
+        assert log.get_match_summary(m1).discipline is Discipline.MIXED_DOUBLES
+
+
+def test_merge_player_carries_gender_into_unclassified_target_and_checks_target_matches(
+    client: TestClient, db: Path
+) -> None:
+    m1 = _add_match(
+        db,
+        tournament={"name": "PPA Mixed Source 2026", "tour": "ppa"},
+        team_a=(("Anna Brigth", "right", "female"), ("Ben Johns", "right", "male")),
+        team_b=(("Cara Lee", "left", "female"), ("Dan Kim", "right", "male")),
+    )
+    m2 = _add_match(
+        db,
+        tournament={"name": "PPA Mixed Target 2026", "tour": "ppa"},
+        team_a=(("Anna Bright", "right", "female"), ("Frank Wu", "right", "male")),
+        team_b=(("Grace Lin", "right", "female"), ("Henry Cho", "right", "male")),
+    )
+    with RallyLog.open(db) as log:
+        typo = log.find_player("Anna Brigth")
+        real = log.find_player("Anna Bright")
+        assert typo is not None and real is not None
+        log.save_player(replace(real, gender=None))
+        assert log.get_match_summary(m2).discipline is None
+
+    # Dry-run previews carrying source.gender onto target without writing.
+    dry = client.post(
+        f"/api/players/{typo.id}/merge",
+        params={"dry_run": "true"},
+        json={"into": str(real.id)},
+    )
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["player"]["gender"] == "female"
+    assert dry.json()["affected_matches"] == 1
+    assert dry.json()["dry_run"] is True
+    with RallyLog.open(db) as log:
+        assert log.get_player(real.id).gender is None
+        assert log.get_match_summary(m2).discipline is None
+
+    # Real merge carries female onto target, preserving m1's Discipline and classifying m2.
+    merged = client.post(f"/api/players/{typo.id}/merge", json={"into": str(real.id)})
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["player"]["gender"] == "female"
+    assert merged.json()["affected_matches"] == 1
+    with RallyLog.open(db) as log:
+        with pytest.raises(KeyError):
+            log.get_player(typo.id)
+        assert log.get_player(real.id).gender is Gender.FEMALE
+        assert log.get_match_summary(m1).discipline is Discipline.MIXED_DOUBLES
+        assert log.get_match_summary(m2).discipline is Discipline.MIXED_DOUBLES
+
+    # Refuses merging a gendered source into a gender=None target when carrying source.gender over
+    # would break one of target's own existing Matches (on both dry_run=true and dry_run=false).
+    m3 = _add_match(
+        db,
+        tournament={"name": "PPA Mens Source 2026", "tour": "ppa"},
+        team_a=(("Max Typo", "right", "male"), ("Partner M", "right", "male")),
+        team_b=(("Opp M1", "right", "male"), ("Opp M2", "right", "male")),
+    )
+    _add_match(
+        db,
+        tournament={"name": "PPA Womens Target 2026", "tour": "ppa"},
+        team_a=(("Max Real", "right", "female"), ("Woman Partner", "right", "female")),
+        team_b=(("Woman Opp1", "right", "female"), ("Woman Opp2", "right", "female")),
+    )
+    with RallyLog.open(db) as log:
+        max_typo = log.find_player("Max Typo")
+        max_real = log.find_player("Max Real")
+        assert max_typo is not None and max_real is not None
+        log.save_player(replace(max_real, gender=None))
+
+    for dry_flag in ("true", "false"):
+        bad = client.post(
+            f"/api/players/{max_typo.id}/merge",
+            params={"dry_run": dry_flag},
+            json={"into": str(max_real.id)},
+        )
+        assert bad.status_code == 422
+        assert "PPA Womens Target 2026" in bad.json()["detail"]
+
+    with RallyLog.open(db) as log:
+        assert log.get_player(max_typo.id).gender is Gender.MALE
+        assert log.get_player(max_real.id).gender is None
+        assert log.get_match_summary(m3).discipline is Discipline.MENS_DOUBLES

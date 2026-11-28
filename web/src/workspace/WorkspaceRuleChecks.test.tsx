@@ -66,6 +66,7 @@ const MATCH: MatchDetail = {
   tournament: "PPA Atlanta Open 2026",
   team_a: ["Anna Bright", "Ben Johns"],
   team_b: ["Cara Lee", "Dan Kim"],
+  discipline: "mixed_doubles",
   franchise_a: null,
   franchise_b: null,
   video_status: "ready",

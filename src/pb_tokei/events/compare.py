@@ -77,6 +77,7 @@ class CompareStat(ReportStat):
 class _CompareSide(BaseModel):
     header: MultiMatchHeader
     undated_matches_excluded: int
+    unclassified_matches_excluded: int
 
 
 class ComparePlayerSide(_CompareSide):
@@ -149,7 +150,10 @@ def load_comparison(log: RallyLog, query: CompareQuery) -> CompareSnapshot:
         if query.kind is SubjectKind.PLAYER:
             choices = [ReportPlayer(id=p.id, name=p.name) for p in list_players(log)]
         else:
-            choices = [ReportTeam(id=t.id, players=t.players) for t in list_teams(log)]
+            choices = [
+                ReportTeam(id=t.id, players=t.players, discipline=t.discipline)
+                for t in list_teams(log)
+            ]
         return CompareSnapshot(
             kind=query.kind,
             choices=choices,
@@ -264,6 +268,7 @@ def _player_side(
         subject=selection.subject,
         header=report.header,
         undated_matches_excluded=selection.matches.undated_matches_excluded,
+        unclassified_matches_excluded=selection.matches.unclassified_matches_excluded,
     )
 
 
@@ -277,6 +282,7 @@ def _team_side(
         subject=selection.subject,
         header=report.header,
         undated_matches_excluded=selection.matches.undated_matches_excluded,
+        unclassified_matches_excluded=selection.matches.unclassified_matches_excluded,
     )
 
 

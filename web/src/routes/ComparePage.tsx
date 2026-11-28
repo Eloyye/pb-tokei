@@ -141,6 +141,7 @@ export function ComparePage() {
         <MatchFilterForm
           options={data.filter_options}
           filters={filters}
+          showDiscipline={kind === "player"}
           onApply={(value: MatchFilters) =>
             void navigate({ search: { ...matchFilters(value), kind, a, b, by } })
           }
@@ -168,6 +169,12 @@ export function ComparePage() {
                         <p>
                           {matchCountLabel(side.undated_matches_excluded)} left out because of
                           missing dates.
+                        </p>
+                      )}
+                      {side.unclassified_matches_excluded > 0 && (
+                        <p>
+                          {matchCountLabel(side.unclassified_matches_excluded)} left out because of
+                          unknown Discipline.
                         </p>
                       )}
                     </div>

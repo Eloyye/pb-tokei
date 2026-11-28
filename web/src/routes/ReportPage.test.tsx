@@ -56,9 +56,11 @@ function stat(props: Partial<ReportStat> & Pick<ReportStat, "id" | "label">): Re
 const REPORT: MatchReport = {
   header: {
     tournament: "Synthetic Doubles Open",
+    discipline: "mixed_doubles",
     teams: [
       {
         id: "a",
+        discipline: "mixed_doubles",
         players: [
           { id: "a1", name: "Alex One" },
           { id: "a2", name: "Avery Two" },
@@ -66,6 +68,7 @@ const REPORT: MatchReport = {
       },
       {
         id: "b",
+        discipline: "mixed_doubles",
         players: [
           { id: "b1", name: "Blake One" },
           { id: "b2", name: "Brook Two" },
@@ -267,4 +270,15 @@ it("shows a request error and loads the report when Retry succeeds", async () =>
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByRole("table", { name: "Serve & Return" })).toBeTruthy();
   expect(getMatchReport).toHaveBeenCalledTimes(2);
+});
+
+it("shows the derived Discipline in the Match Report header and em dash when unclassified", async () => {
+  renderReport();
+  expect(await screen.findByText("Mixed Doubles")).toBeTruthy();
+
+  cleanup();
+  renderReport("", { ...REPORT, header: { ...REPORT.header, discipline: null } });
+  await screen.findByRole("heading", { name: "Alex One / Avery Two vs Blake One / Brook Two" });
+  expect(screen.queryByText("Mixed Doubles")).toBeNull();
+  expect(document.querySelector(".report-discipline")?.textContent).toBe("—");
 });

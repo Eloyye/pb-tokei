@@ -3,6 +3,7 @@ import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState, useSyncExternalStore } from "react";
 import {
   ApiError,
+  type Gender,
   getMatch,
   getRallyLog,
   getRoster,
@@ -21,10 +22,15 @@ import {
 } from "../api/client";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
 import { DeleteMatchDialog } from "./DeleteMatchDialog";
+import {
+  deriveMatchDiscipline,
+  disciplineLabel,
+  franchiseMatchLabel,
+  playerMetaBadge,
+} from "./discipline";
 import { type EditableRecord, EditRecordDialog } from "./EditRecordDialog";
 import { isValidMatchDate } from "./matchDate";
 import { NameField } from "./NameField";
-import { teamsLabel } from "./teams";
 
 const route = getRouteApi("/matches/$matchId/edit");
 const TOURS: Tour[] = ["ppa", "app", "mlp"];
@@ -155,7 +161,10 @@ function EditMatchContent({
     <main className="new-match edit-match">
       <div className="new-match-content">
         <div className="edit-match-head">
-          <h1>Edit Match</h1>
+          <div className="edit-match-title">
+            <h1>Edit Match</h1>
+            <span className="pill discipline-pill">{disciplineLabel(match.discipline)}</span>
+          </div>
           <div className="edit-match-nav">
             <Link
               to="/matches/$matchId/$workspace"
@@ -586,7 +595,7 @@ function MatchDetailsForm({
                   {meetings.map((item, index) => (
                     <option key={item.id} value={item.id}>
                       Meeting {index + 1} ·{" "}
-                      {item.matches.map(teamsLabel).join(" · ") || "No Matches"}
+                      {item.matches.map(franchiseMatchLabel).join(" · ") || "No Matches"}
                     </option>
                   ))}
                   <option value="new">New Franchise Match</option>
@@ -630,7 +639,7 @@ function PlayerTeamSection({
       </legend>
       {players.map((player, index) => (
         <PlayerSlot
-          key={`${player.id}:${player.name}:${player.handedness}`}
+          key={`${player.id}:${player.name}:${player.handedness}:${player.gender ?? ""}`}
           label={`Player ${index + 1}`}
           player={player}
           match={match}
@@ -663,6 +672,7 @@ function PlayerSlot({
 }) {
   const [name, setName] = useState(player.name);
   const [handedness, setHandedness] = useState<Handedness | "">(player.handedness);
+  const [gender, setGender] = useState<Gender | "">(player.gender ?? "");
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const replace = useMutation({
@@ -677,6 +687,7 @@ function PlayerSlot({
   const known = catalog.find((item) => item.name === trimmed);
   const changed = trimmed !== player.name;
   const effectiveHandedness = known?.handedness ?? handedness;
+  const effectiveGender: Gender | "" = known ? (known.gender ?? "") : gender;
 
   function changeName(nextName: string) {
     setName(nextName);
@@ -685,14 +696,31 @@ function PlayerSlot({
     const matched = catalog.find((item) => item.name === nextName.trim());
     if (matched) {
       setHandedness(matched.handedness);
+      setGender(matched.gender ?? "");
     } else if (known) {
       setHandedness("");
+      setGender("");
     }
   }
 
   function handleReplace() {
     if (replace.isPending || !changed) return;
     replace.reset();
+    const candidateGender: Gender | null = known ? known.gender : effectiveGender || null;
+    const teamAGenders = match.players
+      .filter((item) => item.team === "a")
+      .map((item) => (item.id === player.id ? candidateGender : item.gender));
+    const teamBGenders = match.players
+      .filter((item) => item.team === "b")
+      .map((item) => (item.id === player.id ? candidateGender : item.gender));
+    const lineup =
+      teamAGenders.length === 2 && teamBGenders.length === 2
+        ? deriveMatchDiscipline(
+            [teamAGenders[0]!, teamAGenders[1]!],
+            [teamBGenders[0]!, teamBGenders[1]!],
+          )
+        : { discipline: null, error: null };
+
     let error: string | null = null;
     if (!trimmed) error = "Enter a Player name.";
     else if (
@@ -701,28 +729,49 @@ function PlayerSlot({
       )
     ) {
       error = "A Player can't appear twice in a Match.";
-    } else if (!effectiveHandedness) {
+    } else if (!known && !effectiveHandedness) {
       error = "Choose handedness for the new Player.";
+    } else if (!known && !effectiveGender) {
+      error = "Choose gender for the new Player.";
+    } else if (lineup.error) {
+      error = lineup.error;
     }
     setValidationError(error);
-    if (error || !effectiveHandedness) return;
+    if (error) return;
+    if (!known && (!effectiveHandedness || !effectiveGender)) return;
 
     replace.mutate({
       from: player.id,
-      to: known ? known.id : { name: trimmed, handedness: effectiveHandedness },
+      to: known
+        ? known.id
+        : {
+            name: trimmed,
+            handedness: effectiveHandedness as Handedness,
+            gender: effectiveGender as Gender,
+          },
     });
   }
 
   const error = validationError ?? replace.error?.message;
+  const badgePlayer = changed ? (known ?? null) : player;
 
   return (
     <div className="edit-player-slot">
+      <div className="new-match-player-meta">
+        {badgePlayer && (
+          <span className="pill player-meta-badge">{playerMetaBadge(badgePlayer)}</span>
+        )}
+        {changed && trimmed !== "" && !known && (
+          <span className="pill pill-active player-new-pill">NEW</span>
+        )}
+      </div>
       <div className="new-match-player">
         <div className="edit-field-with-action">
           <NameField
             label={label}
             name={name}
             choices={catalog}
+            choiceLabel={(item) => `${item.name} · ${playerMetaBadge(item)}`}
             onChange={changeName}
             onPick={({ name: picked }) => changeName(picked)}
           />
@@ -730,13 +779,14 @@ function PlayerSlot({
             type="button"
             className="edit-rename-button"
             aria-label={`Rename Player ${player.name}`}
-            title={`Rename or fix handedness of "${player.name}" across all Matches`}
+            title={`Rename or edit handedness and gender of "${player.name}" across all Matches`}
             onClick={() =>
               onEditRecord({
                 kind: "player",
                 id: player.id,
                 name: player.name,
                 handedness: player.handedness,
+                gender: player.gender,
               })
             }
           >
@@ -760,6 +810,23 @@ function PlayerSlot({
             <option value="right">Right</option>
           </select>
         </label>
+        <label className="new-match-field">
+          Gender
+          <select
+            aria-label={`${label} gender`}
+            value={effectiveGender}
+            disabled={known !== undefined || replace.isPending}
+            onChange={(event) => {
+              setGender(event.target.value as Gender | "");
+              setValidationError(null);
+            }}
+            required
+          >
+            <option value="">Choose</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </label>
       </div>
       {changed && (
         <div className="edit-player-actions">
@@ -778,6 +845,7 @@ function PlayerSlot({
             onClick={() => {
               setName(player.name);
               setHandedness(player.handedness);
+              setGender(player.gender ?? "");
               setValidationError(null);
               replace.reset();
             }}

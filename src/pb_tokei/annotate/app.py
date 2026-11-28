@@ -45,6 +45,7 @@ from pb_tokei.annotate.match_setup import (
     NewPlayerIn,
     NewTournamentIn,
     PlayerEditOut,
+    PlayerOut,
     ReplacePlayerIn,
     RosterOut,
     TournamentEditOut,
@@ -112,7 +113,9 @@ from pb_tokei.rally_log import (
     AnnotationMode,
     Calibration,
     CameraView,
+    Discipline,
     FranchiseId,
+    Gender,
     Handedness,
     Landmark,
     Match,
@@ -263,6 +266,7 @@ class MatchOut(BaseModel):
     id: UUID
     date: datetime.date | None
     tournament: str
+    discipline: Discipline | None
     team_a: tuple[str, str]
     team_b: tuple[str, str]
     franchise_a: str | None
@@ -289,6 +293,7 @@ class MatchOut(BaseModel):
             id=summary.id,
             date=summary.date,
             tournament=summary.tournament,
+            discipline=summary.discipline,
             team_a=summary.team_a,
             team_b=summary.team_b,
             franchise_a=summary.franchise_a,
@@ -310,6 +315,7 @@ class MatchPlayerOut(BaseModel):
     id: UUID
     name: str
     handedness: Handedness
+    gender: Gender | None
     team_id: UUID
     team: Literal["a", "b"]
 
@@ -350,6 +356,7 @@ class MatchDetailOut(MatchOut):
                     id=p.id,
                     name=p.name,
                     handedness=p.handedness,
+                    gender=p.gender,
                     team_id=roster.team_a_id,
                     team="a",
                 )
@@ -360,6 +367,7 @@ class MatchDetailOut(MatchOut):
                     id=p.id,
                     name=p.name,
                     handedness=p.handedness,
+                    gender=p.gender,
                     team_id=roster.team_b_id,
                     team="b",
                 )
@@ -993,7 +1001,7 @@ def create_app(
     def update_player(
         player_id: UUID, body: UpdatePlayerIn, rally_log: OpenLog, dry_run: bool = False
     ) -> PlayerEditOut:
-        """Renames a Player or fixes handedness across all Matches."""
+        """Renames a Player or fixes handedness/gender across all Matches."""
         player, affected = rally_log.run(
             lambda log: edit_player(
                 log,
@@ -1008,10 +1016,17 @@ def create_app(
                     if "handedness" in body.model_fields_set and body.handedness is not None
                     else UNSET
                 ),
+                gender=(
+                    body.gender
+                    if "gender" in body.model_fields_set and body.gender is not None
+                    else UNSET
+                ),
                 dry_run=dry_run,
             )
         )
-        return PlayerEditOut(player=player, affected_matches=affected, dry_run=dry_run)
+        return PlayerEditOut(
+            player=PlayerOut.from_domain(player), affected_matches=affected, dry_run=dry_run
+        )
 
     @app.post("/api/players/{player_id}/merge", operation_id="mergePlayer")
     def merge_player_route(
@@ -1021,7 +1036,9 @@ def create_app(
         player, affected = rally_log.run(
             lambda log: merge_player(log, PlayerId(player_id), PlayerId(body.into), dry_run=dry_run)
         )
-        return PlayerEditOut(player=player, affected_matches=affected, dry_run=dry_run)
+        return PlayerEditOut(
+            player=PlayerOut.from_domain(player), affected_matches=affected, dry_run=dry_run
+        )
 
     @app.patch("/api/tournaments/{tournament_id}", operation_id="updateTournament")
     def update_tournament(
@@ -1218,7 +1235,7 @@ def create_app(
         """Replaces one Player in a Match and rewrites every annotation reference."""
         mid = MatchId(match_id)
         target = (
-            RosterPlayer(body.to.name, body.to.handedness)
+            RosterPlayer(body.to.name, body.to.handedness, body.to.gender)
             if isinstance(body.to, NewPlayerIn)
             else PlayerId(body.to)
         )

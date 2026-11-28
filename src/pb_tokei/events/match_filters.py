@@ -1,12 +1,21 @@
 """Match selection shared by dashboard reports."""
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date
 from typing import Self
 
 from pydantic import BaseModel, model_validator
 
-from pb_tokei.rally_log import MatchMetadata, PlayerId, Tour, Tournament, TournamentId
+from pb_tokei.rally_log import (
+    Discipline,
+    MatchId,
+    MatchMetadata,
+    PlayerId,
+    Tour,
+    Tournament,
+    TournamentId,
+)
 
 
 class FilterTournament(BaseModel):
@@ -23,9 +32,17 @@ class MatchFilterOptions(BaseModel):
     tournaments: list[FilterTournament]
 
 
+@dataclass(frozen=True, slots=True)
+class MatchSelection:
+    matches: list[MatchMetadata]
+    undated_excluded: int
+    unclassified_excluded: int
+
+
 class MatchFilters(BaseModel):
     tournament: frozenset[TournamentId] = frozenset()
     tour: Tour | None = None
+    discipline: Discipline | None = None
     date_from: date | None = None
     date_to: date | None = None
 
@@ -54,19 +71,39 @@ class MatchFilters(BaseModel):
         )
 
     def select_matches(
-        self, matches: Iterable[MatchMetadata], tournaments: Mapping[TournamentId, Tournament]
-    ) -> tuple[list[MatchMetadata], int]:
-        """Select Matches in input order and count undated ones excluded by the date range."""
+        self,
+        matches: Iterable[MatchMetadata],
+        tournaments: Mapping[TournamentId, Tournament],
+        disciplines: Mapping[MatchId, Discipline | None] | None = None,
+    ) -> MatchSelection:
+        """Select Matches in input order and count ones excluded for missing dates or Discipline."""
         selected = []
         undated_excluded = 0
+        unclassified_excluded = 0
+        date_active = self.date_from is not None or self.date_to is not None
+        discipline_active = self.discipline is not None
         for match in matches:
             if not self.includes_tournament(tournaments[match.tournament_id]):
                 continue
-            if self.includes_date(match.date):
+            match_discipline = None if disciplines is None else disciplines.get(match.id)
+            if date_active and match.date is not None and not self.includes_date(match.date):
+                continue
+            if (
+                discipline_active
+                and match_discipline is not None
+                and match_discipline is not self.discipline
+            ):
+                continue
+            missing_date = date_active and match.date is None
+            missing_discipline = discipline_active and match_discipline is None
+            if not missing_date and not missing_discipline:
                 selected.append(match)
-            elif match.date is None:
-                undated_excluded += 1
-        return selected, undated_excluded
+            else:
+                if missing_date:
+                    undated_excluded += 1
+                if missing_discipline:
+                    unclassified_excluded += 1
+        return MatchSelection(selected, undated_excluded, unclassified_excluded)
 
 
 class TeamMatchFilters(MatchFilters):

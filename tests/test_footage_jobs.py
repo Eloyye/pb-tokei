@@ -50,10 +50,10 @@ def _add_match(
         f'id = "{uuid4()}"\n'
         f'date = "{match_date}"\n'
         f'[tournament]\nname = "{tournament}"\ntour = "ppa"\n'
-        '[[team_a.players]]\nname = "Ben Johns"\nhandedness = "right"\n'
-        '[[team_a.players]]\nname = "Anna Bright"\nhandedness = "right"\n'
-        '[[team_b.players]]\nname = "Cara Lee"\nhandedness = "left"\n'
-        '[[team_b.players]]\nname = "Dan Kim"\nhandedness = "right"\n'
+        '[[team_a.players]]\nname = "Ben Johns"\nhandedness = "right"\ngender = "male"\n'
+        '[[team_a.players]]\nname = "Anna Bright"\nhandedness = "right"\ngender = "female"\n'
+        '[[team_b.players]]\nname = "Cara Lee"\nhandedness = "left"\ngender = "female"\n'
+        '[[team_b.players]]\nname = "Dan Kim"\nhandedness = "right"\ngender = "male"\n'
     )
     with RallyLog.open(db) as log:
         return set_up_match(log, roster).id

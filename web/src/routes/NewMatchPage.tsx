@@ -5,6 +5,8 @@ import {
   ApiError,
   createMatch,
   type CreateMatchIn,
+  type Discipline,
+  type Gender,
   getRallyLog,
   getRoster,
   getTabRallyLog,
@@ -13,6 +15,14 @@ import {
   subscribeTabRallyLog,
 } from "../api/client";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
+import {
+  deriveMatchDiscipline,
+  DISCIPLINE_LIST,
+  DISCIPLINES,
+  franchiseMatchLabel,
+  genderShort,
+  requiredGenderForSlot,
+} from "./discipline";
 import { type EditableRecord, EditRecordDialog } from "./EditRecordDialog";
 import { isValidMatchDate } from "./matchDate";
 import { NameField } from "./NameField";
@@ -24,12 +34,12 @@ import {
   type RosterPlayerOption,
   type StagedNewPlayer,
 } from "./playerMatching";
-import { teamsLabel } from "./teams";
 
 type Tour = CreateMatchIn["tour"];
 type PlayerChoice = CreateMatchIn["team_a"][number];
 type FourSlots = [PlayerSlotState, PlayerSlotState, PlayerSlotState, PlayerSlotState];
 type FourNotices = [string | null, string | null, string | null, string | null];
+type FourForced = [Gender | null, Gender | null, Gender | null, Gender | null];
 type PlayerRecord = Extract<EditableRecord, { kind: "player" }>;
 
 const TOURS: Tour[] = ["ppa", "app", "mlp"];
@@ -61,6 +71,7 @@ function otherSlotsFor(slots: FourSlots, selfIndex: number): OtherSlotUsage {
           name: trimmed,
           normalizedName: normalizeName(trimmed),
           handedness: slot.handedness,
+          gender: slot.gender,
           slotLabel: label,
         });
       }
@@ -75,10 +86,92 @@ function resetNearMatchConfirmations(slots: FourSlots): FourSlots {
   ) as FourSlots;
 }
 
-function slotToPayload(slot: PlayerSlotState): PlayerChoice | null {
-  if (slot.kind === "existing") return slot.id;
-  if (slot.kind === "new" && slot.name.trim() && slot.handedness) {
-    return { name: slot.name.trim(), handedness: slot.handedness };
+function clearSlotDraftGenders(slots: FourSlots): FourSlots {
+  return slots.map((slot) => {
+    if (slot.kind === "new") return { ...slot, gender: "" };
+    if (slot.kind === "existing") return { ...slot, backfillGender: "" };
+    return slot;
+  }) as FourSlots;
+}
+
+function intrinsicSlotGender(
+  slot: PlayerSlotState,
+  players: readonly RosterPlayerOption[],
+): Gender | "" {
+  if (slot.kind === "existing") {
+    const known = players.find((player) => player.id === slot.id);
+    return known?.gender ?? slot.backfillGender ?? "";
+  }
+  if (slot.kind === "new") return slot.gender;
+  return "";
+}
+
+function forcedGendersFor(
+  slots: FourSlots,
+  players: readonly RosterPlayerOption[],
+  disciplineHelper: Discipline | "",
+): FourForced {
+  const intrinsic = slots.map((slot) => intrinsicSlotGender(slot, players));
+  return [
+    requiredGenderForSlot(disciplineHelper, intrinsic[1]!),
+    requiredGenderForSlot(disciplineHelper, intrinsic[0]!),
+    requiredGenderForSlot(disciplineHelper, intrinsic[3]!),
+    requiredGenderForSlot(disciplineHelper, intrinsic[2]!),
+  ];
+}
+
+function effectiveSlotGender(
+  slot: PlayerSlotState,
+  players: readonly RosterPlayerOption[],
+  forcedGender: Gender | null,
+): Gender | "" {
+  if (slot.kind === "existing") {
+    const known = players.find((player) => player.id === slot.id);
+    if (!known) return "";
+    return known.gender ?? forcedGender ?? slot.backfillGender ?? "";
+  }
+  if (slot.kind === "new") return forcedGender ?? slot.gender;
+  return "";
+}
+
+function slotToPayload(
+  slot: PlayerSlotState,
+  players: readonly RosterPlayerOption[],
+  forcedGender: Gender | null,
+): PlayerChoice | null {
+  if (slot.kind === "existing") {
+    const known = players.find((player) => player.id === slot.id);
+    if (!known) return null;
+    if (known.gender !== null) return slot.id;
+    const backfill = forcedGender ?? slot.backfillGender ?? "";
+    return backfill ? { id: slot.id, gender: backfill } : null;
+  }
+  const gender = forcedGender ?? (slot.kind === "new" ? slot.gender : "");
+  if (slot.kind === "new" && slot.name.trim() && slot.handedness && gender) {
+    return { name: slot.name.trim(), handedness: slot.handedness, gender };
+  }
+  return null;
+}
+
+function helperConflict(
+  helper: Discipline | "",
+  slots: FourSlots,
+  players: readonly RosterPlayerOption[],
+  forced: FourForced,
+  derivedDiscipline: Discipline | null,
+): string | null {
+  if (!helper) return null;
+  if (derivedDiscipline && derivedDiscipline !== helper) {
+    return `Selected Players form ${DISCIPLINES[derivedDiscipline]}, not ${DISCIPLINES[helper]}.`;
+  }
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i]!;
+    if (slot.kind !== "existing") continue;
+    const known = players.find((player) => player.id === slot.id);
+    const required = forced[i];
+    if (known?.gender && required && known.gender !== required) {
+      return `${known.name} (${genderShort(known.gender)}) does not fit ${DISCIPLINES[helper]}.`;
+    }
   }
   return null;
 }
@@ -145,6 +238,7 @@ function NewMatchForm({
   const [tournamentName, setTournamentName] = useState("");
   const [tourChoice, setTourChoice] = useState<Tour | "">("");
   const [date, setDate] = useState("");
+  const [disciplineHelper, setDisciplineHelper] = useState<Discipline | "">("");
   const [slots, setSlots] = useState<FourSlots>(EMPTY_SLOTS);
   const [slotNotices, setSlotNotices] = useState<FourNotices>(EMPTY_NOTICES);
   const [franchiseA, setFranchiseA] = useState("");
@@ -197,6 +291,22 @@ function NewMatchForm({
   );
   const meetingId = meetingChoice ?? (meetings.length === 1 ? meetings[0]?.id : undefined);
 
+  const forcedGenders = forcedGendersFor(slots, roster.players, disciplineHelper);
+  const effectiveGenders = slots.map((slot, index) =>
+    effectiveSlotGender(slot, roster.players, forcedGenders[index]!),
+  ) as [Gender | "", Gender | "", Gender | "", Gender | ""];
+  const derived = deriveMatchDiscipline(
+    [effectiveGenders[0], effectiveGenders[1]],
+    [effectiveGenders[2], effectiveGenders[3]],
+  );
+  const helperMismatch = helperConflict(
+    disciplineHelper,
+    slots,
+    roster.players,
+    forcedGenders,
+    derived.discipline,
+  );
+
   function changeTournament(name: string, selectedTour?: Tour) {
     setTournamentName(name);
     setTourChoice(selectedTour ?? (tournament ? "" : tourChoice));
@@ -213,7 +323,14 @@ function NewMatchForm({
     setMeetingChoice(null);
   }
 
+  function changeDisciplineHelper(next: Discipline | "") {
+    setDisciplineHelper(next);
+    setValidationError(null);
+    setSlots(clearSlotDraftGenders);
+  }
+
   function updateSlot(index: number, next: PlayerSlotState) {
+    setValidationError(null);
     setSlots((current) => {
       const copy: FourSlots = [...current];
       copy[index] = next;
@@ -235,6 +352,7 @@ function NewMatchForm({
         id: player.id,
         name: player.name,
         handedness: player.handedness,
+        gender: player.gender,
       },
     });
   }
@@ -270,7 +388,7 @@ function NewMatchForm({
           return copy;
         });
       } else {
-        updateSlot(target.slotIndex, { kind: "existing", id: savedId });
+        updateSlot(target.slotIndex, { kind: "existing", id: savedId, backfillGender: "" });
       }
     }
 
@@ -290,11 +408,15 @@ function NewMatchForm({
           : "Choose or create all four Players.";
       }
       if (slot.kind === "existing") {
-        if (!roster.players.some((player) => player.id === slot.id)) {
+        const stored = roster.players.find((player) => player.id === slot.id);
+        if (!stored) {
           return "Clear any Player that is no longer in this Rally Log.";
         }
         if (others.existingIds.has(slot.id)) {
           return "A Player can't appear twice in a Match.";
+        }
+        if (!effectiveGenders[i]) {
+          return "Choose gender for each Player.";
         }
       } else {
         const check = checkNewPlayerDraft(slot.name, roster.players, others);
@@ -309,8 +431,10 @@ function NewMatchForm({
           return "Confirm Create anyway or use the existing Player.";
         }
         if (!slot.handedness) return "Choose handedness for each new Player.";
+        if (!effectiveGenders[i]) return "Choose gender for each Player.";
       }
     }
+    if (derived.error) return derived.error;
     return null;
   }
 
@@ -333,7 +457,9 @@ function NewMatchForm({
       else if (meetings.length > 1 && !meetingId) error = "Choose a Franchise Match.";
     }
 
-    const payloads = slots.map(slotToPayload);
+    const payloads = slots.map((slot, index) =>
+      slotToPayload(slot, roster.players, forcedGenders[index]!),
+    );
     setValidationError(error);
     if (error || !tour || payloads.some((item) => item === null)) return;
 
@@ -418,6 +544,25 @@ function NewMatchForm({
                   onChange={(event) => setDate(event.target.value)}
                 />
               </label>
+              <label className="new-match-field">
+                <span>
+                  Discipline <span className="new-match-optional">(optional)</span>
+                </span>
+                <select
+                  aria-label="Discipline"
+                  value={disciplineHelper}
+                  onChange={(event) =>
+                    changeDisciplineHelper(event.target.value as Discipline | "")
+                  }
+                >
+                  <option value="">Any</option>
+                  {DISCIPLINE_LIST.map((item) => (
+                    <option key={item} value={item}>
+                      {DISCIPLINES[item]}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             <div className="new-match-teams">
@@ -426,6 +571,8 @@ function NewMatchForm({
                 slotOffset={0}
                 slots={slots}
                 slotNotices={slotNotices}
+                forcedGenders={forcedGenders}
+                disciplineHelper={disciplineHelper}
                 players={roster.players}
                 showValidation={submitted}
                 rosterFetching={rosterFetching}
@@ -438,6 +585,8 @@ function NewMatchForm({
                 slotOffset={2}
                 slots={slots}
                 slotNotices={slotNotices}
+                forcedGenders={forcedGenders}
+                disciplineHelper={disciplineHelper}
                 players={roster.players}
                 showValidation={submitted}
                 rosterFetching={rosterFetching}
@@ -446,6 +595,21 @@ function NewMatchForm({
                 onEditPlayer={openEditPlayer}
               />
             </div>
+
+            {derived.discipline && (
+              <p className="new-match-discipline">
+                Discipline:{" "}
+                <span className="pill discipline-pill">{DISCIPLINES[derived.discipline]}</span>
+              </p>
+            )}
+            {derived.error && !error && (
+              <p className="new-match-error new-match-inline-error" role="alert">
+                {derived.error}
+              </p>
+            )}
+            {!derived.error && helperMismatch && (
+              <output className="new-match-warning">{helperMismatch}</output>
+            )}
 
             {tour === "mlp" && (
               <section className="new-match-franchises" aria-labelledby="franchise-match-heading">
@@ -480,7 +644,7 @@ function NewMatchForm({
                       {meetings.map((item, index) => (
                         <option key={item.id} value={item.id}>
                           Meeting {index + 1} ·{" "}
-                          {item.matches.map(teamsLabel).join(" · ") || "No Matches"}
+                          {item.matches.map(franchiseMatchLabel).join(" · ") || "No Matches"}
                         </option>
                       ))}
                       <option value="new">New Franchise Match</option>
@@ -536,6 +700,8 @@ function TeamFields({
   slotOffset,
   slots,
   slotNotices,
+  forcedGenders,
+  disciplineHelper,
   players,
   showValidation,
   rosterFetching,
@@ -547,6 +713,8 @@ function TeamFields({
   slotOffset: 0 | 2;
   slots: FourSlots;
   slotNotices: FourNotices;
+  forcedGenders: FourForced;
+  disciplineHelper: Discipline | "";
   players: Roster["players"];
   showValidation: boolean;
   rosterFetching: boolean;
@@ -568,6 +736,8 @@ function TeamFields({
               value={slots[index]!}
               players={players}
               otherSlots={otherSlotsFor(slots, index)}
+              forcedGender={forcedGenders[index]!}
+              disciplineHelper={disciplineHelper}
               showValidation={showValidation}
               externalNotice={slotNotices[index]!}
               rosterFetching={rosterFetching}

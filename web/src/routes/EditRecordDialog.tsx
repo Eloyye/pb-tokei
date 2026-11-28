@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   type ExactNameConflict,
+  type Gender,
   type Handedness,
   mergeFranchise,
   mergePlayer,
@@ -9,11 +10,13 @@ import {
   type Tour,
   updateFranchise,
   updatePlayer,
+  type UpdatePlayerIn,
   updateTournament,
 } from "../api/client";
+import { genderLabel } from "./discipline";
 
 export type EditableRecord =
-  | { kind: "player"; id: string; name: string; handedness: Handedness }
+  | { kind: "player"; id: string; name: string; handedness: Handedness; gender: Gender | null }
   | { kind: "tournament"; id: string; name: string; tour: Tour }
   | { kind: "franchise"; id: string; name: string };
 
@@ -68,6 +71,9 @@ export function EditRecordDialog({
   const [handedness, setHandedness] = useState<Handedness>(
     record.kind === "player" ? record.handedness : "right",
   );
+  const [gender, setGender] = useState<Gender | "">(
+    record.kind === "player" ? (record.gender ?? "") : "",
+  );
   const [tour, setTour] = useState<Tour>(record.kind === "tournament" ? record.tour : "ppa");
   const [step, setStep] = useState<Step>({ stage: "edit" });
   const [busy, setBusy] = useState(false);
@@ -84,13 +90,16 @@ export function EditRecordDialog({
   const trimmedName = name.trim();
   const changed =
     trimmedName !== record.name ||
-    (record.kind === "player" && handedness !== record.handedness) ||
+    (record.kind === "player" &&
+      (handedness !== record.handedness || (gender || null) !== record.gender)) ||
     (record.kind === "tournament" && tour !== record.tour);
 
   async function runEdit(dryRun: boolean) {
     const opts = { dryRun, rallyLog };
     if (record.kind === "player") {
-      return updatePlayer(record.id, { name: trimmedName, handedness }, opts);
+      const body: UpdatePlayerIn = { name: trimmedName, handedness };
+      if (gender !== "") body.gender = gender;
+      return updatePlayer(record.id, body, opts);
     }
     if (record.kind === "tournament") {
       return updateTournament(record.id, { name: trimmedName, tour }, opts);
@@ -240,20 +249,37 @@ export function EditRecordDialog({
               </label>
 
               {record.kind === "player" && (
-                <label className="new-match-field">
-                  Handedness
-                  <select
-                    value={handedness}
-                    onChange={(event) => {
-                      setHandedness(event.target.value as Handedness);
-                      setError(null);
-                    }}
-                    disabled={busy}
-                  >
-                    <option value="left">Left</option>
-                    <option value="right">Right</option>
-                  </select>
-                </label>
+                <>
+                  <label className="new-match-field">
+                    Handedness
+                    <select
+                      value={handedness}
+                      onChange={(event) => {
+                        setHandedness(event.target.value as Handedness);
+                        setError(null);
+                      }}
+                      disabled={busy}
+                    >
+                      <option value="left">Left</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </label>
+                  <label className="new-match-field">
+                    Gender
+                    <select
+                      value={gender}
+                      onChange={(event) => {
+                        setGender(event.target.value as Gender | "");
+                        setError(null);
+                      }}
+                      disabled={busy}
+                    >
+                      {record.gender === null && <option value="">Not set</option>}
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                    </select>
+                  </label>
+                </>
               )}
 
               {record.kind === "tournament" && (
@@ -313,6 +339,9 @@ export function EditRecordDialog({
               )}
               {record.kind === "player" && handedness !== record.handedness && (
                 <> ({handedness}-handed)</>
+              )}
+              {record.kind === "player" && (gender || null) !== record.gender && gender && (
+                <> ({genderLabel(gender)})</>
               )}
               {record.kind === "tournament" && tour !== record.tour && <> ({tour.toUpperCase()})</>}
               ?

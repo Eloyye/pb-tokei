@@ -11,9 +11,11 @@ import pytest
 
 from pb_tokei import main
 from pb_tokei.rally_log import (
+    Discipline,
     Franchise,
     FranchiseId,
     Game,
+    Gender,
     Handedness,
     MatchId,
     OperatorSession,
@@ -35,8 +37,14 @@ def roster_toml(
     match_id: UUID | None = None,
     match_date: str | None = "2026-04-12",
     tournament: dict[str, str] = PPA,
-    team_a: tuple[tuple[str, str], ...] = (("Anna Bright", "right"), ("Ben Johns", "right")),
-    team_b: tuple[tuple[str, str], ...] = (("Cara Lee", "left"), ("Dan Kim", "right")),
+    team_a: tuple[tuple[str, str, str | None], ...] = (
+        ("Anna Bright", "right", "female"),
+        ("Ben Johns", "right", "male"),
+    ),
+    team_b: tuple[tuple[str, str, str | None], ...] = (
+        ("Cara Lee", "left", "female"),
+        ("Dan Kim", "right", "male"),
+    ),
     franchise_match: dict[str, str] | None = None,
     video: dict[str, str] | None = None,
 ) -> str:
@@ -46,8 +54,10 @@ def roster_toml(
     lines += ["", "[tournament]"]
     lines += [f'{key} = "{value}"' for key, value in tournament.items()]
     for team, players in (("team_a", team_a), ("team_b", team_b)):
-        for name, handedness in players:
+        for name, handedness, gender in players:
             lines += ["", f"[[{team}.players]]", f'name = "{name}"', f'handedness = "{handedness}"']
+            if gender is not None:
+                lines.append(f'gender = "{gender}"')
     for section, table in (("franchise_match", franchise_match), ("video", video)):
         if table is not None:
             lines += ["", f"[{section}]"]
@@ -116,8 +126,8 @@ def test_new_add_list_round_trip(
     assert code == 0
     assert f"Rally Log: {Path(db).resolve()}" in err
     assert out.splitlines() == [
-        f"{match_id}  2026-04-12  PPA Atlanta Open 2026  Anna Bright / Ben Johns  vs  "
-        "Cara Lee / Dan Kim  video  Gold  active 15:00  ratio 0.25"
+        f"{match_id}  2026-04-12  PPA Atlanta Open 2026  Mixed Doubles  "
+        "Anna Bright / Ben Johns  vs  Cara Lee / Dan Kim  video  Gold  active 15:00  ratio 0.25"
     ]
 
     assert match.date == date(2026, 4, 12)
@@ -323,8 +333,8 @@ def test_players_and_teams_are_reused_across_matches(tmp_path: Path) -> None:
             log,
             parse_roster(
                 roster_toml(
-                    team_a=(("Ben Johns", "right"), ("Anna Bright", "right")),
-                    team_b=(("Eve Park", "left"), ("Finn Ross", "right")),
+                    team_a=(("Ben Johns", "right", "male"), ("Anna Bright", "right", "female")),
+                    team_b=(("Eve Park", "left", "female"), ("Finn Ross", "right", "male")),
                 )
             ),
         )
@@ -342,8 +352,8 @@ def test_handedness_mismatch_fails_without_writing(tmp_path: Path) -> None:
         set_up_match(log, parse_roster(roster_toml()))
         clash = parse_roster(
             roster_toml(
-                team_a=(("Anna Bright", "left"), ("Zoe New", "right")),
-                team_b=(("Cara Lee", "left"), ("Dan Kim", "right")),
+                team_a=(("Anna Bright", "left", "female"), ("Zoe New", "right", "male")),
+                team_b=(("Cara Lee", "left", "female"), ("Dan Kim", "right", "male")),
             )
         )
         with pytest.raises(RosterError, match="Anna Bright is stored as right-handed"):
@@ -420,7 +430,7 @@ def test_roster_trims_outer_whitespace_and_reuses_records(tmp_path: Path) -> Non
     padded = parse_roster(
         roster_toml(
             tournament={**MLP, "name": " MLP Dallas 2026 "},
-            team_a=(("Anna Bright ", "right"), (" Ben Johns", "right")),
+            team_a=(("Anna Bright ", "right", "female"), (" Ben Johns", "right", "male")),
             franchise_match={**DALLAS_VS_MIAMI, "franchise_a": "Dallas Flash "},
         )
     )
@@ -436,19 +446,19 @@ def test_roster_trims_outer_whitespace_and_reuses_records(tmp_path: Path) -> Non
     [
         (
             MLP,
-            (("  anna  BRIGHT ", "right"), ("Ben Johns", "right")),
+            (("  anna  BRIGHT ", "right", "female"), ("Ben Johns", "right", "male")),
             DALLAS_VS_MIAMI,
             "Anna Bright",
         ),
         (
             MLP,
-            (("Anna Bright", "right"), ("Ben Johns", "right")),
+            (("Anna Bright", "right", "female"), ("Ben Johns", "right", "male")),
             {**DALLAS_VS_MIAMI, "franchise_a": "dallas   flash"},
             "Dallas Flash",
         ),
         (
             {"name": "mlp  dallas 2026", "tour": "app"},
-            (("Anna Bright", "right"), ("Ben Johns", "right")),
+            (("Anna Bright", "right", "female"), ("Ben Johns", "right", "male")),
             None,
             MLP["name"],
         ),
@@ -457,7 +467,7 @@ def test_roster_trims_outer_whitespace_and_reuses_records(tmp_path: Path) -> Non
 def test_normalized_names_suggest_the_existing_spelling(
     tmp_path: Path,
     tournament: dict[str, str],
-    team_a: tuple[tuple[str, str], ...],
+    team_a: tuple[tuple[str, str, str | None], ...],
     franchise_match: dict[str, str] | None,
     suggestion: str,
 ) -> None:
@@ -515,8 +525,8 @@ def test_mlp_matches_share_one_franchise_match(
             parse_roster(
                 roster_toml(
                     tournament=MLP,
-                    team_a=(("Miami One", "right"), ("Miami Two", "left")),
-                    team_b=(("Dallas One", "right"), ("Dallas Two", "right")),
+                    team_a=(("Miami One", "right", "male"), ("Miami Two", "left", "male")),
+                    team_b=(("Dallas One", "right", "male"), ("Dallas Two", "right", "male")),
                     franchise_match={
                         "franchise_a": "Miami Pickleball Club",
                         "franchise_b": "Dallas Flash",
@@ -567,7 +577,7 @@ def test_second_meeting_needs_a_pinned_franchise_match(
         ambiguous = parse_roster(
             roster_toml(
                 tournament=MLP,
-                team_a=(("New Dallas One", "right"), ("New Dallas Two", "left")),
+                team_a=(("New Dallas One", "right", "female"), ("New Dallas Two", "left", "male")),
                 franchise_match=DALLAS_VS_MIAMI,
             )
         )
@@ -603,7 +613,7 @@ def test_pinned_franchise_match_must_agree(tmp_path: Path) -> None:
         clash = parse_roster(
             roster_toml(
                 tournament={"name": "MLP Columbus 2026", "tour": "mlp"},
-                team_a=(("Shock One", "right"), ("Shock Two", "left")),
+                team_a=(("Shock One", "right", "female"), ("Shock Two", "left", "male")),
                 franchise_match=other,
             )
         )
@@ -645,12 +655,41 @@ def test_failed_write_rolls_back_the_whole_setup(
     [
         (roster_toml(tournament=MLP), "needs a Franchise Match"),
         (roster_toml(franchise_match=DALLAS_VS_MIAMI), "only MLP Matches"),
-        (roster_toml(team_a=(("Solo", "right"),)), "exactly two"),
+        (roster_toml(team_a=(("Solo", "right", "female"),)), "exactly two"),
         (
-            roster_toml(team_b=(("Anna Bright", "right"), ("Dan Kim", "right"))),
+            roster_toml(team_b=(("Anna Bright", "right", "female"), ("Dan Kim", "right", "male"))),
             "can't appear twice",
         ),
-        (roster_toml(team_a=(("A", "ambi"), ("B", "right"))), "left \\| right"),
+        (roster_toml(team_a=(("A", "ambi", "female"), ("B", "right", "male"))), "left \\| right"),
+        (
+            roster_toml(team_a=(("A", "right", None), ("B", "right", "male"))),
+            "missing gender",
+        ),
+        (
+            roster_toml(team_a=(("A", "right", "other"), ("B", "right", "male"))),
+            "male \\| female",
+        ),
+        (
+            roster_toml(
+                team_a=(("A", "right", "male"), ("B", "right", "male")),
+                team_b=(("C", "right", "female"), ("D", "right", "male")),
+            ),
+            "Invalid Match lineup",
+        ),
+        (
+            roster_toml(
+                team_a=(("A", "right", "male"), ("B", "right", "male")),
+                team_b=(("C", "right", "female"), ("D", "right", "female")),
+            ),
+            "Invalid Match lineup",
+        ),
+        (
+            roster_toml(
+                team_a=(("A", "right", "female"), ("B", "right", "female")),
+                team_b=(("C", "right", "female"), ("D", "right", "male")),
+            ),
+            "Invalid Match lineup",
+        ),
         (roster_toml(tournament={"name": "X", "tour": "wpt"}), "ppa \\| app \\| mlp"),
         (roster_toml(tournament={"name": " ", "tour": "ppa"}), "name must be non-empty"),
         ('id = "nope"\n' + roster_toml().split("\n", 1)[1], "not a UUID"),
@@ -747,3 +786,131 @@ def test_a_database_that_is_not_duckdb_is_an_error_not_a_traceback(
     assert code == 1
     assert err.splitlines()[-1].startswith("error: ")
     assert "Traceback" not in err
+
+
+# --- Player gender, backfill, and player set-gender CLI (#119) -----------------------------
+
+
+def test_gender_mismatch_fails_without_writing(tmp_path: Path) -> None:
+    with RallyLog.open(tmp_path / "log.duckdb") as log:
+        set_up_match(log, parse_roster(roster_toml()))
+        clash = parse_roster(
+            roster_toml(
+                team_a=(("Anna Bright", "right", "male"), ("Ben Johns", "right", "male")),
+                team_b=(("Dan Kim", "right", "male"), ("Zoe New", "right", "male")),
+            )
+        )
+        with pytest.raises(RosterError, match="Anna Bright is stored as female"):
+            set_up_match(log, clash)
+        assert not log.has_match(clash.match_id)
+        assert log.find_player("Zoe New") is None
+        anna = log.find_player("Anna Bright")
+        assert anna is not None and anna.gender is Gender.FEMALE
+
+
+def test_legacy_null_gender_backfills_atomically_and_refuses_conflicts(tmp_path: Path) -> None:
+    db = tmp_path / "log.duckdb"
+    with RallyLog.open(db) as log:
+        first = set_up_match(log, parse_roster(roster_toml()))
+        # Simulate a legacy Rally Log where Anna Bright & Ben Johns have gender=None.
+        anna = log.find_player("Anna Bright")
+        ben = log.find_player("Ben Johns")
+        assert anna is not None and ben is not None
+        log.save_player(replace(anna, gender=None))
+        log.save_player(replace(ben, gender=None))
+        assert log.get_match_summary(first.id).discipline is None
+
+        # Multi-player backfill conflict: setting both Anna and Ben to male makes `first`
+        # M+M vs F+M (invalid) even though the new Match itself is valid Men's Doubles.
+        bad = parse_roster(
+            roster_toml(
+                team_a=(("Anna Bright", "right", "male"), ("Ben Johns", "right", "male")),
+                team_b=(("New Man A", "right", "male"), ("New Man B", "right", "male")),
+            )
+        )
+        with pytest.raises(RosterError, match="PPA Atlanta Open 2026"):
+            set_up_match(log, bad)
+        assert not log.has_match(bad.match_id)
+        assert log.find_player("New Man A") is None
+        assert log.get_player(anna.id).gender is None
+        assert log.get_player(ben.id).gender is None
+
+        # Compatible backfill succeeds atomically and derives Discipline on the legacy Match too.
+        good = parse_roster(
+            roster_toml(
+                team_a=(("Anna Bright", "right", "female"), ("Ben Johns", "right", "male")),
+                team_b=(("Eve Park", "left", "female"), ("Finn Ross", "right", "male")),
+            )
+        )
+        second = set_up_match(log, good)
+        assert log.get_player(anna.id).gender is Gender.FEMALE
+        assert log.get_player(ben.id).gender is Gender.MALE
+        assert log.get_match_summary(first.id).discipline is Discipline.MIXED_DOUBLES
+        assert log.get_match_summary(second.id).discipline is Discipline.MIXED_DOUBLES
+
+
+def test_player_set_gender_cli_updates_gender_and_validates_lineups(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "log.duckdb"
+    first_id = uuid4()
+    assert (
+        run(
+            capsys,
+            "match",
+            "add",
+            str(write(tmp_path, roster_toml(match_id=first_id), "a.toml")),
+            "--db",
+            str(db),
+        )[0]
+        == 0
+    )
+    with RallyLog.open(db) as log:
+        anna = log.find_player("Anna Bright")
+        ben = log.find_player("Ben Johns")
+        assert anna is not None and ben is not None
+        log.save_player(replace(anna, gender=None))
+
+    # Legacy Match displays em dash for Discipline in `match list`.
+    code, out, _ = run(capsys, "match", "list", "--db", str(db))
+    assert code == 0
+    assert "PPA Atlanta Open 2026  —  Anna Bright / Ben Johns" in out
+
+    # Incompatible gender for Anna (would make M+M vs F+M) is refused without writing.
+    code, _, err = run(capsys, "player", "set-gender", "Anna Bright", "male", "--db", str(db))
+    assert code == 1
+    assert "PPA Atlanta Open 2026" in err
+    with RallyLog.open(db) as log:
+        assert log.get_player(anna.id).gender is None
+
+    # Compatible gender by exact name succeeds and restores derived Discipline in `match list`.
+    code, out, _ = run(capsys, "player", "set-gender", "Anna Bright", "female", "--db", str(db))
+    assert code == 0
+    assert out.strip() == f"{anna.id}  Anna Bright  female"
+    code, out, _ = run(capsys, "match", "list", "--db", str(db))
+    assert code == 0
+    assert "PPA Atlanta Open 2026  Mixed Doubles  Anna Bright / Ben Johns" in out
+
+    # Also resolves by UUID (idempotent update).
+    code, out, _ = run(capsys, "player", "set-gender", str(ben.id), "male", "--db", str(db))
+    assert code == 0
+    assert out.strip() == f"{ben.id}  Ben Johns  male"
+
+    # Near-match suggestion when casing/spacing differs; unknown UUID; missing DB; non-DuckDB.
+    code, _, err = run(capsys, "player", "set-gender", "anna  bright", "female", "--db", str(db))
+    assert code == 1 and "did you mean 'Anna Bright'" in err
+    code, _, err = run(capsys, "player", "set-gender", str(uuid4()), "female", "--db", str(db))
+    assert code == 1 and "Player not found" in err
+    code, _, err = run(
+        capsys, "player", "set-gender", "Anna Bright", "female", "--db", str(tmp_path / "no.duckdb")
+    )
+    assert code == 1 and "not found" in err
+    bad_db = write(tmp_path, "not duckdb", "bad.duckdb")
+    code, _, err = run(capsys, "player", "set-gender", "Anna Bright", "female", "--db", str(bad_db))
+    assert code == 1 and "Traceback" not in err
+
+    # Ambiguous duplicate name asks for UUID.
+    with RallyLog.open(db) as log:
+        log.save_player(Player(PlayerId(uuid4()), "Anna Bright", Handedness.LEFT, Gender.FEMALE))
+    code, _, err = run(capsys, "player", "set-gender", "Anna Bright", "female", "--db", str(db))
+    assert code == 1 and "pass a Player UUID" in err

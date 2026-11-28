@@ -1,6 +1,7 @@
 import { getRouteApi } from "@tanstack/react-router";
 import { getMatchReport } from "../api/client";
 import type { components } from "../api/schema";
+import { disciplineLabel } from "./discipline";
 import { asReportSplit, type ReportSplit } from "./reportOptions";
 import { ReportLoadError, useReportQuery } from "./reportQuery";
 import { ReportCoverage, ReportTables, teamReportColumns } from "./ReportTables";
@@ -66,7 +67,14 @@ function ReportHeader({ header }: { header: MatchReport["header"] }) {
   return (
     <header className="report-header">
       <div className="report-matchup">
-        <p className="report-tournament">{header.tournament}</p>
+        <p className="report-tournament">
+          {header.tournament}
+          <span className="report-meta-sep" aria-hidden="true">
+            {" "}
+            ·{" "}
+          </span>
+          <span className="report-discipline">{disciplineLabel(header.discipline)}</span>
+        </p>
         <h1>
           <span className="report-team-a">{reportTeamLabel(teams[0])}</span>
           <span className="report-versus">vs</span>

@@ -1,4 +1,6 @@
 from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -197,9 +199,59 @@ def test_team_bucket_applies_tournament_tour_and_inclusive_dates(client: TestCli
         {"by": "shot_number", "bucket": "6"},
         {"minimum": 0},
         {"date_from": "2026-06-02", "date_to": "2026-06-01"},
+        {"discipline": "singles"},
     ],
 )
 def test_rejects_incompatible_ranking_and_filter_parameters(
     client: TestClient, params: dict[str, str | int]
 ) -> None:
     assert client.get("/api/leaderboard", params=params).status_code == 422
+
+
+def test_leaderboard_filters_by_discipline_and_reports_unclassified_excluded(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "leaderboard_discipline.duckdb"
+    with RallyLog.open(db) as log:
+        write_demo_matches(log)
+        # Clear Avery's gender so her 2 Matches (first & empty) become unclassified while
+        # Alex+Casey's 2 Matches (mlp & undated) stay Mixed Doubles.
+        avery = log.find_player("Avery Two")
+        assert avery is not None
+        log.save_player(replace(avery, gender=None))
+
+    with TestClient(create_app(db), base_url="http://127.0.0.1") as client:
+        for kind in ("player", "team"):
+            mixed = client.get(
+                "/api/leaderboard",
+                params={"kind": kind, "minimum": 1, "discipline": "mixed_doubles"},
+            ).json()
+            assert mixed["match_count"] == 2
+            assert mixed["unclassified_matches_excluded"] == 2
+            assert mixed["undated_matches_excluded"] == 0
+            assert mixed["rows"]
+
+            womens = client.get(
+                "/api/leaderboard",
+                params={"kind": kind, "minimum": 1, "discipline": "womens_doubles"},
+            ).json()
+            assert womens["match_count"] == 0
+            assert womens["unclassified_matches_excluded"] == 2
+            assert womens["rows"] == []
+
+            # Combined date + discipline: mlp is dated & Mixed, undated is undated & Mixed,
+            # first is dated & unclassified, empty is dated & unclassified ->
+            # filtering mens_doubles + date_from=2026-01-01 excludes mlp & undated as definite
+            # Discipline mismatches, leaving 2 unclassified (both dated -> 0 undated excluded).
+            combined = client.get(
+                "/api/leaderboard",
+                params={
+                    "kind": kind,
+                    "minimum": 1,
+                    "discipline": "mens_doubles",
+                    "date_from": "2026-01-01",
+                },
+            ).json()
+            assert combined["match_count"] == 0
+            assert combined["undated_matches_excluded"] == 0
+            assert combined["unclassified_matches_excluded"] == 2

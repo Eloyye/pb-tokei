@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 import { listPlayers, listTeams } from "../api/client";
+import { disciplineLabel, genderLabel } from "./discipline";
 import { type EditableRecord, EditRecordDialog } from "./EditRecordDialog";
 import { ReportLoadError, useReportQuery } from "./reportQuery";
 import { reportTeamLabel } from "./teams";
@@ -11,6 +12,8 @@ type IndexRow = {
   id: string;
   name: ReactNode;
   hand?: string;
+  gender?: string;
+  discipline?: string;
   matchCount: number;
   actions?: ReactNode;
 };
@@ -33,6 +36,7 @@ export function PlayersPage() {
         title="Players"
         nameHeading="Name"
         showHandedness
+        showGender
         showActions
         statusMessage={statusMessage}
         rows={players.data.map((player) => ({
@@ -43,6 +47,7 @@ export function PlayersPage() {
             </Link>
           ),
           hand: player.handedness === "left" ? "Left" : "Right",
+          gender: genderLabel(player.gender),
           matchCount: player.match_count,
           actions: (
             <button
@@ -55,6 +60,7 @@ export function PlayersPage() {
                   id: player.id,
                   name: player.name,
                   handedness: player.handedness,
+                  gender: player.gender,
                 })
               }
             >
@@ -77,6 +83,7 @@ export function PlayersPage() {
             void queryClient.invalidateQueries({ queryKey: ["matches"] });
             void queryClient.invalidateQueries({ queryKey: ["roster"] });
             void queryClient.invalidateQueries({ queryKey: ["leaderboard"] });
+            void queryClient.invalidateQueries({ queryKey: ["compare"] });
           }}
         />
       )}
@@ -94,6 +101,7 @@ export function TeamsPage() {
     <SubjectIndex
       title="Teams"
       nameHeading="Team"
+      showDiscipline
       rows={teams.data.map((team) => ({
         id: team.id,
         name: (
@@ -101,6 +109,7 @@ export function TeamsPage() {
             {reportTeamLabel(team)}
           </Link>
         ),
+        discipline: disciplineLabel(team.discipline),
         matchCount: team.match_count,
       }))}
     />
@@ -111,6 +120,8 @@ function SubjectIndex({
   title,
   nameHeading,
   showHandedness = false,
+  showGender = false,
+  showDiscipline = false,
   showActions = false,
   statusMessage = null,
   rows,
@@ -118,6 +129,8 @@ function SubjectIndex({
   title: "Players" | "Teams";
   nameHeading: string;
   showHandedness?: boolean;
+  showGender?: boolean;
+  showDiscipline?: boolean;
   showActions?: boolean;
   statusMessage?: string | null;
   rows: IndexRow[];
@@ -137,6 +150,8 @@ function SubjectIndex({
               <tr>
                 <th scope="col">{nameHeading}</th>
                 {showHandedness && <th scope="col">Handedness</th>}
+                {showGender && <th scope="col">Gender</th>}
+                {showDiscipline && <th scope="col">Discipline</th>}
                 <th scope="col" className="subject-number">
                   Matches
                 </th>
@@ -148,6 +163,8 @@ function SubjectIndex({
                 <tr key={row.id}>
                   <th scope="row">{row.name}</th>
                   {showHandedness && <td>{row.hand}</td>}
+                  {showGender && <td>{row.gender}</td>}
+                  {showDiscipline && <td>{row.discipline}</td>}
                   <td className="subject-number">{row.matchCount}</td>
                   {showActions && <td className="subject-actions">{row.actions}</td>}
                 </tr>

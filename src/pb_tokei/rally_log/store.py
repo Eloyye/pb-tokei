@@ -35,6 +35,7 @@ from .model import (
     FranchiseMatch,
     FranchiseMatchId,
     Game,
+    Gender,
     Handedness,
     Landmark,
     Match,
@@ -78,6 +79,7 @@ from .model import (
     check_player_anchors,
     check_team_ends,
     check_video_frames,
+    match_discipline,
     new_id,
 )
 from .schema import GAME_TABLES, MATCH_CONTENT_TABLES, STATEMENTS, migrate
@@ -249,18 +251,26 @@ class RallyLog:
     def save_player(self, player: Player) -> None:
         self._upsert(
             "players",
-            ["id", "name", "handedness"],
-            [player.id, player.name, player.handedness.value],
+            ["id", "name", "handedness", "gender"],
+            [
+                player.id,
+                player.name,
+                player.handedness.value,
+                None if player.gender is None else player.gender.value,
+            ],
         )
 
     def get_player(self, player_id: PlayerId) -> Player:
-        id_, name, handedness = self._one("SELECT * FROM players WHERE id = ?", player_id)
-        return Player(PlayerId(id_), name, Handedness(handedness))
+        return _player(
+            self._one("SELECT id, name, handedness, gender FROM players WHERE id = ?", player_id)
+        )
 
     def list_players(self) -> list[Player]:
         return [
-            Player(PlayerId(id_), name, Handedness(handedness))
-            for id_, name, handedness in self._all("SELECT * FROM players ORDER BY name, id")
+            _player(row)
+            for row in self._all(
+                "SELECT id, name, handedness, gender FROM players ORDER BY name, id"
+            )
         ]
 
     def save_team(self, team: Team) -> None:
@@ -310,9 +320,10 @@ class RallyLog:
 
     def find_player(self, name: str) -> Player | None:
         row = self._db.execute(
-            "SELECT * FROM players WHERE name = ? ORDER BY id LIMIT 1", [name]
+            "SELECT id, name, handedness, gender FROM players WHERE name = ? ORDER BY id LIMIT 1",
+            [name],
         ).fetchone()
-        return None if row is None else Player(PlayerId(row[0]), row[1], Handedness(row[2]))
+        return None if row is None else _player(row)
 
     def find_franchise(self, name: str) -> Franchise | None:
         row = self._db.execute(
@@ -894,6 +905,7 @@ class RallyLog:
                 COALESCE(ot.calibrate_seconds, 0), COALESCE(ot.annotate_seconds, 0),
                 COALESCE(ot.review_seconds, 0),
                 pa1.name, pa2.name, pb1.name, pb2.name,
+                pa1.gender, pa2.gender, pb1.gender, pb2.gender,
                 fa.name, fb.name,
                 m.source_video_url, m.source_video_id, m.source_video_path, m.franchise_match_id,
                 COALESCE(rc.done, 0), COALESCE(rc.total, 0)
@@ -937,6 +949,10 @@ class RallyLog:
                 franchise_b=fb,
                 source_video=_source_video(video_url, video_id, video_path),
                 franchise_match_id=None if fm_id is None else FranchiseMatchId(fm_id),
+                discipline=match_discipline(
+                    (_gender(pa1_g), _gender(pa2_g)),
+                    (_gender(pb1_g), _gender(pb2_g)),
+                ),
                 done_rallies=done,
                 total_rallies=total,
             )
@@ -953,6 +969,10 @@ class RallyLog:
                 a2,
                 b1,
                 b2,
+                pa1_g,
+                pa2_g,
+                pb1_g,
+                pb2_g,
                 fa,
                 fb,
                 video_url,
@@ -1072,10 +1092,10 @@ class RallyLog:
         rows = self._all(
             f"""
             SELECT m.id, m.team_a_id, m.team_b_id,
-                pa1.id, pa1.name, pa1.handedness,
-                pa2.id, pa2.name, pa2.handedness,
-                pb1.id, pb1.name, pb1.handedness,
-                pb2.id, pb2.name, pb2.handedness
+                pa1.id, pa1.name, pa1.handedness, pa1.gender,
+                pa2.id, pa2.name, pa2.handedness, pa2.gender,
+                pb1.id, pb1.name, pb1.handedness, pb1.gender,
+                pb2.id, pb2.name, pb2.handedness, pb2.gender
             FROM matches m
             JOIN tournaments t ON t.id = m.tournament_id
             JOIN teams ta ON ta.id = m.team_a_id
@@ -1416,6 +1436,15 @@ def _sorted_players(a: Player, b: Player) -> tuple[Player, Player]:
     return first, second
 
 
+def _gender(value: str | None) -> Gender | None:
+    return None if value is None else Gender(value)
+
+
+def _player(row: Row) -> Player:
+    id_, name, handedness, gender = row
+    return Player(PlayerId(id_), name, Handedness(handedness), _gender(gender))
+
+
 def _match_roster(row: Row) -> MatchRoster:
     (
         match_id,
@@ -1424,27 +1453,31 @@ def _match_roster(row: Row) -> MatchRoster:
         pa1_id,
         pa1_name,
         pa1_hand,
+        pa1_gender,
         pa2_id,
         pa2_name,
         pa2_hand,
+        pa2_gender,
         pb1_id,
         pb1_name,
         pb1_hand,
+        pb1_gender,
         pb2_id,
         pb2_name,
         pb2_hand,
+        pb2_gender,
     ) = row
     return MatchRoster(
         match_id=MatchId(match_id),
         team_a_id=TeamId(team_a_id),
         team_b_id=TeamId(team_b_id),
         team_a_players=_sorted_players(
-            Player(PlayerId(pa1_id), pa1_name, Handedness(pa1_hand)),
-            Player(PlayerId(pa2_id), pa2_name, Handedness(pa2_hand)),
+            Player(PlayerId(pa1_id), pa1_name, Handedness(pa1_hand), _gender(pa1_gender)),
+            Player(PlayerId(pa2_id), pa2_name, Handedness(pa2_hand), _gender(pa2_gender)),
         ),
         team_b_players=_sorted_players(
-            Player(PlayerId(pb1_id), pb1_name, Handedness(pb1_hand)),
-            Player(PlayerId(pb2_id), pb2_name, Handedness(pb2_hand)),
+            Player(PlayerId(pb1_id), pb1_name, Handedness(pb1_hand), _gender(pb1_gender)),
+            Player(PlayerId(pb2_id), pb2_name, Handedness(pb2_hand), _gender(pb2_gender)),
         ),
     )
 

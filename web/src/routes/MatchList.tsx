@@ -17,6 +17,7 @@ import {
   ratioClassName,
 } from "../lib/operatorTime";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
+import { disciplineLabel } from "./discipline";
 import { isValidMatchDate } from "./matchDate";
 import { franchisesLabel, teamsLabel, videoPill } from "./teams";
 
@@ -93,6 +94,7 @@ export function MatchList() {
           <div className="tr thead">
             <span>Date</span>
             <span>Tournament</span>
+            <span>Discipline</span>
             <span>Match</span>
             <span>Franchise Match</span>
             <span>Video</span>
@@ -115,6 +117,9 @@ export function MatchList() {
                   className="match-row-main"
                 >
                   <span className="dimmed">{match.tournament}</span>
+                  <span className={match.discipline === null ? "discipline dimmed" : "discipline"}>
+                    {disciplineLabel(match.discipline)}
+                  </span>
                   <span className="teams-cell">
                     <span className="swatch team-a" />
                     {match.team_a.join(" / ")}

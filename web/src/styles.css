@@ -261,7 +261,7 @@ h1 {
 }
 
 .match-table {
-  min-width: 1376px;
+  min-width: 1500px;
   overflow: hidden;
   background: var(--panel);
   border-radius: 4px;
@@ -269,7 +269,7 @@ h1 {
 
 .match-table .tr {
   display: grid;
-  grid-template-columns: 126px minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(
+  grid-template-columns: 126px minmax(140px, 1fr) 114px minmax(260px, 2.2fr) minmax(
       140px,
       1.2fr
     ) 136px 68px 140px 60px 50px 116px;
@@ -463,11 +463,11 @@ h1 {
 }
 
 .new-match-tournament {
-  grid-template-columns: minmax(0, 1fr) minmax(105px, 22%) minmax(140px, 24%);
+  grid-template-columns: minmax(0, 1fr) minmax(105px, 16%) minmax(136px, 20%) minmax(130px, 20%);
 }
 
 .new-match-player {
-  grid-template-columns: minmax(0, 1fr) minmax(105px, 28%);
+  grid-template-columns: minmax(0, 1fr) minmax(84px, 22%) minmax(84px, 22%);
 }
 
 .new-match-teams {
@@ -491,6 +491,62 @@ h1 {
 .new-match-team .new-match-player + .new-match-player,
 .new-match-team .new-match-player-slot + .new-match-player-slot {
   margin-top: 12px;
+}
+
+.new-match-player-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+  margin-bottom: 4px;
+}
+
+.player-meta-badge,
+.discipline-pill {
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+}
+
+.player-new-pill {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.backfill-hint {
+  margin: 4px 0 0;
+  color: var(--warn);
+  font-size: 11px;
+}
+
+.player-backfill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 4px;
+}
+
+.new-match-discipline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--dim);
+}
+
+.new-match-inline-error {
+  margin: 0;
+}
+
+.new-match-warning {
+  display: block;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .player-field-label {
@@ -817,9 +873,14 @@ h1 {
   cursor: pointer;
 }
 
-.name-options button:hover,
+.name-options button:hover:not(:disabled),
 .name-options [aria-selected="true"] {
   background: var(--accent-soft);
+}
+
+.name-options .name-option-disabled {
+  color: var(--faint);
+  cursor: not-allowed;
 }
 
 .name-hint {
@@ -862,6 +923,12 @@ h1 {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+}
+
+.edit-match-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .edit-match-head h1 {

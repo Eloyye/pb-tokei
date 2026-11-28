@@ -7,7 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
-import type { Handedness } from "../api/client";
+import type { Discipline, Gender, Handedness } from "../api/client";
+import { DISCIPLINES, genderLabel, genderShort, playerMetaBadge } from "./discipline";
 import {
   buildPlayerDropdown,
   checkNewPlayerDraft,
@@ -20,17 +21,23 @@ import {
 
 export type PlayerSlotState =
   | { kind: "searching"; query: string }
-  | { kind: "existing"; id: string }
-  | { kind: "new"; name: string; handedness: Handedness | ""; confirmedNearMatch: boolean };
+  | { kind: "existing"; id: string; backfillGender?: Gender | "" }
+  | {
+      kind: "new";
+      name: string;
+      handedness: Handedness | "";
+      gender: Gender | "";
+      confirmedNearMatch: boolean;
+    };
 
 export const EMPTY_PLAYER_SLOT: PlayerSlotState = { kind: "searching", query: "" };
 
-function handTag(handedness: Handedness): "L" | "R" {
-  return handedness === "left" ? "L" : "R";
-}
-
 function handTitle(handedness: Handedness): string {
   return handedness === "left" ? "Left-handed" : "Right-handed";
+}
+
+function metaTitle(player: { handedness: Handedness; gender: Gender | null }): string {
+  return `${handTitle(player.handedness)}, ${player.gender ? genderLabel(player.gender) : "Unknown gender"}`;
 }
 
 function optionKey(option: DropdownOption): string {
@@ -53,6 +60,8 @@ export function PlayerField({
   value,
   players,
   otherSlots,
+  forcedGender = null,
+  disciplineHelper = "",
   showValidation = false,
   externalNotice = null,
   rosterFetching = false,
@@ -64,6 +73,8 @@ export function PlayerField({
   value: PlayerSlotState;
   players: readonly RosterPlayerOption[];
   otherSlots: OtherSlotUsage;
+  forcedGender?: Gender | null;
+  disciplineHelper?: Discipline | "";
   showValidation?: boolean;
   externalNotice?: string | null;
   rosterFetching?: boolean;
@@ -88,12 +99,12 @@ export function PlayerField({
   }, [value.kind]);
 
   function selectExisting(playerId: string) {
-    onChange({ kind: "existing", id: playerId });
+    onChange({ kind: "existing", id: playerId, backfillGender: "" });
   }
 
   function startNewDraft(name: string) {
     pendingFocusRef.current = "handedness";
-    onChange({ kind: "new", name, handedness: "", confirmedNearMatch: false });
+    onChange({ kind: "new", name, handedness: "", gender: "", confirmedNearMatch: false });
   }
 
   function clearToSearch() {
@@ -107,8 +118,13 @@ export function PlayerField({
         label={label}
         statusId={statusId}
         selected={players.find((player) => player.id === value.id)}
+        backfillGender={value.backfillGender ?? ""}
+        forcedGender={forcedGender}
+        disciplineHelper={disciplineHelper}
+        showValidation={showValidation}
         rosterFetching={rosterFetching}
         disabled={disabled}
+        onBackfillGenderChange={(gender) => onChange({ ...value, backfillGender: gender })}
         onClear={clearToSearch}
         onEditPlayer={onEditPlayer}
       />
@@ -124,6 +140,7 @@ export function PlayerField({
         value={value}
         players={players}
         otherSlots={otherSlots}
+        forcedGender={forcedGender}
         showValidation={showValidation}
         disabled={disabled}
         leftHandRef={leftHandRef}
@@ -142,6 +159,7 @@ export function PlayerField({
       query={value.query}
       players={players}
       otherSlots={otherSlots}
+      forcedGender={forcedGender}
       showValidation={showValidation}
       externalNotice={externalNotice}
       disabled={disabled}
@@ -157,16 +175,26 @@ function ExistingPlayerSlot({
   label,
   statusId,
   selected,
+  backfillGender,
+  forcedGender,
+  disciplineHelper,
+  showValidation,
   rosterFetching,
   disabled,
+  onBackfillGenderChange,
   onClear,
   onEditPlayer,
 }: {
   label: string;
   statusId: string;
   selected: RosterPlayerOption | undefined;
+  backfillGender: Gender | "";
+  forcedGender: Gender | null;
+  disciplineHelper: Discipline | "";
+  showValidation: boolean;
   rosterFetching: boolean;
   disabled: boolean;
+  onBackfillGenderChange: (gender: Gender) => void;
   onClear: () => void;
   onEditPlayer?: (player: RosterPlayerOption) => void;
 }) {
@@ -208,6 +236,9 @@ function ExistingPlayerSlot({
     );
   }
 
+  const effectiveBackfill: Gender | "" = forcedGender ?? backfillGender;
+  const needsBackfill = selected.gender === null;
+
   return (
     <div className="new-match-field player-field">
       <span className="player-field-label">{label}</span>
@@ -215,10 +246,10 @@ function ExistingPlayerSlot({
         <span className="player-selected-name">{selected.name}</span>
         <span
           className="player-hand-tag"
-          title={handTitle(selected.handedness)}
-          aria-label={handTitle(selected.handedness)}
+          title={metaTitle(selected)}
+          aria-label={metaTitle(selected)}
         >
-          {handTag(selected.handedness)}
+          {playerMetaBadge(selected)}
         </span>
         <div className="player-selected-actions">
           {onEditPlayer && (
@@ -245,6 +276,38 @@ function ExistingPlayerSlot({
           </button>
         </div>
       </div>
+      {needsBackfill && (
+        <div className="player-backfill">
+          <div className="player-hand-toggle" role="group" aria-label={`${label} gender`}>
+            <button
+              type="button"
+              aria-pressed={effectiveBackfill === "male"}
+              disabled={disabled || forcedGender !== null}
+              onClick={() => onBackfillGenderChange("male")}
+            >
+              Male
+            </button>
+            <button
+              type="button"
+              aria-pressed={effectiveBackfill === "female"}
+              disabled={disabled || forcedGender !== null}
+              onClick={() => onBackfillGenderChange("female")}
+            >
+              Female
+            </button>
+          </div>
+          <p className="backfill-hint">
+            {forcedGender
+              ? `Existing Player missing gender — will save as ${genderLabel(forcedGender)} (${genderShort(forcedGender)}) for ${disciplineHelper ? DISCIPLINES[disciplineHelper] : "this Match"}.`
+              : "Existing Player missing gender — choose Male or Female to backfill."}
+          </p>
+          {showValidation && !effectiveBackfill && (
+            <p className="player-field-error" id={statusId}>
+              Choose gender (Male or Female) to backfill.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -256,6 +319,7 @@ function NewPlayerSlot({
   value,
   players,
   otherSlots,
+  forcedGender,
   showValidation,
   disabled,
   leftHandRef,
@@ -269,6 +333,7 @@ function NewPlayerSlot({
   value: Extract<PlayerSlotState, { kind: "new" }>;
   players: readonly RosterPlayerOption[];
   otherSlots: OtherSlotUsage;
+  forcedGender: Gender | null;
   showValidation: boolean;
   disabled: boolean;
   leftHandRef: RefObject<HTMLButtonElement | null>;
@@ -277,10 +342,13 @@ function NewPlayerSlot({
   onClear: () => void;
 }) {
   const rightHandRef = useRef<HTMLButtonElement>(null);
+  const maleRef = useRef<HTMLButtonElement>(null);
+  const femaleRef = useRef<HTMLButtonElement>(null);
   const check = useMemo(
     () => checkNewPlayerDraft(value.name, players, otherSlots),
     [value.name, players, otherSlots],
   );
+  const effectiveGender: Gender | "" = forcedGender ?? value.gender;
 
   let validationMessage: string | null = null;
   if (showValidation) {
@@ -288,12 +356,12 @@ function NewPlayerSlot({
       validationMessage = "Enter a name for the new Player.";
     } else if (check.kind === "near-matches" && !value.confirmedNearMatch) {
       validationMessage = "Confirm Create anyway or use the existing Player.";
-    } else if (
-      check.kind !== "existing-collision" &&
-      check.kind !== "staged-collision" &&
-      !value.handedness
-    ) {
-      validationMessage = "Choose handedness (Left or Right).";
+    } else if (check.kind !== "existing-collision" && check.kind !== "staged-collision") {
+      if (!value.handedness) {
+        validationMessage = "Choose handedness (Left or Right).";
+      } else if (!effectiveGender) {
+        validationMessage = "Choose gender (Male or Female).";
+      }
     }
   }
 
@@ -309,6 +377,16 @@ function NewPlayerSlot({
     } else if (event.key === "ArrowLeft") {
       event.preventDefault();
       leftHandRef.current?.focus();
+    }
+  }
+
+  function handleGenderKey(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      femaleRef.current?.focus();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      maleRef.current?.focus();
     }
   }
 
@@ -377,6 +455,28 @@ function NewPlayerSlot({
             Right
           </button>
         </div>
+        <div className="player-hand-toggle" role="group" aria-label={`${label} gender`}>
+          <button
+            ref={maleRef}
+            type="button"
+            aria-pressed={effectiveGender === "male"}
+            disabled={disabled || forcedGender !== null}
+            onKeyDown={handleGenderKey}
+            onClick={() => onChange({ ...value, gender: "male" })}
+          >
+            Male
+          </button>
+          <button
+            ref={femaleRef}
+            type="button"
+            aria-pressed={effectiveGender === "female"}
+            disabled={disabled || forcedGender !== null}
+            onKeyDown={handleGenderKey}
+            onClick={() => onChange({ ...value, gender: "female" })}
+          >
+            Female
+          </button>
+        </div>
       </div>
 
       {check.kind === "existing-collision" && (
@@ -392,7 +492,7 @@ function NewPlayerSlot({
               disabled={disabled}
               onClick={() => onSelectExisting(check.player.id)}
             >
-              Use {check.player.name} ({handTag(check.player.handedness)})
+              Use {check.player.name} ({playerMetaBadge(check.player)})
             </button>
           )}
         </div>
@@ -413,7 +513,7 @@ function NewPlayerSlot({
             {check.matches.map(({ player: candidate, usedInSlot }) =>
               usedInSlot ? (
                 <span key={candidate.id} className="player-near-match-used">
-                  {candidate.name} ({handTag(candidate.handedness)}) — already in {usedInSlot}
+                  {candidate.name} ({playerMetaBadge(candidate)}) — already in {usedInSlot}
                 </span>
               ) : (
                 <button
@@ -423,7 +523,7 @@ function NewPlayerSlot({
                   disabled={disabled}
                   onClick={() => onSelectExisting(candidate.id)}
                 >
-                  Use {candidate.name} ({handTag(candidate.handedness)})
+                  Use {candidate.name} ({playerMetaBadge(candidate)})
                 </button>
               ),
             )}
@@ -459,6 +559,7 @@ function SearchingPlayerSlot({
   query,
   players,
   otherSlots,
+  forcedGender,
   showValidation,
   externalNotice,
   disabled,
@@ -473,6 +574,7 @@ function SearchingPlayerSlot({
   query: string;
   players: readonly RosterPlayerOption[];
   otherSlots: OtherSlotUsage;
+  forcedGender: Gender | null;
   showValidation: boolean;
   externalNotice: string | null;
   disabled: boolean;
@@ -487,8 +589,8 @@ function SearchingPlayerSlot({
 
   const trimmed = query.trim();
   const { options, hasPlayerMatches, canCreate } = useMemo(
-    () => buildPlayerDropdown(query, players, otherSlots),
-    [query, players, otherSlots],
+    () => buildPlayerDropdown(query, players, otherSlots, forcedGender),
+    [query, players, otherSlots, forcedGender],
   );
   const visible = open && options.length > 0 && !disabled;
   const effectiveActive =
@@ -619,10 +721,12 @@ function SearchingPlayerSlot({
                   >
                     <span className="player-option-main">
                       <span className="player-option-name">{option.player.name}</span>
-                      <span className="player-hand-tag">{handTag(option.player.handedness)}</span>
+                      <span className="player-hand-tag">{playerMetaBadge(option.player)}</span>
                     </span>
-                    {option.disabledReason && (
+                    {option.disabledReason ? (
                       <span className="player-option-meta">Already in {option.disabledReason}</span>
+                    ) : (
+                      option.ineligible && <span className="player-option-meta">Ineligible</span>
                     )}
                   </button>
                 );

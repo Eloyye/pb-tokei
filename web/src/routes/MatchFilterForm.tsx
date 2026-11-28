@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import type { PlayerMatchFilters } from "../api/client";
 import type { components } from "../api/schema";
+import { DISCIPLINE_LIST, DISCIPLINES } from "./discipline";
 import {
   matchFilterDateError,
   matchFilters,
@@ -16,12 +17,14 @@ export function MatchFilterForm({
   filters,
   options,
   showPartner = false,
+  showDiscipline = false,
   onApply,
 }: {
   filters: PlayerMatchFilters;
   options: Pick<SubjectFilterOptions, "tournaments"> &
     Partial<Pick<SubjectFilterOptions, "partners" | "opponents">>;
   showPartner?: boolean;
+  showDiscipline?: boolean;
   onApply: (filters: PlayerMatchFilters) => void;
 }) {
   const fieldsKey = JSON.stringify(filters);
@@ -103,6 +106,19 @@ export function MatchFilterForm({
               ))}
             </select>
           </label>
+          {showDiscipline && (
+            <label className="match-filter-field">
+              Discipline
+              <select name="discipline" defaultValue={filters.discipline ?? ""}>
+                <option value="">All Disciplines</option>
+                {DISCIPLINE_LIST.map((value) => (
+                  <option key={value} value={value}>
+                    {DISCIPLINES[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="match-filter-field">
             Date from
             <input {...dateInputProps} name="date_from" defaultValue={filters.date_from ?? ""} />

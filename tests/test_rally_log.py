@@ -16,10 +16,12 @@ from pb_tokei.rally_log import (
     Challenge,
     ContactKind,
     CourtPoint,
+    Discipline,
     Error,
     ErrorKind,
     Fact,
     Game,
+    Gender,
     Handedness,
     Landmark,
     Match,
@@ -53,10 +55,13 @@ from pb_tokei.rally_log import (
     TournamentId,
     WinnerSource,
     Zone,
+    check_match_lineup,
     inferred,
+    match_discipline,
     new_id,
     observed,
     parse_match_date,
+    team_discipline,
     team_end_at,
     zone_for_y,
 )
@@ -1152,3 +1157,112 @@ def test_opening_an_older_database_migrates_rally_status_and_scoreboard(
     fresh = tmp_path / "fresh.duckdb"
     RallyLog.open(fresh).close()
     assert rally_columns(path) == rally_columns(fresh)
+
+
+# --- Player gender and derived Discipline (#119) --------------------------------------------
+
+
+def test_team_and_match_discipline_derivation_and_lineup_validation() -> None:
+    m, f = Gender.MALE, Gender.FEMALE
+    assert team_discipline((m, m)) is Discipline.MENS_DOUBLES
+    assert team_discipline((f, f)) is Discipline.WOMENS_DOUBLES
+    assert team_discipline((m, f)) is Discipline.MIXED_DOUBLES
+    assert team_discipline((f, m)) is Discipline.MIXED_DOUBLES
+    assert team_discipline((m, None)) is None
+    assert team_discipline((None, f)) is None
+    assert team_discipline((None, None)) is None
+
+    assert match_discipline((m, m), (m, m)) is Discipline.MENS_DOUBLES
+    assert match_discipline((f, f), (f, f)) is Discipline.WOMENS_DOUBLES
+    assert match_discipline((m, f), (f, m)) is Discipline.MIXED_DOUBLES
+    assert match_discipline((m, m), (m, None)) is None
+    assert match_discipline((None, None), (f, f)) is None
+
+    # Disagreement between two fully gendered Teams returns None from match_discipline
+    # and raises ValueError from check_match_lineup.
+    for team_a, team_b in (
+        ((m, m), (m, f)),
+        ((m, m), (f, f)),
+        ((f, f), (m, f)),
+    ):
+        assert match_discipline(team_a, team_b) is None
+        with pytest.raises(ValueError, match="Invalid Match lineup"):
+            check_match_lineup(team_a, team_b)
+
+    assert check_match_lineup((m, f), (f, m)) is Discipline.MIXED_DOUBLES
+    assert check_match_lineup((m, m), (m, None)) is None
+
+
+def test_player_gender_round_trips_derives_discipline_and_enforces_check_constraint(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "gender.duckdb"
+    p1 = replace(P1, gender=Gender.MALE)
+    p2 = replace(P2, gender=Gender.FEMALE)
+    p3 = replace(P3, gender=Gender.FEMALE)
+    p4 = replace(P4, gender=Gender.MALE)
+    match = small_match()
+    with RallyLog.open(path) as log:
+        log.save_tournament(TOURNAMENT)
+        for player in (p1, p2, p3, p4):
+            log.save_player(player)
+        log.save_team(SERVERS)
+        log.save_team(RECEIVERS)
+        log.save_match(match)
+
+        assert log.get_player(p1.id) == p1
+        assert log.get_player(p2.id).gender is Gender.FEMALE
+        assert log.get_match_roster(match.id).discipline is Discipline.MIXED_DOUBLES
+        assert log.get_match_summary(match.id).discipline is Discipline.MIXED_DOUBLES
+        assert [s.discipline for s in log.list_matches()] == [Discipline.MIXED_DOUBLES]
+
+    with duckdb.connect(str(path)) as conn, pytest.raises(duckdb.ConstraintException):
+        conn.execute("UPDATE players SET gender = 'other' WHERE id = ?", [p1.id])
+
+
+@pytest.mark.parametrize("with_foreign_keys", [False, True])
+def test_opening_a_pre_gender_database_migrates_players_with_null_gender(
+    tmp_path: Path, with_foreign_keys: bool
+) -> None:
+    path = tmp_path / "pre_gender.duckdb"
+    match = small_match()
+    with RallyLog.open(path) as log:
+        save_roster(log)
+        log.save_match(match)
+
+    with duckdb.connect(str(path)) as conn:
+        if with_foreign_keys:
+            # Recreate players without gender AND teams with FKs referencing players(id)
+            # to confirm _migrate_drop_foreign_keys runs before _migrate_players.
+            conn.execute("DROP TABLE teams")
+        conn.execute(
+            "CREATE TABLE players_pre_gender ("
+            "id UUID PRIMARY KEY, name VARCHAR NOT NULL, handedness VARCHAR NOT NULL)"
+        )
+        conn.execute("INSERT INTO players_pre_gender SELECT id, name, handedness FROM players")
+        conn.execute("DROP TABLE players")
+        conn.execute("ALTER TABLE players_pre_gender RENAME TO players")
+        if with_foreign_keys:
+            conn.execute(
+                "CREATE TABLE teams (id UUID PRIMARY KEY, "
+                "player_low_id UUID NOT NULL REFERENCES players (id), "
+                "player_high_id UUID NOT NULL REFERENCES players (id))"
+            )
+            conn.execute("INSERT INTO teams VALUES (?, ?, ?)", [SERVERS.id, *SERVERS.player_ids])
+            conn.execute(
+                "INSERT INTO teams VALUES (?, ?, ?)", [RECEIVERS.id, *RECEIVERS.player_ids]
+            )
+
+    with RallyLog.open(path) as log:
+        assert all(p.gender is None for p in log.list_players())
+        assert log.get_match_roster(match.id).discipline is None
+        assert log.get_match_summary(match.id).discipline is None
+        assert log.load_match(match.id) == match
+
+        for player in (P1, P2, P3, P4):
+            log.save_player(replace(player, gender=Gender.FEMALE))
+        assert log.get_match_roster(match.id).discipline is Discipline.WOMENS_DOUBLES
+        assert log.get_match_summary(match.id).discipline is Discipline.WOMENS_DOUBLES
+
+    with duckdb.connect(str(path)) as conn, pytest.raises(duckdb.ConstraintException):
+        conn.execute("UPDATE players SET gender = 'invalid' WHERE id = ?", [P1.id])

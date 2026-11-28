@@ -53,12 +53,12 @@ const MATCH_ID = "match-1";
 
 const ROSTER: Roster = {
   players: [
-    { id: "p-a1", name: "Anna Brigth", handedness: "right" },
-    { id: "p-a2", name: "Ben Johns", handedness: "right" },
-    { id: "p-b1", name: "Cara Lee", handedness: "left" },
-    { id: "p-b2", name: "Dan Kim", handedness: "right" },
-    { id: "p-real", name: "Anna Bright", handedness: "right" },
-    { id: "p-eve", name: "Eve Park", handedness: "left" },
+    { id: "p-a1", name: "Anna Brigth", handedness: "right", gender: "female" },
+    { id: "p-a2", name: "Ben Johns", handedness: "right", gender: "male" },
+    { id: "p-b1", name: "Cara Lee", handedness: "left", gender: "female" },
+    { id: "p-b2", name: "Dan Kim", handedness: "right", gender: "male" },
+    { id: "p-real", name: "Anna Bright", handedness: "right", gender: "female" },
+    { id: "p-eve", name: "Eve Park", handedness: "left", gender: "female" },
   ],
   tournaments: [
     { id: "t-ppa", name: "PPA Daytona Beach Open 2026", tour: "ppa" },
@@ -76,7 +76,13 @@ const ROSTER: Roster = {
       tournament_id: "t-mlp",
       franchise_a_id: "f-dallas",
       franchise_b_id: "f-miami",
-      matches: [{ team_a: ["Anna Brigth", "Ben Johns"], team_b: ["Cara Lee", "Dan Kim"] }],
+      matches: [
+        {
+          team_a: ["Anna Brigth", "Ben Johns"],
+          team_b: ["Cara Lee", "Dan Kim"],
+          discipline: "mixed_doubles",
+        },
+      ],
     },
   ],
 };
@@ -90,6 +96,7 @@ function makeDetail(overrides: Partial<MatchDetail> = {}): MatchDetail {
     tour: "ppa",
     team_a: ["Anna Brigth", "Ben Johns"],
     team_b: ["Cara Lee", "Dan Kim"],
+    discipline: "mixed_doubles",
     team_a_id: "team-a",
     team_b_id: "team-b",
     franchise_match_id: null,
@@ -117,10 +124,38 @@ function makeDetail(overrides: Partial<MatchDetail> = {}): MatchDetail {
     footage_dir: "/data/footage",
     source_video_path: "/data/footage/abc.webm",
     players: [
-      { id: "p-a1", name: "Anna Brigth", handedness: "right", team_id: "team-a", team: "a" },
-      { id: "p-a2", name: "Ben Johns", handedness: "right", team_id: "team-a", team: "a" },
-      { id: "p-b1", name: "Cara Lee", handedness: "left", team_id: "team-b", team: "b" },
-      { id: "p-b2", name: "Dan Kim", handedness: "right", team_id: "team-b", team: "b" },
+      {
+        id: "p-a1",
+        name: "Anna Brigth",
+        handedness: "right",
+        gender: "female",
+        team_id: "team-a",
+        team: "a",
+      },
+      {
+        id: "p-a2",
+        name: "Ben Johns",
+        handedness: "right",
+        gender: "male",
+        team_id: "team-a",
+        team: "a",
+      },
+      {
+        id: "p-b1",
+        name: "Cara Lee",
+        handedness: "left",
+        gender: "female",
+        team_id: "team-b",
+        team: "b",
+      },
+      {
+        id: "p-b2",
+        name: "Dan Kim",
+        handedness: "right",
+        gender: "male",
+        team_id: "team-b",
+        team: "b",
+      },
     ],
     ...overrides,
   };
@@ -238,10 +273,38 @@ describe("EditMatchPage", () => {
     const replacedDetail = makeDetail({
       team_a: ["Ben Johns", "Eve Park"],
       players: [
-        { id: "p-eve", name: "Eve Park", handedness: "left", team_id: "team-a2", team: "a" },
-        { id: "p-a2", name: "Ben Johns", handedness: "right", team_id: "team-a2", team: "a" },
-        { id: "p-b1", name: "Cara Lee", handedness: "left", team_id: "team-b", team: "b" },
-        { id: "p-b2", name: "Dan Kim", handedness: "right", team_id: "team-b", team: "b" },
+        {
+          id: "p-eve",
+          name: "Eve Park",
+          handedness: "left",
+          gender: "female",
+          team_id: "team-a2",
+          team: "a",
+        },
+        {
+          id: "p-a2",
+          name: "Ben Johns",
+          handedness: "right",
+          gender: "male",
+          team_id: "team-a2",
+          team: "a",
+        },
+        {
+          id: "p-b1",
+          name: "Cara Lee",
+          handedness: "left",
+          gender: "female",
+          team_id: "team-b",
+          team: "b",
+        },
+        {
+          id: "p-b2",
+          name: "Dan Kim",
+          handedness: "right",
+          gender: "male",
+          team_id: "team-b",
+          team: "b",
+        },
       ],
     });
     vi.mocked(replaceMatchPlayer).mockResolvedValueOnce(replacedDetail);
@@ -272,12 +335,12 @@ describe("EditMatchPage", () => {
   it("warns with dry-run affected Match count before renaming a Player", async () => {
     vi.mocked(updatePlayer)
       .mockResolvedValueOnce({
-        player: { id: "p-a1", name: "Anna B.", handedness: "left" },
+        player: { id: "p-a1", name: "Anna B.", handedness: "left", gender: "female" },
         affected_matches: 5,
         dry_run: true,
       })
       .mockResolvedValueOnce({
-        player: { id: "p-a1", name: "Anna B.", handedness: "left" },
+        player: { id: "p-a1", name: "Anna B.", handedness: "left", gender: "female" },
         affected_matches: 5,
         dry_run: false,
       });
@@ -294,7 +357,7 @@ describe("EditMatchPage", () => {
     expect(await dialog.findByText("Also changes 4 other Matches.")).toBeTruthy();
     expect(updatePlayer).toHaveBeenCalledWith(
       "p-a1",
-      { name: "Anna B.", handedness: "left" },
+      { name: "Anna B.", handedness: "left", gender: "female" },
       { dryRun: true, rallyLog: PATH },
     );
 
@@ -302,7 +365,7 @@ describe("EditMatchPage", () => {
     await waitFor(() =>
       expect(updatePlayer).toHaveBeenLastCalledWith(
         "p-a1",
-        { name: "Anna B.", handedness: "left" },
+        { name: "Anna B.", handedness: "left", gender: "female" },
         { dryRun: false, rallyLog: PATH },
       ),
     );
@@ -318,12 +381,12 @@ describe("EditMatchPage", () => {
     );
     vi.mocked(mergePlayer)
       .mockResolvedValueOnce({
-        player: { id: "p-real", name: "Anna Bright", handedness: "right" },
+        player: { id: "p-real", name: "Anna Bright", handedness: "right", gender: "female" },
         affected_matches: 3,
         dry_run: true,
       })
       .mockResolvedValueOnce({
-        player: { id: "p-real", name: "Anna Bright", handedness: "right" },
+        player: { id: "p-real", name: "Anna Bright", handedness: "right", gender: "female" },
         affected_matches: 3,
         dry_run: false,
       });
@@ -497,5 +560,145 @@ describe("EditMatchPage", () => {
     const dialog = within(await screen.findByRole("dialog"));
     expect(dialog.getByText("/data/footage")).toBeTruthy();
     expect(dialog.getByText(/\/data\/footage-old\/match\.mp4/)).toBeTruthy();
+  });
+
+  it("requires gender and checks lineup when replacing a Player with a new Player", async () => {
+    renderEditPage();
+    await screen.findByRole("heading", { name: "Edit Match" });
+    expect(screen.getByText("Mixed Doubles", { selector: ".discipline-pill" })).toBeTruthy();
+
+    const teamA = within(screen.getByRole("group", { name: "Team A" }));
+    expect(teamA.getByText("R · W")).toBeTruthy();
+    expect(teamA.getByText("R · M")).toBeTruthy();
+
+    const player1 = teamA.getByRole<HTMLInputElement>("combobox", { name: "Player 1" });
+    const hand1 = teamA.getByLabelText<HTMLSelectElement>("Player 1 handedness");
+    const gender1 = teamA.getByLabelText<HTMLSelectElement>("Player 1 gender");
+
+    fireEvent.change(player1, { target: { value: "Brand New Player" } });
+    expect(teamA.getByText("NEW")).toBeTruthy();
+    fireEvent.change(hand1, { target: { value: "left" } });
+
+    // Missing gender blocks submit.
+    fireEvent.click(teamA.getByRole("button", { name: "Replace Anna Brigth" }));
+    expect(teamA.getByRole("alert").textContent).toBe("Choose gender for the new Player.");
+    expect(replaceMatchPlayer).not.toHaveBeenCalled();
+
+    // Incompatible gender (Male replacing Female in Mixed Doubles) is blocked inline.
+    fireEvent.change(gender1, { target: { value: "male" } });
+    fireEvent.click(teamA.getByRole("button", { name: "Replace Anna Brigth" }));
+    expect(teamA.getByRole("alert").textContent).toContain("Invalid Match lineup");
+    expect(replaceMatchPlayer).not.toHaveBeenCalled();
+
+    // Compatible Female gender submits full new Player payload.
+    fireEvent.change(gender1, { target: { value: "female" } });
+    fireEvent.click(teamA.getByRole("button", { name: "Replace Anna Brigth" }));
+    await waitFor(() =>
+      expect(replaceMatchPlayer).toHaveBeenCalledWith(
+        MATCH_ID,
+        {
+          from: "p-a1",
+          to: { name: "Brand New Player", handedness: "left", gender: "female" },
+        },
+        { rallyLog: PATH },
+      ),
+    );
+  });
+
+  it("lets EditRecordDialog set legacy Player gender, forbids clearing, and shows 422 conflicts", async () => {
+    vi.mocked(getRoster).mockResolvedValue({
+      ...ROSTER,
+      players: ROSTER.players.map((p) => (p.id === "p-a1" ? { ...p, gender: null } : p)),
+    });
+    vi.mocked(getMatch).mockResolvedValue(
+      makeDetail({
+        discipline: null,
+        players: [
+          {
+            id: "p-a1",
+            name: "Anna Brigth",
+            handedness: "right",
+            gender: null,
+            team_id: "team-a",
+            team: "a",
+          },
+          {
+            id: "p-a2",
+            name: "Ben Johns",
+            handedness: "right",
+            gender: "male",
+            team_id: "team-a",
+            team: "a",
+          },
+          {
+            id: "p-b1",
+            name: "Cara Lee",
+            handedness: "left",
+            gender: "female",
+            team_id: "team-b",
+            team: "b",
+          },
+          {
+            id: "p-b2",
+            name: "Dan Kim",
+            handedness: "right",
+            gender: "male",
+            team_id: "team-b",
+            team: "b",
+          },
+        ],
+      }),
+    );
+    vi.mocked(updatePlayer)
+      .mockRejectedValueOnce(
+        new ApiError(
+          422,
+          "Setting Anna Brigth to male would make PPA Daytona Beach Open 2026 invalid.",
+        ),
+      )
+      .mockResolvedValueOnce({
+        player: { id: "p-a1", name: "Anna Brigth", handedness: "right", gender: "female" },
+        affected_matches: 1,
+        dry_run: true,
+      })
+      .mockResolvedValueOnce({
+        player: { id: "p-a1", name: "Anna Brigth", handedness: "right", gender: "female" },
+        affected_matches: 1,
+        dry_run: false,
+      });
+
+    renderEditPage();
+    await screen.findByRole("heading", { name: "Edit Match" });
+    expect(screen.getByText("R · ?")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename Player Anna Brigth" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    const genderSelect = dialog.getByLabelText<HTMLSelectElement>("Gender");
+    expect(genderSelect.value).toBe("");
+
+    // Conflicting gender displays 422 error from dry-run without closing dialog.
+    fireEvent.change(genderSelect, { target: { value: "male" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Continue" }));
+    expect((await dialog.findByRole("alert")).textContent).toContain("PPA Daytona Beach Open 2026");
+
+    // Compatible gender proceeds through dry-run confirmation and saves.
+    fireEvent.change(genderSelect, { target: { value: "female" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Continue" }));
+    expect(await dialog.findByText("Only affects this Match.")).toBeTruthy();
+    fireEvent.click(dialog.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(updatePlayer).toHaveBeenLastCalledWith(
+        "p-a1",
+        { name: "Anna Brigth", handedness: "right", gender: "female" },
+        { dryRun: false, rallyLog: PATH },
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Opening dialog for a Player who already has gender set has no empty option (cannot clear).
+    fireEvent.click(screen.getByRole("button", { name: "Rename Player Ben Johns" }));
+    const benDialog = within(await screen.findByRole("dialog"));
+    const benGender = benDialog.getByLabelText<HTMLSelectElement>("Gender");
+    expect(Array.from(benGender.options).map((opt) => opt.value)).toEqual(["male", "female"]);
   });
 });

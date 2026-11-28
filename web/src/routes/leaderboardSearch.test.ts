@@ -18,7 +18,17 @@ it.each([undefined, "shot_type"])("drops a bucket without a valid breakdown (%s)
   });
 });
 
-it("preserves a numeric Shot Number bucket and a valid kind and minimum", () => {
-  const settings = { kind: "team", minimum: 5, by: "shot_number", bucket: 3 };
+it("preserves a numeric Shot Number bucket and a valid kind, minimum, and discipline", () => {
+  const settings = {
+    kind: "team",
+    minimum: 5,
+    by: "shot_number",
+    bucket: 3,
+    discipline: "mixed_doubles",
+  };
   expect(leaderboardSearch(settings)).toMatchObject(settings);
+});
+
+it.each(["singles", 42, ""])("drops an invalid discipline %s from a shared URL", (discipline) => {
+  expect(leaderboardSearch({ discipline })).toMatchObject({ discipline: undefined });
 });

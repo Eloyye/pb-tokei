@@ -11,7 +11,9 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from pb_tokei.rally_log import (
+    Discipline,
     Franchise,
+    Gender,
     Handedness,
     MatchGames,
     MatchRoster,
@@ -44,6 +46,7 @@ from .stats import SubjectKind
 
 class PlayerProfile(ReportPlayer):
     handedness: Handedness
+    gender: Gender | None
 
 
 class PlayerListEntry(PlayerProfile):
@@ -76,6 +79,7 @@ class SubjectMatch(BaseModel):
     id: UUID
     date: date | None
     tournament: str
+    discipline: Discipline | None
     partner: ReportPlayer | None
     opponents: ReportTeam
     games: list[ReportGame]
@@ -91,6 +95,7 @@ class SubjectReport(MultiMatchReport):
     matches: list[SubjectMatch]
     filter_options: SubjectFilterOptions
     undated_matches_excluded: int
+    unclassified_matches_excluded: int
 
 
 class PlayerReport(SubjectReport):
@@ -111,7 +116,13 @@ def list_players(log: RallyLog) -> list[PlayerListEntry]:
             players[player.id] = player
             counts[player.id] += 1
     return [
-        PlayerListEntry(id=p.id, name=p.name, handedness=p.handedness, match_count=counts[p.id])
+        PlayerListEntry(
+            id=p.id,
+            name=p.name,
+            handedness=p.handedness,
+            gender=p.gender,
+            match_count=counts[p.id],
+        )
         for p in sorted(players.values(), key=lambda p: (p.name, p.id))
     ]
 
@@ -126,7 +137,14 @@ def list_teams(log: RallyLog) -> list[TeamListEntry]:
     entries = []
     for team_id, players in teams.items():
         team = ReportTeam.from_players(team_id, players)
-        entries.append(TeamListEntry(id=team.id, players=team.players, match_count=counts[team_id]))
+        entries.append(
+            TeamListEntry(
+                id=team.id,
+                players=team.players,
+                discipline=team.discipline,
+                match_count=counts[team_id],
+            )
+        )
     return sorted(entries, key=lambda team: (team.players[0].name, team.players[1].name, team.id))
 
 
@@ -143,6 +161,7 @@ class SubjectMatchSelection:
     sources: list[SubjectMatchSource]
     filter_options: SubjectFilterOptions
     undated_matches_excluded: int
+    unclassified_matches_excluded: int
 
 
 def _partner(roster: MatchRoster, team_id: TeamId, player_id: PlayerId) -> Player:
@@ -188,8 +207,9 @@ def _load_matches(
             continue
         candidates.append(match)
 
-    selected, undated_excluded = filters.select_matches(candidates, tournaments)
-    matches = log.load_match_games_from_metadata(selected)
+    disciplines = {roster.match_id: roster.discipline for roster in rosters}
+    selection = filters.select_matches(candidates, tournaments, disciplines)
+    matches = log.load_match_games_from_metadata(selection.matches)
     franchise_matches = {}
     franchises = {}
     if player_id is not None and any(m.franchise_match_id is not None for m in matches.values()):
@@ -226,7 +246,8 @@ def _load_matches(
             partners=_player_options(available_partners),
             opponents=_player_options(available_opponents),
         ),
-        undated_matches_excluded=undated_excluded,
+        undated_matches_excluded=selection.undated_excluded,
+        unclassified_matches_excluded=selection.unclassified_excluded,
     )
 
 
@@ -273,6 +294,7 @@ def _match_row(
         id=match.id,
         date=match.date,
         tournament=source.tournament.name,
+        discipline=roster.discipline,
         partner=partner,
         opponents=ReportTeam.from_players(opponents, roster.team_players(opponents)),
         games=game_scores(match.games, roster, team_id),
@@ -305,7 +327,12 @@ def build_player_report(player: Player, selection: SubjectMatchSelection) -> Pla
     return PlayerReport(
         header=report.header,
         stats=report.stats,
-        profile=PlayerProfile(id=player.id, name=player.name, handedness=player.handedness),
+        profile=PlayerProfile(
+            id=player.id,
+            name=player.name,
+            handedness=player.handedness,
+            gender=player.gender,
+        ),
         played_for=[
             PlayedForFranchise(
                 id=franchise.id,
@@ -323,6 +350,7 @@ def build_player_report(player: Player, selection: SubjectMatchSelection) -> Pla
         matches=matches,
         filter_options=selection.filter_options,
         undated_matches_excluded=selection.undated_matches_excluded,
+        unclassified_matches_excluded=selection.unclassified_matches_excluded,
     )
 
 
@@ -338,4 +366,5 @@ def build_team_report(team: ReportTeam, selection: SubjectMatchSelection) -> Tea
         matches=[_match_row(source, TeamId(team.id)) for source in sources],
         filter_options=selection.filter_options,
         undated_matches_excluded=selection.undated_matches_excluded,
+        unclassified_matches_excluded=selection.unclassified_matches_excluded,
     )

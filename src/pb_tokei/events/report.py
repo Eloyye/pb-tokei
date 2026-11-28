@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from pb_tokei.rally_log import (
+    Discipline,
     Game,
     Match,
     MatchGames,
@@ -19,6 +20,7 @@ from pb_tokei.rally_log import (
     RallyStatus,
     TeamId,
     Zone,
+    team_discipline,
 )
 
 from .derived import (
@@ -173,12 +175,15 @@ class ReportPlayer(BaseModel):
 class ReportTeam(BaseModel):
     id: UUID
     players: tuple[ReportPlayer, ReportPlayer]
+    discipline: Discipline | None
 
     @staticmethod
     def from_players(team_id: TeamId, players: tuple[Player, Player]) -> ReportTeam:
         first, second = sorted(players, key=lambda player: (player.name, player.id))
         return ReportTeam(
-            id=team_id, players=(ReportPlayer.from_player(first), ReportPlayer.from_player(second))
+            id=team_id,
+            players=(ReportPlayer.from_player(first), ReportPlayer.from_player(second)),
+            discipline=team_discipline((first.gender, second.gender)),
         )
 
 
@@ -201,6 +206,7 @@ class _ReportHeader(BaseModel):
 
 class ReportHeader(_ReportHeader):
     tournament: str
+    discipline: Discipline | None
     teams: tuple[ReportTeam, ReportTeam]
     games: list[ReportGame]
 
@@ -723,6 +729,7 @@ def build_report(
     return MatchReport(
         header=ReportHeader(
             tournament=tournament,
+            discipline=roster.discipline,
             teams=(
                 ReportTeam.from_players(roster.team_a_id, roster.team_a_players),
                 ReportTeam.from_players(roster.team_b_id, roster.team_b_players),

@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime
 import os
 import tomllib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -22,13 +22,16 @@ from typing import Any
 from uuid import UUID
 
 from pb_tokei.rally_log import (
+    Discipline,
     Franchise,
     FranchiseId,
     FranchiseMatch,
     FranchiseMatchId,
+    Gender,
     Handedness,
     Match,
     MatchId,
+    MatchRoster,
     Player,
     PlayerId,
     RallyLog,
@@ -40,7 +43,9 @@ from pb_tokei.rally_log import (
     Tournament,
     TournamentId,
     check_match_date,
+    check_match_lineup,
     is_calendar_date,
+    lineup_conflict,
     new_id,
     parse_match_date,
 )
@@ -78,9 +83,16 @@ UNSET = Unset()
 class RosterPlayer:
     name: str
     handedness: Handedness
+    gender: Gender
 
 
-PlayerSlot = PlayerId | RosterPlayer
+@dataclass(frozen=True)
+class ExistingPlayerSlot:
+    id: PlayerId
+    gender: Gender | None = None
+
+
+PlayerSlot = PlayerId | ExistingPlayerSlot | RosterPlayer
 
 
 def _normalize_name(name: str) -> str:
@@ -147,6 +159,13 @@ class Roster:
             raise RosterError("each Player needs a name")
         if len(set(names)) != len(names):
             raise RosterError("a Player can't appear twice in a Match")
+        try:
+            check_match_lineup(
+                (team_a[0].gender, team_a[1].gender),
+                (team_b[0].gender, team_b[1].gender),
+            )
+        except ValueError as exc:
+            raise RosterError(str(exc)) from None
         object.__setattr__(self, "team_a", team_a)
         object.__setattr__(self, "team_b", team_b)
         object.__setattr__(self, "tournament", tournament)
@@ -228,11 +247,12 @@ def _team(data: dict[str, Any], key: str) -> tuple[RosterPlayer, RosterPlayer]:
         where = f"[[{key}.players]]"
         if not isinstance(player, dict):
             raise RosterError(f"{where} must be a table")
-        _only_keys(player, where, {"name", "handedness"})
+        _only_keys(player, where, {"name", "handedness", "gender"})
         result.append(
             RosterPlayer(
                 _text(player, "name", where),
                 _choice(player, "handedness", Handedness, where),
+                _choice(player, "gender", Gender, where),
             )
         )
     return result[0], result[1]
@@ -275,7 +295,9 @@ def _text(table: dict[str, Any], key: str, where: str) -> str:
     return value.strip()
 
 
-def _choice[E: (Tour, Handedness)](table: dict[str, Any], key: str, enum: type[E], where: str) -> E:
+def _choice[E: (Tour, Handedness, Gender)](
+    table: dict[str, Any], key: str, enum: type[E], where: str
+) -> E:
     value = _text(table, key, where)
     try:
         return enum(value)
@@ -328,18 +350,22 @@ tour = "ppa"         # ppa | app | mlp
 [[team_a.players]]
 name = ""
 handedness = "right" # left | right
+gender = "female"    # male | female
 
 [[team_a.players]]
 name = ""
 handedness = "right"
+gender = "female"
 
 [[team_b.players]]
 name = ""
 handedness = "right"
+gender = "female"
 
 [[team_b.players]]
 name = ""
 handedness = "right"
+gender = "female"
 
 # MLP only: Team A plays for franchise_a.
 # [franchise_match]
@@ -373,30 +399,45 @@ def set_up_match(log: RallyLog, roster: Roster, *, source_video_frames: int | No
     """
 
     def resolve_teams() -> tuple[
-        tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId], list[Player]
+        tuple[Player, Player],
+        tuple[Player, Player],
+        list[Player],
+        dict[PlayerId, Gender],
     ]:
         available_players: list[Player] | None = None
-        new_players: list[Player] = []
-        player_ids: dict[str, PlayerId] = {}
+        players_to_save: list[Player] = []
+        resolved_by_name: dict[str, Player] = {}
+        backfilled_genders: dict[PlayerId, Gender] = {}
         for entry in (*roster.team_a, *roster.team_b):
             player = log.find_player(entry.name)
             if player is None:
                 if available_players is None:
                     available_players = log.list_players()
                 _reject_normalized_name(available_players, entry.name, "Player")
-                player = Player(PlayerId(new_id()), entry.name, entry.handedness)
-                new_players.append(player)
+                player = Player(PlayerId(new_id()), entry.name, entry.handedness, entry.gender)
+                players_to_save.append(player)
                 available_players.append(player)
-            elif player.handedness is not entry.handedness:
-                raise RosterError(
-                    f"{entry.name} is stored as {player.handedness.value}-handed,"
-                    f" but the Roster says {entry.handedness.value}"
-                )
-            player_ids[entry.name] = player.id
+            else:
+                if player.handedness is not entry.handedness:
+                    raise RosterError(
+                        f"{entry.name} is stored as {player.handedness.value}-handed,"
+                        f" but the Roster says {entry.handedness.value}"
+                    )
+                if player.gender is None:
+                    player = replace(player, gender=entry.gender)
+                    players_to_save.append(player)
+                    backfilled_genders[player.id] = entry.gender
+                elif player.gender is not entry.gender:
+                    raise RosterError(
+                        f"{entry.name} is stored as {player.gender.value},"
+                        f" but the Roster says {entry.gender.value}"
+                    )
+            resolved_by_name[entry.name] = player
         return (
-            (player_ids[roster.team_a[0].name], player_ids[roster.team_a[1].name]),
-            (player_ids[roster.team_b[0].name], player_ids[roster.team_b[1].name]),
-            new_players,
+            (resolved_by_name[roster.team_a[0].name], resolved_by_name[roster.team_a[1].name]),
+            (resolved_by_name[roster.team_b[0].name], resolved_by_name[roster.team_b[1].name]),
+            players_to_save,
+            backfilled_genders,
         )
 
     with _setup_lock, log.transaction():
@@ -426,9 +467,11 @@ def create_match(
 ) -> Match:
     """PlayerId-based Match setup for the annotation API in one transaction.
 
-    Each existing Player is resolved strictly by PlayerId (never by name). Each new Player is
-    trimmed and rejected if empty or matching any existing Player's exact or normalized name.
-    All four Players must be distinct (by PlayerId and by normalized new-Player name).
+    Each existing Player is resolved strictly by PlayerId (never by name). Legacy Players missing
+    gender require an `ExistingPlayerSlot` carrying their gender to backfill atomically; once set,
+    disagreement fails with RosterError. Each new Player is trimmed and rejected if empty or
+    matching any existing Player's exact or normalized name. All four Players must be distinct and
+    form a valid doubles Discipline.
     """
     cleaned_tournament, cleaned_fm = _validate_match_metadata(
         date, tournament, tour, franchise_match
@@ -436,24 +479,42 @@ def create_match(
     resolved_match_id = match_id or MatchId(new_id())
 
     def resolve_teams() -> tuple[
-        tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId], list[Player]
+        tuple[Player, Player],
+        tuple[Player, Player],
+        list[Player],
+        dict[PlayerId, Gender],
     ]:
         stored_players: list[Player] | None = None
-        new_players: list[Player] = []
+        players_to_save: list[Player] = []
+        backfilled_genders: dict[PlayerId, Gender] = {}
         seen_ids: set[PlayerId] = set()
         seen_new_names: set[str] = set()
-        resolved: list[PlayerId] = []
+        resolved: list[Player] = []
         for slot in (*team_a, *team_b):
-            if isinstance(slot, UUID):
-                pid = PlayerId(slot)
+            if isinstance(slot, (UUID, ExistingPlayerSlot)):
+                pid = PlayerId(slot.id if isinstance(slot, ExistingPlayerSlot) else slot)
+                supplied_gender = slot.gender if isinstance(slot, ExistingPlayerSlot) else None
                 if pid in seen_ids:
                     raise RosterError("a Player can't appear twice in a Match")
                 try:
-                    log.get_player(pid)
+                    player = log.get_player(pid)
                 except KeyError:
                     raise RosterError(f"Player not found: {pid}") from None
+                if player.gender is None:
+                    if supplied_gender is None:
+                        raise RosterError(
+                            f"{player.name} is missing gender; supply gender to backfill"
+                        )
+                    player = replace(player, gender=supplied_gender)
+                    players_to_save.append(player)
+                    backfilled_genders[player.id] = supplied_gender
+                elif supplied_gender is not None and supplied_gender is not player.gender:
+                    raise RosterError(
+                        f"{player.name} is stored as {player.gender.value},"
+                        f" but the request says {supplied_gender.value}"
+                    )
                 seen_ids.add(pid)
-                resolved.append(pid)
+                resolved.append(player)
             else:
                 cleaned = slot.name.strip()
                 if not cleaned:
@@ -473,11 +534,16 @@ def create_match(
                     message=lambda existing: f"Player {existing!r} already exists",
                 )
                 seen_new_names.add(normalized)
-                player = Player(PlayerId(new_id()), cleaned, slot.handedness)
-                new_players.append(player)
+                player = Player(PlayerId(new_id()), cleaned, slot.handedness, slot.gender)
+                players_to_save.append(player)
                 seen_ids.add(player.id)
-                resolved.append(player.id)
-        return (resolved[0], resolved[1]), (resolved[2], resolved[3]), new_players
+                resolved.append(player)
+        return (
+            (resolved[0], resolved[1]),
+            (resolved[2], resolved[3]),
+            players_to_save,
+            backfilled_genders,
+        )
 
     with _setup_lock, log.transaction():
         return _finish_match_setup(
@@ -499,7 +565,13 @@ def _finish_match_setup(
     tournament_name: str,
     tour: Tour,
     resolve_teams: Callable[
-        [], tuple[tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId], list[Player]]
+        [],
+        tuple[
+            tuple[Player, Player],
+            tuple[Player, Player],
+            list[Player],
+            dict[PlayerId, Gender],
+        ],
     ],
     franchise_match: RosterFranchiseMatch | None,
     video: SourceVideo | None = None,
@@ -519,15 +591,24 @@ def _finish_match_setup(
         tournament = Tournament(TournamentId(new_id()), tournament_name, tour)
         new.append(partial(log.save_tournament, tournament))
 
-    team_a_players, team_b_players, new_players = resolve_teams()
-    for player in new_players:
+    team_a_players, team_b_players, players_to_save, backfilled_genders = resolve_teams()
+    try:
+        check_match_lineup(
+            (team_a_players[0].gender, team_a_players[1].gender),
+            (team_b_players[0].gender, team_b_players[1].gender),
+        )
+    except ValueError as exc:
+        raise RosterError(str(exc)) from None
+    if backfilled_genders:
+        _check_existing_matches_for_gender_updates(log, backfilled_genders)
+    for player in players_to_save:
         new.append(partial(log.save_player, player))
 
     teams = []
-    for a_id, b_id in (team_a_players, team_b_players):
-        team = log.find_team(a_id, b_id)
+    for a_player, b_player in (team_a_players, team_b_players):
+        team = log.find_team(a_player.id, b_player.id)
         if team is None:
-            team = Team(TeamId(new_id()), (a_id, b_id))
+            team = Team(TeamId(new_id()), (a_player.id, b_player.id))
             new.append(partial(log.save_team, team))
         teams.append(team)
     team_a, team_b = teams
@@ -587,6 +668,59 @@ def _reject_normalized_name(
                 else f"{kind} {name!r} matches an existing name (did you mean {record.name!r}?)"
             )
             raise RosterError(detail)
+
+
+def _check_roster_lineups(
+    log: RallyLog,
+    proposed: Sequence[tuple[MatchRoster, Mapping[PlayerId, Gender | None]]],
+) -> None:
+    """Rejects any proposed change that leaves a fully-gendered Match with an invalid Discipline."""
+    conflicts: list[tuple[MatchRoster, Discipline, Discipline]] = []
+    for roster, overrides in proposed:
+        conflict = lineup_conflict(*roster.team_genders(overrides))
+        if conflict is not None:
+            conflicts.append((roster, *conflict))
+    if not conflicts:
+        return
+    metadata = log.load_match_metadata([roster.match_id for roster, _, _ in conflicts])
+    tournaments = {t.id: t.name for t in log.list_tournaments()}
+    details = []
+    for roster, disc_a, disc_b in conflicts:
+        meta = metadata[roster.match_id]
+        tournament_name = tournaments[meta.tournament_id]
+        date_part = f" ({meta.date.isoformat()})" if meta.date is not None else ""
+        team_a_names = " / ".join(p.name for p in roster.team_a_players)
+        team_b_names = " / ".join(p.name for p in roster.team_b_players)
+        details.append(
+            f"{tournament_name}{date_part}: {team_a_names} vs {team_b_names} "
+            f"({disc_a.label} vs {disc_b.label})"
+        )
+    noun = "Match" if len(details) == 1 else "Matches"
+    raise RosterError(
+        f"Would create an invalid Discipline in {len(details)} existing {noun}: "
+        + "; ".join(details)
+    )
+
+
+def _check_existing_matches_for_gender_updates(
+    log: RallyLog, gender_updates: Mapping[PlayerId, Gender]
+) -> None:
+    rosters_by_id: dict[MatchId, MatchRoster] = {}
+    for player_id in gender_updates:
+        for roster in log.list_match_rosters(player_id=player_id):
+            rosters_by_id.setdefault(roster.match_id, roster)
+    if not rosters_by_id:
+        return
+    _check_roster_lineups(log, [(roster, gender_updates) for roster in rosters_by_id.values()])
+
+
+def _check_single_match_replacement(
+    roster: MatchRoster, from_player_id: PlayerId, replacement_gender: Gender | None
+) -> None:
+    try:
+        check_match_lineup(*roster.team_genders({from_player_id: replacement_gender}))
+    except ValueError as exc:
+        raise RosterError(str(exc)) from None
 
 
 def _franchise_match_for(
@@ -820,6 +954,8 @@ def replace_match_player(
         if from_player_id not in roster.player_ids:
             raise RosterError(f"Player {from_player_id} is not in Match {match_id}")
 
+        is_new_player = False
+        needs_backfill = False
         if isinstance(to_player, UUID):
             try:
                 target = log.get_player(PlayerId(to_player))
@@ -836,16 +972,32 @@ def replace_match_player(
                         f"{name} is stored as {existing.handedness.value}-handed,"
                         f" but the request says {to_player.handedness.value}"
                     )
-                target = existing
+                if existing.gender is None:
+                    target = replace(existing, gender=to_player.gender)
+                    needs_backfill = True
+                elif existing.gender is not to_player.gender:
+                    raise RosterError(
+                        f"{name} is stored as {existing.gender.value},"
+                        f" but the request says {to_player.gender.value}"
+                    )
+                else:
+                    target = existing
             else:
                 _reject_normalized_name(log.list_players(), name, "Player")
-                target = Player(PlayerId(new_id()), name, to_player.handedness)
-                log.save_player(target)
+                target = Player(PlayerId(new_id()), name, to_player.handedness, to_player.gender)
+                is_new_player = True
 
         if target.id in roster.player_ids:
             if target.id == from_player_id:
                 raise RosterError("Player is already in this Match")
             raise RosterError("a Player can't appear twice in a Match")
+
+        _check_single_match_replacement(roster, from_player_id, target.gender)
+        if needs_backfill and target.gender is not None:
+            _check_existing_matches_for_gender_updates(log, {target.id: target.gender})
+
+        if is_new_player or needs_backfill:
+            log.save_player(target)
 
         old_team_id = log.rewrite_match_player(match_id, from_player_id, target.id)
         log.delete_orphans(team_ids=[old_team_id], player_ids=[from_player_id])
@@ -863,9 +1015,10 @@ def edit_player(
     *,
     name: str | Unset = UNSET,
     handedness: Handedness | Unset = UNSET,
+    gender: Gender | None | Unset = UNSET,
     dry_run: bool = False,
 ) -> tuple[Player, int]:
-    """Renames a Player or fixes handedness across all Matches; returns `(player, affected)`."""
+    """Renames a Player or fixes handedness/gender across all Matches; returns `(player, count)`."""
     with _setup_lock, log.transaction():
         try:
             player = log.get_player(player_id)
@@ -876,6 +1029,12 @@ def edit_player(
         if not new_name:
             raise RosterError("each Player needs a name")
         new_handedness = player.handedness if isinstance(handedness, Unset) else handedness
+        if isinstance(gender, Unset):
+            new_gender = player.gender
+        else:
+            if gender is None:
+                raise RosterError("Player gender cannot be cleared")
+            new_gender = gender
 
         if new_name != player.name:
             others = [p for p in log.list_players() if p.id != player.id]
@@ -888,8 +1047,11 @@ def edit_player(
                 )
             _reject_normalized_name(others, new_name, "Player")
 
+        if new_gender is not None and new_gender is not player.gender:
+            _check_existing_matches_for_gender_updates(log, {player.id: new_gender})
+
         affected = log.count_matches_for_player(player.id)
-        updated = Player(player.id, new_name, new_handedness)
+        updated = Player(player.id, new_name, new_handedness, new_gender)
         if not dry_run:
             log.save_player(updated)
         return updated, affected
@@ -903,7 +1065,10 @@ def merge_player(
     dry_run: bool = False,
 ) -> tuple[Player, int]:
     """Replaces `source_id` with `target_id` in every Match `source_id` plays in, then deletes
-    `source_id` (and any orphaned Teams). Refused if both play in the same Match."""
+    `source_id` (and any orphaned Teams). When `target` has no gender yet and `source` has one,
+    carries `source`'s gender over to `target` so derived Match Disciplines are preserved.
+    Refused if both play in the same Match or if merging would leave any fully-gendered Match
+    with an invalid Discipline."""
     with _setup_lock, log.transaction():
         try:
             source = log.get_player(source_id)
@@ -922,15 +1087,28 @@ def merge_player(
                 raise RosterError(
                     f"Cannot merge {source.name} into {target.name}: both play in the same Match"
                 )
+        carry_gender = target.gender is None and source.gender is not None
+        effective_target = replace(target, gender=source.gender) if carry_gender else target
+        proposed: list[tuple[MatchRoster, Mapping[PlayerId, Gender | None]]] = [
+            (roster, {source.id: effective_target.gender}) for roster in rosters
+        ]
+        if carry_gender:
+            proposed.extend(
+                (roster, {target.id: effective_target.gender})
+                for roster in log.list_match_rosters(player_id=target.id)
+            )
+        _check_roster_lineups(log, proposed)
         affected = len(rosters)
         if dry_run:
-            return target, affected
+            return effective_target, affected
 
+        if carry_gender:
+            log.save_player(effective_target)
         old_teams = [
             log.rewrite_match_player(roster.match_id, source.id, target.id) for roster in rosters
         ]
         log.delete_orphans(team_ids=old_teams, player_ids=[source.id])
-        return target, affected
+        return effective_target, affected
 
 
 def edit_tournament(

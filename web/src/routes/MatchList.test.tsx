@@ -29,6 +29,7 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
     tournament: "PPA Atlanta Open 2026",
     team_a: ["Anna Bright", "Ben Johns"],
     team_b: ["Cara Lee", "Dan Kim"],
+    discipline: "mixed_doubles",
     franchise_a: null,
     franchise_b: null,
     annotation_mode: "gold",
@@ -65,10 +66,38 @@ function makeMatchDetail(match: Match): MatchDetail {
     team_a_id: "team-a",
     team_b_id: "team-b",
     players: [
-      { id: "a1", name: match.team_a[0]!, handedness: "right", team_id: "team-a", team: "a" },
-      { id: "a2", name: match.team_a[1]!, handedness: "right", team_id: "team-a", team: "a" },
-      { id: "b1", name: match.team_b[0]!, handedness: "left", team_id: "team-b", team: "b" },
-      { id: "b2", name: match.team_b[1]!, handedness: "right", team_id: "team-b", team: "b" },
+      {
+        id: "a1",
+        name: match.team_a[0]!,
+        handedness: "right",
+        gender: "female",
+        team_id: "team-a",
+        team: "a",
+      },
+      {
+        id: "a2",
+        name: match.team_a[1]!,
+        handedness: "right",
+        gender: "male",
+        team_id: "team-a",
+        team: "a",
+      },
+      {
+        id: "b1",
+        name: match.team_b[0]!,
+        handedness: "left",
+        gender: "female",
+        team_id: "team-b",
+        team: "b",
+      },
+      {
+        id: "b2",
+        name: match.team_b[1]!,
+        handedness: "right",
+        gender: "male",
+        team_id: "team-b",
+        team: "b",
+      },
     ],
   };
 }
@@ -206,7 +235,7 @@ it("shows Mode, Active and Ratio in Match order with the Assisted budget", async
   renderList();
 
   expect((await screen.findByText("Mode")).parentElement?.textContent).toBe(
-    "DateTournamentMatchFranchise MatchVideoModeProgressActiveRatio",
+    "DateTournamentDisciplineMatchFranchise MatchVideoModeProgressActiveRatio",
   );
   expect(screen.getByText("Gold").classList.contains("pill-none")).toBe(true);
   expect(
@@ -337,4 +366,22 @@ describe("MatchList editable date", () => {
     });
     expect(saved.textContent).toBe("2026-04-18");
   });
+});
+
+it("displays derived Match Discipline or em dash for legacy unclassified Matches", async () => {
+  vi.mocked(listMatches).mockResolvedValue([
+    makeMatch("m1", { discipline: "mens_doubles" }),
+    makeMatch("m2", { discipline: "womens_doubles" }),
+    makeMatch("m3", { discipline: "mixed_doubles" }),
+    makeMatch("m4", { discipline: null }),
+  ]);
+  renderList();
+
+  expect(await screen.findByText("Men's Doubles")).toBeTruthy();
+  expect(screen.getByText("Women's Doubles")).toBeTruthy();
+  expect(screen.getByText("Mixed Doubles")).toBeTruthy();
+  const disciplines = Array.from(document.querySelectorAll(".discipline")).map(
+    (el) => el.textContent,
+  );
+  expect(disciplines).toEqual(["Men's Doubles", "Women's Doubles", "Mixed Doubles", "—"]);
 });

@@ -1,4 +1,5 @@
-import type { Handedness } from "../api/client";
+import type { Gender, Handedness } from "../api/client";
+import { isGenderEligible } from "./discipline";
 import { fuzzyNearMatchScore, normalizeFuzzy, normalizeName } from "./nameMatching";
 
 export { fuzzyNearMatchScore, normalizeFuzzy, normalizeName } from "./nameMatching";
@@ -7,12 +8,14 @@ export interface RosterPlayerOption {
   id: string;
   name: string;
   handedness: Handedness;
+  gender: Gender | null;
 }
 
 export interface StagedNewPlayer {
   name: string;
   normalizedName: string;
   handedness: Handedness | "";
+  gender: Gender | "";
   slotLabel: string;
 }
 
@@ -29,6 +32,7 @@ export type DropdownOption =
       player: RosterPlayerOption;
       disabled: boolean;
       disabledReason?: string;
+      ineligible?: boolean;
     }
   | {
       kind: "staged-new";
@@ -81,12 +85,13 @@ export function buildPlayerDropdown(
   query: string,
   players: readonly RosterPlayerOption[],
   otherSlots: OtherSlotUsage,
+  requiredGender: Gender | null = null,
 ): SearchDropdownResult {
   const trimmed = query.trim();
   const queryNorm = normalizeName(query);
   const queryFuzzy = normalizeFuzzy(query);
 
-  const ranked: { tier: number; option: DropdownOption }[] = [];
+  const ranked: { tier: number; ineligibleRank: number; option: DropdownOption }[] = [];
   let hasExactOrNormalizedCollision = false;
 
   for (const player of players) {
@@ -97,13 +102,16 @@ export function buildPlayerDropdown(
     const tier = dropdownMatchTier(queryNorm, queryFuzzy, targetNorm, normalizeFuzzy(player.name));
     if (tier === null) continue;
     const disabledReason = otherSlots.existingIds.get(player.id);
+    const ineligible = !isGenderEligible(player.gender, requiredGender);
     ranked.push({
       tier,
+      ineligibleRank: ineligible ? 1 : 0,
       option: {
         kind: "existing",
         player,
-        disabled: disabledReason !== undefined,
+        disabled: disabledReason !== undefined || ineligible,
         disabledReason,
+        ineligible: ineligible || undefined,
       },
     });
   }
@@ -122,6 +130,7 @@ export function buildPlayerDropdown(
     if (tier === null) continue;
     ranked.push({
       tier,
+      ineligibleRank: 0,
       option: {
         kind: "staged-new",
         staged,
@@ -131,7 +140,7 @@ export function buildPlayerDropdown(
     });
   }
 
-  ranked.sort((a, b) => a.tier - b.tier);
+  ranked.sort((a, b) => a.ineligibleRank - b.ineligibleRank || a.tier - b.tier);
   const playerOptions = ranked.slice(0, MAX_DROPDOWN_PLAYERS).map(({ option }) => option);
   const canCreate = trimmed.length > 0 && !hasExactOrNormalizedCollision;
   const options: DropdownOption[] = canCreate

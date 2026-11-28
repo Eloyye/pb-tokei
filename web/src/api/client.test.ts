@@ -47,7 +47,11 @@ it("sends Match filters as report query parameters, repeating Tournament IDs", a
     date_to: "2026-06-04",
     opponent: "opponent",
   };
-  await client.getPlayerReport("player", { ...filters, partner: "partner" });
+  await client.getPlayerReport("player", {
+    ...filters,
+    partner: "partner",
+    discipline: "mixed_doubles",
+  });
   await client.getTeamReport("team", filters);
 
   const [player, team] = requests.map((request) => new URL(request.url));
@@ -60,8 +64,10 @@ it("sends Match filters as report query parameters, repeating Tournament IDs", a
   }
   expect(player!.pathname).toBe("/api/players/player");
   expect(player!.searchParams.get("partner")).toBe("partner");
+  expect(player!.searchParams.get("discipline")).toBe("mixed_doubles");
   expect(team!.pathname).toBe("/api/teams/team");
   expect(team!.searchParams.has("partner")).toBe(false);
+  expect(team!.searchParams.has("discipline")).toBe(false);
 });
 
 describe("the tab's Rally Log", () => {
@@ -131,8 +137,8 @@ describe("the tab's Rally Log", () => {
         date: "2026-04-12",
         tournament: "Atlanta Open",
         tour: "ppa",
-        team_a: ["p-existing-1", { name: "A2", handedness: "right" }],
-        team_b: [{ name: "B1", handedness: "left" }, "p-existing-2"],
+        team_a: ["p-existing-1", { name: "A2", handedness: "right", gender: "male" }],
+        team_b: [{ name: "B1", handedness: "left", gender: "female" }, "p-existing-2"],
       },
       ONE,
     );

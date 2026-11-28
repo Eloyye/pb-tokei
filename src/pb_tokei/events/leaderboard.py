@@ -87,6 +87,7 @@ class Leaderboard(BaseModel):
     match_count: int
     filter_options: MatchFilterOptions
     undated_matches_excluded: int
+    unclassified_matches_excluded: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,22 +95,25 @@ class LeaderboardMatches:
     matches: list[tuple[MatchGames, MatchRoster]]
     filter_options: MatchFilterOptions
     undated_matches_excluded: int
+    unclassified_matches_excluded: int
 
 
 def load_leaderboard_matches(log: RallyLog, filters: MatchFilters) -> LeaderboardMatches:
     with log.transaction():
         rosters = log.list_match_rosters()
         metadata = log.load_match_metadata([roster.match_id for roster in rosters])
+        disciplines = {roster.match_id: roster.discipline for roster in rosters}
         tournament_ids = {match.tournament_id for match in metadata.values()}
         tournaments = {t.id: t for t in log.list_tournaments() if t.id in tournament_ids}
-        selected, undated = filters.select_matches(metadata.values(), tournaments)
-        matches = log.load_match_games_from_metadata(selected)
+        selection = filters.select_matches(metadata.values(), tournaments, disciplines)
+        matches = log.load_match_games_from_metadata(selection.matches)
     return LeaderboardMatches(
         matches=[(matches[r.match_id], r) for r in rosters if r.match_id in matches],
         filter_options=MatchFilterOptions(
             tournaments=[FilterTournament.from_tournament(t) for t in tournaments.values()]
         ),
-        undated_matches_excluded=undated,
+        undated_matches_excluded=selection.undated_excluded,
+        unclassified_matches_excluded=selection.unclassified_excluded,
     )
 
 
@@ -157,4 +161,5 @@ def build_leaderboard(snapshot: LeaderboardMatches, query: LeaderboardQuery) -> 
         match_count=len(snapshot.matches),
         filter_options=snapshot.filter_options,
         undated_matches_excluded=snapshot.undated_matches_excluded,
+        unclassified_matches_excluded=snapshot.unclassified_matches_excluded,
     )

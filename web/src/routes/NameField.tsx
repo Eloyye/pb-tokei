@@ -28,6 +28,8 @@ export function NameField<T extends { name: string }>({
   onChange,
   onPick,
   choiceLabel = (choice) => choice.name,
+  isChoiceDisabled,
+  disabledChoiceLabel,
 }: {
   label: string;
   name: string;
@@ -35,6 +37,8 @@ export function NameField<T extends { name: string }>({
   onChange: (name: string) => void;
   onPick: (choice: T) => void;
   choiceLabel?: (choice: T) => string;
+  isChoiceDisabled?: (choice: T) => boolean;
+  disabledChoiceLabel?: (choice: T) => string;
 }) {
   const id = useId();
   const listId = `${id}-options`;
@@ -49,29 +53,48 @@ export function NameField<T extends { name: string }>({
         choice,
         normalized: normalizeName(choice.name),
         fuzzy: normalizeFuzzy(choice.name),
+        disabled: isChoiceDisabled ? isChoiceDisabled(choice) : false,
       })),
-    [choices],
+    [choices, isChoiceDisabled],
   );
-  const options = indexed
-    .filter(
-      ({ normalized, fuzzy }) =>
-        normalized.includes(search) || (fuzzySearch !== "" && fuzzy.includes(fuzzySearch)),
-    )
-    .slice(0, 6)
-    .map(({ choice }) => choice);
+  const matched = indexed.filter(
+    ({ normalized, fuzzy }) =>
+      normalized.includes(search) || (fuzzySearch !== "" && fuzzy.includes(fuzzySearch)),
+  );
+  const eligible = matched.filter(({ disabled }) => !disabled);
+  const ineligible = matched.filter(({ disabled }) => disabled);
+  const options =
+    search || eligible.length < 6
+      ? [...eligible.slice(0, 6), ...ineligible].slice(0, 8)
+      : eligible.slice(0, 6);
   const visible = open && options.length > 0;
+  const eligibleIndexed = useMemo(() => indexed.filter(({ disabled }) => !disabled), [indexed]);
   const suggestion = useMemo(
     () =>
       choices.some((choice) => choice.name === name.trim())
         ? undefined
-        : suggestName(fuzzySearch, indexed),
-    [choices, name, fuzzySearch, indexed],
+        : suggestName(fuzzySearch, eligibleIndexed),
+    [choices, name, fuzzySearch, eligibleIndexed],
   );
 
   function pick(choice: T) {
+    if (isChoiceDisabled?.(choice)) return;
     onPick(choice);
     setOpen(false);
     setActive(-1);
+  }
+
+  function nextEnabledIndex(direction: 1 | -1): number {
+    for (let step = 1; step <= options.length; step++) {
+      const candidate =
+        active < 0
+          ? direction === 1
+            ? (step - 1) % options.length
+            : (options.length - step) % options.length
+          : (active + direction * step + options.length) % options.length;
+      if (!options[candidate]?.disabled) return candidate;
+    }
+    return -1;
   }
 
   function handleKey(event: KeyboardEvent<HTMLInputElement>) {
@@ -84,18 +107,12 @@ export function NameField<T extends { name: string }>({
     if ((event.key === "ArrowDown" || event.key === "ArrowUp") && options.length > 0) {
       event.preventDefault();
       setOpen(true);
-      setActive(
-        event.key === "ArrowDown"
-          ? (active + 1) % options.length
-          : active <= 0
-            ? options.length - 1
-            : active - 1,
-      );
+      setActive(nextEnabledIndex(event.key === "ArrowDown" ? 1 : -1));
     }
     const selected = options[active];
-    if (event.key === "Enter" && visible && selected) {
+    if (event.key === "Enter" && visible && selected && !selected.disabled) {
       event.preventDefault();
-      pick(selected);
+      pick(selected.choice);
     }
   }
 
@@ -138,18 +155,23 @@ export function NameField<T extends { name: string }>({
         )}
         {visible && (
           <div className="name-options" id={listId} role="listbox" aria-label={label}>
-            {options.map((choice, index) => (
+            {options.map(({ choice, disabled }, index) => (
               <button
                 type="button"
                 key={index}
                 id={`${listId}-${index}`}
                 role="option"
+                className={disabled ? "name-option-disabled" : undefined}
                 tabIndex={-1}
-                aria-selected={index === active}
+                disabled={disabled}
+                aria-disabled={disabled || undefined}
+                aria-selected={!disabled && index === active}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => pick(choice)}
               >
-                {choiceLabel(choice)}
+                {disabled && disabledChoiceLabel
+                  ? disabledChoiceLabel(choice)
+                  : choiceLabel(choice)}
               </button>
             ))}
           </div>
