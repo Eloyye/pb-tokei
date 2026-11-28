@@ -121,6 +121,7 @@
 }
 
 .report-empty {
+  display: block;
   padding: 16px 0;
   color: var(--dim);
 }
@@ -345,6 +346,93 @@
 .subject-connections li ul,
 .subject-connections li span {
   color: var(--dim);
+}
+
+.match-filter-panel {
+  min-width: 0;
+  margin: 18px 0 0;
+  padding: 10px 14px 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.match-filter-panel legend {
+  padding: 0 4px;
+  font-weight: 650;
+}
+
+.match-filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.match-filter-tournaments {
+  flex: 1.6 1 228px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.match-filter-tournaments legend {
+  padding: 0;
+}
+
+.match-filter-choices {
+  display: grid;
+  gap: 4px;
+  max-height: 96px;
+  overflow: auto;
+  padding: 5px 8px;
+  overflow-wrap: anywhere;
+}
+
+.match-filter-choices label {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.match-filter-choices input {
+  accent-color: var(--accent);
+}
+
+.match-filter-field {
+  display: grid;
+  flex: 1 1 140px;
+  min-width: 0;
+  gap: 4px;
+  font-weight: 650;
+}
+
+.match-filter-field select,
+.match-filter-field input,
+.match-filter-choices {
+  min-width: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--app);
+  color: var(--text);
+}
+
+.match-filter-field select,
+.match-filter-field input {
+  width: 100%;
+  padding: 5px 7px;
+  font: 400 1em var(--ui);
+}
+
+.match-filter-error {
+  margin: 8px 0 0;
+  color: var(--fail);
+}
+
+.match-filter-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .subject-matches {

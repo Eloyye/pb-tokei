@@ -1,11 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryKey, type UseQueryOptions } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, isRetryable } from "../api/client";
 import { waitUntilSaved } from "../lib/unsavedChanges";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
 
-export function useReportQuery<T>(key: string[], read: (signal: AbortSignal) => Promise<T>) {
-  return useQuery({
+export function useReportQuery<T>(
+  key: QueryKey,
+  read: (signal: AbortSignal) => Promise<T>,
+  placeholderData?: UseQueryOptions<T>["placeholderData"],
+) {
+  return useQuery<T>({
     queryKey: key,
     queryFn: async ({ signal }) => {
       // Annotate can still be flushing its last edit when a report opens.
@@ -14,6 +18,7 @@ export function useReportQuery<T>(key: string[], read: (signal: AbortSignal) => 
       return read(signal);
     },
     gcTime: 0,
+    placeholderData,
     refetchOnMount: "always",
     retry: (failures, error) => failures < 3 && isRetryable(error),
   });
@@ -23,10 +28,12 @@ export function ReportLoadError({
   error,
   retry,
   index,
+  clearFilters,
 }: {
   error: Error;
   retry: () => void;
   index?: "/players" | "/teams";
+  clearFilters?: () => void;
 }) {
   const openPicker = useOpenRallyLogPicker();
   const status = error instanceof ApiError ? error.status : undefined;
@@ -42,6 +49,14 @@ export function ReportLoadError({
         <button type="button" className="button" onClick={conflict ? openPicker : retry}>
           {conflict ? "Choose a Rally Log" : "Retry"}
         </button>
+      )}
+      {clearFilters && !conflict && status !== 404 && (
+        <>
+          {" "}
+          <button type="button" className="button" onClick={clearFilters}>
+            Clear filters
+          </button>
+        </>
       )}
     </p>
   );

@@ -59,6 +59,7 @@ from pb_tokei.annotate.players import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.events.match_filters import PlayerMatchFilters, TeamMatchFilters
 from pb_tokei.events.report import MatchReport, build_report
 from pb_tokei.events.stats import compute_stats
 from pb_tokei.events.subject_report import (
@@ -831,8 +832,13 @@ def create_app(
     @app.get(
         "/api/players/{player_id}", operation_id="getPlayer", response_model_exclude_unset=True
     )
-    def get_player(player_id: UUID, response: Response, rally_log: OpenLog) -> PlayerReport:
-        snapshot = rally_log.run(lambda log: load_player_matches(log, PlayerId(player_id)))
+    def get_player(
+        player_id: UUID,
+        response: Response,
+        rally_log: OpenLog,
+        filters: Annotated[PlayerMatchFilters, Query()],
+    ) -> PlayerReport:
+        snapshot = rally_log.run(lambda log: load_player_matches(log, PlayerId(player_id), filters))
         if snapshot is None:
             raise HTTPException(status_code=404, detail=f"Player not found: {player_id}")
         response.headers["Cache-Control"] = "no-store"
@@ -844,8 +850,13 @@ def create_app(
         return rally_log.run(list_teams)
 
     @app.get("/api/teams/{team_id}", operation_id="getTeam", response_model_exclude_unset=True)
-    def get_team(team_id: UUID, response: Response, rally_log: OpenLog) -> TeamReport:
-        snapshot = rally_log.run(lambda log: load_team_matches(log, TeamId(team_id)))
+    def get_team(
+        team_id: UUID,
+        response: Response,
+        rally_log: OpenLog,
+        filters: Annotated[TeamMatchFilters, Query()],
+    ) -> TeamReport:
+        snapshot = rally_log.run(lambda log: load_team_matches(log, TeamId(team_id), filters))
         if snapshot is None:
             raise HTTPException(status_code=404, detail=f"Team not found: {team_id}")
         response.headers["Cache-Control"] = "no-store"

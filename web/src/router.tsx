@@ -6,6 +6,7 @@ import {
   redirect,
 } from "@tanstack/react-router";
 import { isWorkspace } from "./lib/workspaces";
+import { playerReportSearch, teamReportSearch } from "./routes/matchFilters";
 import { MatchList } from "./routes/MatchList";
 import { MatchPage } from "./routes/MatchPage";
 import { NewMatchPage } from "./routes/NewMatchPage";
@@ -34,7 +35,7 @@ const playersRoute = createRoute({
 const playerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/players/$playerId",
-  validateSearch: reportSearch,
+  validateSearch: playerReportSearch,
   component: PlayerReportPage,
 });
 
@@ -47,7 +48,7 @@ const teamsRoute = createRoute({
 const teamRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/teams/$teamId",
-  validateSearch: reportSearch,
+  validateSearch: teamReportSearch,
   component: TeamReportPage,
 });
 

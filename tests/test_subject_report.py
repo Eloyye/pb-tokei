@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from pb_tokei.rally_log import (
     Rally,
     RallyLog,
     RallyStatus,
+    Tour,
     TournamentId,
     new_id,
 )
@@ -156,6 +158,155 @@ def test_player_history_and_stats_pool_matches_across_teams(
         assert refreshed["matches"][0]["rallies"]["counted"] == 0
 
 
+def test_player_filters_select_whole_matches_and_pool_only_their_stats(
+    demo_db: tuple[Path, tuple[MatchId, ...]],
+) -> None:
+    db, (first, mlp, undated, empty) = demo_db
+    app_match_id = MatchId(new_id())
+    with RallyLog.open(db) as log, log.transaction():
+        original = log.load_match(first)
+        ppa = log.get_tournament(original.tournament_id)
+        app = replace(ppa, id=TournamentId(new_id()), tour=Tour.APP)
+        log.save_tournament(app)
+        log.save_match(
+            replace(original, id=app_match_id, tournament_id=app.id, date=date(2026, 5, 5))
+        )
+        mlp_tournament = log.load_match(mlp).tournament_id
+
+    with TestClient(create_app(db), base_url=LOCAL) as client:
+        players = {player["name"]: player["id"] for player in client.get("/api/players").json()}
+        alex = players["Alex One"]
+        endpoint = f"/api/players/{alex}"
+        all_matches = client.get(endpoint).json()
+        options = all_matches["filter_options"]
+        assert {item["id"]: item["tour"] for item in options["tournaments"]} == {
+            str(ppa.id): "ppa",
+            str(app.id): "app",
+            str(mlp_tournament): "mlp",
+        }
+        assert [p["name"] for p in options["partners"]] == ["Avery Two", "Casey Three"]
+        assert [p["name"] for p in options["opponents"]] == [
+            "Blake One",
+            "Brook Two",
+            "Devon Five",
+            "Drew Four",
+        ]
+        both_tournaments = [str(ppa.id), str(mlp_tournament)]
+        cases = [
+            ({"tournament": [str(ppa.id)]}, [empty, first, undated], 12, 0),
+            ({"tournament": both_tournaments}, [mlp, empty, first, undated], 16, 0),
+            ({"tour": "mlp"}, [mlp], 4, 0),
+            ({"tour": "app"}, [app_match_id], 10, 0),
+            ({"date_from": str(DEMO_MLP_DATE)}, [mlp], 4, 1),
+            ({"date_to": str(DEMO_DATE)}, [first], 10, 1),
+            ({"partner": players["Casey Three"]}, [mlp, undated], 6, 0),
+            ({"partner": players["Blake One"]}, [], 0, 0),
+            ({"opponent": players["Casey Three"]}, [], 0, 0),
+            ({"opponent": players["Brook Two"]}, [mlp, app_match_id, first, undated], 26, 0),
+            ({"opponent": players["Drew Four"]}, [empty], 0, 0),
+        ]
+        combined = {
+            "tournament": both_tournaments,
+            "tour": "ppa",
+            "date_from": str(DEMO_DATE),
+            "date_to": str(DEMO_DATE),
+            "partner": players["Avery Two"],
+            "opponent": players["Blake One"],
+        }
+        cases += [
+            (combined, [first], 10, 0),
+            ({**combined, "partner": players["Casey Three"]}, [], 0, 1),
+        ]
+        for query, match_ids, counted, excluded in cases:
+            response = client.get(endpoint, params=query)
+            assert response.status_code == 200, response.text
+            report = response.json()
+            assert [m["id"] for m in report["matches"]] == list(map(str, match_ids)), query
+            assert report["header"]["match_count"] == len(match_ids), query
+            assert report["header"]["rallies"]["counted"] == counted, query
+            assert report["undated_matches_excluded"] == excluded, query
+            assert report["filter_options"] == options
+            assert bool(report["stats"]) == bool(counted), query
+
+        filtered = client.get(endpoint, params=combined).json()
+        for report, expected_serves in ((all_matches, 14), (filtered, 6)):
+            serve_in = next(s for s in report["stats"] if s["id"] == "serve_in")
+            assert (
+                serve_in["values"][alex]["count"]
+                == serve_in["values"][alex]["of"]
+                == expected_serves
+            )
+
+
+def test_team_filters_use_the_opposing_team_and_exclude_undated_matches(
+    demo_db: tuple[Path, tuple[MatchId, ...]],
+) -> None:
+    db, (_, mlp, undated, _) = demo_db
+    with RallyLog.open(db) as log:
+        mlp_match = log.load_match(mlp)
+
+    with TestClient(create_app(db), base_url=LOCAL) as client:
+        endpoint = f"/api/teams/{mlp_match.team_b_id}"
+        players = {player["name"]: player["id"] for player in client.get("/api/players").json()}
+        unfiltered = client.get(endpoint).json()
+        assert [m["id"] for m in unfiltered["matches"]] == list(map(str, (mlp, undated)))
+        options = unfiltered["filter_options"]
+        assert options["partners"] == []
+        assert [p["name"] for p in options["opponents"]] == ["Blake One", "Brook Two"]
+
+        dated = client.get(endpoint, params={"date_to": str(DEMO_MLP_DATE)}).json()
+        assert [m["id"] for m in dated["matches"]] == [str(mlp)]
+        assert dated["undated_matches_excluded"] == 1
+
+        response = client.get(
+            endpoint,
+            params={
+                "tournament": [item["id"] for item in options["tournaments"]],
+                "tour": "mlp",
+                "date_from": str(DEMO_MLP_DATE),
+                "date_to": str(DEMO_MLP_DATE),
+                "opponent": players["Brook Two"],
+            },
+        )
+        assert response.status_code == 200
+        report = response.json()
+        assert [m["id"] for m in report["matches"]] == [str(mlp)]
+        assert report["header"]["match_count"] == 1
+        assert report["header"]["rallies"]["counted"] == 4
+        assert report["undated_matches_excluded"] == 0
+        assert any(stat["applies_to"] == "team" for stat in report["stats"])
+        same_team = client.get(endpoint, params={"opponent": players["Casey Three"]}).json()
+        assert same_team["matches"] == same_team["stats"] == []
+
+
+def test_details_validate_filter_query_parameters(
+    demo_db: tuple[Path, tuple[MatchId, ...]],
+) -> None:
+    db, _ = demo_db
+    with TestClient(create_app(db), base_url=LOCAL) as client:
+        for collection in ("players", "teams"):
+            subject = client.get(f"/api/{collection}").json()[0]
+            endpoint = f"/api/{collection}/{subject['id']}"
+            queries = [
+                ("tournament", "no-id"),
+                ("tour", "other"),
+                ("date_to", "2026-02-30"),
+                ("opponent", "no-id"),
+            ]
+            if collection == "players":
+                queries.append(("partner", "no-id"))
+            for key, value in queries:
+                response = client.get(endpoint, params={key: value})
+                assert response.status_code == 422
+                assert response.json()["detail"][0]["loc"][:2] == ["query", key]
+            reversed_range = client.get(
+                endpoint, params={"date_from": str(DEMO_MLP_DATE), "date_to": str(DEMO_DATE)}
+            )
+            assert reversed_range.status_code == 422
+            detail = reversed_range.json()["detail"][0]
+            assert "Date from must be on or before Date to." in detail["msg"]
+
+
 @pytest.mark.parametrize("status", [RallyStatus.EMPTY, RallyStatus.IN_PROGRESS])
 def test_per_match_denominator_updates_as_soon_as_a_match_has_a_rally(
     demo_db: tuple[Path, tuple[MatchId, ...]], status: RallyStatus
@@ -185,6 +336,8 @@ def test_batch_game_reads_keep_rallies_shots_and_positions_separate_across_match
     with RallyLog.open(db) as log, log.transaction():
         selected = (undated, first, empty)
         snapshots = log.load_match_games(selected)
+        metadata = log.load_match_metadata(selected)
+        assert log.load_match_games_from_metadata(metadata.values()) == snapshots
         assert set(snapshots) == set(selected)
         for match_id in selected:
             assert snapshots[match_id].games == log.get_games(match_id)

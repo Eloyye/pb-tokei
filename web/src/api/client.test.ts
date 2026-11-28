@@ -38,6 +38,32 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("sends Match filters as report query parameters, repeating Tournament IDs", async () => {
+  const client = await freshClient();
+  const filters = {
+    tournament: ["one", "two"],
+    tour: "ppa" as const,
+    date_from: "2026-04-15",
+    date_to: "2026-06-04",
+    opponent: "opponent",
+  };
+  await client.getPlayerReport("player", { ...filters, partner: "partner" });
+  await client.getTeamReport("team", filters);
+
+  const [player, team] = requests.map((request) => new URL(request.url));
+  for (const url of [player!, team!]) {
+    expect(url.searchParams.getAll("tournament")).toEqual(filters.tournament);
+    expect(url.searchParams.get("tour")).toBe(filters.tour);
+    expect(url.searchParams.get("date_from")).toBe(filters.date_from);
+    expect(url.searchParams.get("date_to")).toBe(filters.date_to);
+    expect(url.searchParams.get("opponent")).toBe(filters.opponent);
+  }
+  expect(player!.pathname).toBe("/api/players/player");
+  expect(player!.searchParams.get("partner")).toBe("partner");
+  expect(team!.pathname).toBe("/api/teams/team");
+  expect(team!.searchParams.has("partner")).toBe(false);
+});
+
 describe("the tab's Rally Log", () => {
   it("is named in every request once the tab has learnt it", async () => {
     const client = await freshClient();

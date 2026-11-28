@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import os
 from collections import defaultdict
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Collection, Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC
 from enum import StrEnum
@@ -38,6 +38,7 @@ from .model import (
     Match,
     MatchGames,
     MatchId,
+    MatchMetadata,
     MatchRoster,
     MatchSummary,
     ObservationGap,
@@ -655,30 +656,50 @@ class RallyLog:
             team_ends=self._load_team_ends(match_id),
         )
 
-    def load_match_games(self, match_ids: Sequence[MatchId]) -> dict[MatchId, MatchGames]:
-        """Read the Games and metadata for the selected Match IDs in one batch."""
+    def load_match_metadata(self, match_ids: Sequence[MatchId]) -> dict[MatchId, MatchMetadata]:
+        """Read competition metadata without loading Games, Rallies, or Shots."""
         if not match_ids:
             return {}
-        ids = list(match_ids)
         rows = self._all(
             "SELECT id, tournament_id, franchise_match_id, date FROM matches "
             "WHERE id IN (SELECT unnest(?::UUID[]))",
-            ids,
+            list(match_ids),
         )
-        games = self._load_games_by_match("match_id IN (SELECT unnest(?::UUID[]))", ids)
-        result = {}
-        for id_, tournament_id, franchise_match_id, date in rows:
-            match_id = MatchId(id_)
-            result[match_id] = MatchGames(
-                id=match_id,
+        return {
+            MatchId(id_): MatchMetadata(
+                id=MatchId(id_),
                 tournament_id=TournamentId(tournament_id),
                 franchise_match_id=(
                     None if franchise_match_id is None else FranchiseMatchId(franchise_match_id)
                 ),
                 date=date,
-                games=games.get(match_id, ()),
             )
-        return result
+            for id_, tournament_id, franchise_match_id, date in rows
+        }
+
+    def load_match_games(self, match_ids: Sequence[MatchId]) -> dict[MatchId, MatchGames]:
+        """Read the Games and metadata for the selected Match IDs in one batch."""
+        return self.load_match_games_from_metadata(self.load_match_metadata(match_ids).values())
+
+    def load_match_games_from_metadata(
+        self, metadata: Collection[MatchMetadata]
+    ) -> dict[MatchId, MatchGames]:
+        """Load Games for Matches whose metadata was already read in this transaction."""
+        if not metadata:
+            return {}
+        games = self._load_games_by_match(
+            "match_id IN (SELECT unnest(?::UUID[]))", [match.id for match in metadata]
+        )
+        return {
+            match.id: MatchGames(
+                id=match.id,
+                tournament_id=match.tournament_id,
+                franchise_match_id=match.franchise_match_id,
+                date=match.date,
+                games=games.get(match.id, ()),
+            )
+            for match in metadata
+        }
 
     def get_match_roster(self, match_id: MatchId) -> MatchRoster:
         """The two Teams and four Players of a Match, each Team's Players in name order."""
