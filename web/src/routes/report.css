@@ -152,6 +152,42 @@
   min-width: 300px;
 }
 
+.report-table[data-columns="2"] {
+  min-width: 520px;
+}
+
+.report-row-different > * {
+  background: var(--warn-soft);
+}
+
+.report-different {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--warn);
+  border-radius: 9px;
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.compare-coverage {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.compare-coverage h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+.compare-coverage p {
+  margin: 2px 0;
+  color: var(--dim);
+}
+
 .report-link {
   text-decoration: underline;
   text-underline-offset: 0.2em;

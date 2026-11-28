@@ -156,6 +156,9 @@ it("shows the Player profile, Played for, Partners, Match history and per-Match 
   await screen.findByRole("heading", { name: "Alex One" });
   expect(screen.getByText("Left-handed")).toBeTruthy();
   expect(
+    within(screen.getByRole("main")).getByRole("link", { name: "Compare" }).getAttribute("href"),
+  ).toBe("/compare?kind=player&a=alex");
+  expect(
     screen.getByText("2 Matches · 6 Rallies counted · 4 Done, 1 In progress, 1 Empty"),
   ).toBeTruthy();
   expect(
@@ -202,6 +205,9 @@ it("shows the Player profile, Played for, Partners, Match history and per-Match 
 it("shows the Team and two Player columns, with only opponents in the history", async () => {
   renderDashboard("/teams/team?by=shot_number");
   await screen.findByRole("heading", { name: "Alex One / Avery Two" });
+  expect(
+    within(screen.getByRole("main")).getByRole("link", { name: "Compare" }).getAttribute("href"),
+  ).toBe("/compare?kind=team&a=team");
   const stats = within(screen.getByRole("table", { name: "Other" }));
   const headings = within(stats.getByRole("row", { name: /^Stat / }));
   expect(headings.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([

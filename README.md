@@ -122,7 +122,9 @@ uv run pb-tokei annotate --db demo-match.duckdb
 ```
 
 Open **Players** or **Teams** in the top bar for profiles, stats and Match history across the
-Rally Log. **Leaderboard** ranks Players or Teams on one stat across selected Matches. Run
+Rally Log. **Leaderboard** ranks Players or Teams on one stat across selected Matches.
+**Compare** puts two Players or two Teams side by side and marks the rates whose 90% intervals
+don't overlap as **Clearly different**. Run
 `uv run pb-tokei demo-match --many` to try the dashboard with four synthetic Matches, including
 an MLP Franchise Match and a Match with no Rallies. Lower the Leaderboard's minimum attempts
 to see rankings from this small sample.
