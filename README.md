@@ -122,8 +122,10 @@ uv run pb-tokei annotate --db demo-match.duckdb
 ```
 
 Open **Players** or **Teams** in the top bar for profiles, stats and Match history across the
-Rally Log. Run `uv run pb-tokei demo-match --many` to try the dashboard with four synthetic
-Matches, including an MLP Franchise Match and a Match with no Rallies.
+Rally Log. **Leaderboard** ranks Players or Teams on one stat across selected Matches. Run
+`uv run pb-tokei demo-match --many` to try the dashboard with four synthetic Matches, including
+an MLP Franchise Match and a Match with no Rallies. Lower the Leaderboard's minimum attempts
+to see rankings from this small sample.
 
 ## Project layout
 

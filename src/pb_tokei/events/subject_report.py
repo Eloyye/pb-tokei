@@ -23,7 +23,12 @@ from pb_tokei.rally_log import (
     Tournament,
 )
 
-from .match_filters import PlayerMatchFilters, TeamMatchFilters
+from .match_filters import (
+    FilterTournament,
+    MatchFilterOptions,
+    PlayerMatchFilters,
+    TeamMatchFilters,
+)
 from .report import (
     MultiMatchReport,
     ReportGame,
@@ -77,14 +82,7 @@ class SubjectMatch(BaseModel):
     rallies: ReportRallies
 
 
-class FilterTournament(BaseModel):
-    id: UUID
-    name: str
-    tour: Tour
-
-
-class SubjectFilterOptions(BaseModel):
-    tournaments: list[FilterTournament]
+class SubjectFilterOptions(MatchFilterOptions):
     partners: list[ReportPlayer]
     opponents: list[ReportPlayer]
 
@@ -226,7 +224,7 @@ def _load_matches(
         sources=sources,
         filter_options=SubjectFilterOptions(
             tournaments=[
-                FilterTournament(id=t.id, name=t.name, tour=t.tour)
+                FilterTournament.from_tournament(t)
                 for t in sorted(available_tournaments, key=lambda t: (t.name, t.tour, t.id))
             ],
             partners=_player_options(available_partners),

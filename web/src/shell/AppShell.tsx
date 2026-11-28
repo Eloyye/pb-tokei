@@ -141,6 +141,7 @@ function TopBar({
           </Link>
           <Link to="/players">Players</Link>
           <Link to="/teams">Teams</Link>
+          <Link to="/leaderboard">Leaderboard</Link>
         </nav>
       ) : (
         <nav className="workspace-tabs" aria-label="Workspaces">

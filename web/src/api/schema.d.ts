@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+  "/api/leaderboard": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Leaderboard */
+    get: operations["getLeaderboard"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/matches": {
     parameters: {
       query?: never;
@@ -1013,6 +1030,46 @@ export interface components {
       /** Residual Ft */
       residual_ft: number | null;
     };
+    /** Leaderboard */
+    Leaderboard: {
+      /** Bucket */
+      bucket: string | null;
+      /** Buckets */
+      buckets: {
+        [key: string]: string[];
+      };
+      filter_options: components["schemas"]["MatchFilterOptions"];
+      /** Hidden Count */
+      hidden_count: number;
+      /** Match Count */
+      match_count: number;
+      /** Rows */
+      rows: components["schemas"]["LeaderboardRow"][];
+      stat: components["schemas"]["Stat"];
+      /** Stats */
+      stats: components["schemas"]["LeaderboardStat"][];
+      /** Undated Matches Excluded */
+      undated_matches_excluded: number;
+    };
+    /** LeaderboardRow */
+    LeaderboardRow: {
+      /** Rank */
+      rank: number;
+      /** Subject */
+      subject: components["schemas"]["ReportPlayer"] | components["schemas"]["ReportTeam"];
+      value: components["schemas"]["ReportRate"];
+    };
+    /** LeaderboardStat */
+    LeaderboardStat: {
+      applies_to: components["schemas"]["ReportSubject"];
+      group: components["schemas"]["ReportGroup"];
+      id: components["schemas"]["Stat"];
+      kind: components["schemas"]["ReportKind"];
+      /** Label */
+      label: string;
+      /** Splits By */
+      splits_by: components["schemas"]["ReportSplit"][];
+    };
     /**
      * LensOut
      * @description One-coefficient radial lens distortion about the frame centre (ADR 0011).
@@ -1092,6 +1149,11 @@ export interface components {
       /** Tournament */
       tournament: string;
       video_status: components["schemas"]["VideoStatus"];
+    };
+    /** MatchFilterOptions */
+    MatchFilterOptions: {
+      /** Tournaments */
+      tournaments: components["schemas"]["FilterTournament"][];
     };
     /**
      * MatchOut
@@ -1722,6 +1784,44 @@ export interface components {
        */
       type: "shot";
     };
+    /**
+     * Stat
+     * @enum {string}
+     */
+    Stat:
+      | "serves"
+      | "serve_in"
+      | "returns"
+      | "return_in"
+      | "shot_type_attempts"
+      | "shot_advantage"
+      | "shot_disadvantage"
+      | "outcome_reason"
+      | "won_before_arrival"
+      | "arrival_rate"
+      | "lost_before_arrival"
+      | "lost_when_never_arrived"
+      | "dink_errors"
+      | "dink_popups"
+      | "kitchen_faults_per_match"
+      | "speedup_initiated"
+      | "speedup_received"
+      | "dink_answered_with_popup"
+      | "popup_put_away"
+      | "hit_share"
+      | "targeted_share"
+      | "crossover"
+      | "initiative_share"
+      | "successful_initiative_share"
+      | "speedup_success"
+      | "opening_end"
+      | "opening_win"
+      | "opening_end_shot"
+      | "returner_zone"
+      | "serving_team_status"
+      | "body_hit_winners"
+      | "body_hit_received"
+      | "challenge_success";
     /** SubjectFilterOptions */
     SubjectFilterOptions: {
       /** Opponents */
@@ -1731,6 +1831,11 @@ export interface components {
       /** Tournaments */
       tournaments: components["schemas"]["FilterTournament"][];
     };
+    /**
+     * SubjectKind
+     * @enum {string}
+     */
+    SubjectKind: "player" | "team";
     /** SubjectMatch */
     SubjectMatch: {
       /** Date */
@@ -1904,6 +2009,45 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  getLeaderboard: {
+    parameters: {
+      query?: {
+        tournament?: string[];
+        tour?: components["schemas"]["Tour"] | null;
+        date_from?: string | null;
+        date_to?: string | null;
+        kind?: components["schemas"]["SubjectKind"];
+        stat?: string | null;
+        minimum?: number;
+        by?: components["schemas"]["ReportSplit"] | null;
+        bucket?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Leaderboard"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   listMatches: {
     parameters: {
       query?: never;

@@ -8,6 +8,20 @@ from pydantic import BaseModel, model_validator
 from pb_tokei.rally_log import PlayerId, Tour, Tournament, TournamentId
 
 
+class FilterTournament(BaseModel):
+    id: TournamentId
+    name: str
+    tour: Tour
+
+    @classmethod
+    def from_tournament(cls, tournament: Tournament) -> Self:
+        return cls(id=tournament.id, name=tournament.name, tour=tournament.tour)
+
+
+class MatchFilterOptions(BaseModel):
+    tournaments: list[FilterTournament]
+
+
 class MatchFilters(BaseModel):
     tournament: frozenset[TournamentId] = frozenset()
     tour: Tour | None = None

@@ -136,6 +136,7 @@ export async function listTeams(signal?: AbortSignal): Promise<Schemas["TeamList
 
 export type TeamMatchFilters = NonNullable<operations["getTeam"]["parameters"]["query"]>;
 export type PlayerMatchFilters = NonNullable<operations["getPlayer"]["parameters"]["query"]>;
+export type LeaderboardQuery = NonNullable<operations["getLeaderboard"]["parameters"]["query"]>;
 
 export async function getPlayerReport(
   playerId: string,
@@ -163,6 +164,19 @@ export async function getTeamReport(
   });
   if (data === undefined) throw apiError(response, error);
   return data as Schemas["TeamReport"];
+}
+
+export async function getLeaderboard(
+  query: LeaderboardQuery,
+  signal?: AbortSignal,
+): Promise<Schemas["Leaderboard"]> {
+  const { data, error, response } = await api.GET("/api/leaderboard", {
+    params: { query },
+    cache: "no-store",
+    signal,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data as Schemas["Leaderboard"];
 }
 
 export async function upsertOperatorSession(

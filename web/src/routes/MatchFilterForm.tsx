@@ -1,7 +1,13 @@
 import { useId, useState, type FormEvent } from "react";
 import type { PlayerMatchFilters } from "../api/client";
 import type { components } from "../api/schema";
-import { matchFilterDateError, playerMatchFilters, teamMatchFilters, TOURS } from "./matchFilters";
+import {
+  matchFilterDateError,
+  matchFilters,
+  playerMatchFilters,
+  teamMatchFilters,
+  TOURS,
+} from "./matchFilters";
 
 type SubjectFilterOptions = components["schemas"]["SubjectFilterOptions"];
 type ReportPlayer = components["schemas"]["ReportPlayer"];
@@ -9,12 +15,13 @@ type ReportPlayer = components["schemas"]["ReportPlayer"];
 export function MatchFilterForm({
   filters,
   options,
-  showPartner,
+  showPartner = false,
   onApply,
 }: {
   filters: PlayerMatchFilters;
-  options: SubjectFilterOptions;
-  showPartner: boolean;
+  options: Pick<SubjectFilterOptions, "tournaments"> &
+    Partial<Pick<SubjectFilterOptions, "partners" | "opponents">>;
+  showPartner?: boolean;
   onApply: (filters: PlayerMatchFilters) => void;
 }) {
   const fieldsKey = JSON.stringify(filters);
@@ -43,7 +50,8 @@ export function MatchFilterForm({
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const values = { ...Object.fromEntries(data), tournament: data.getAll("tournament") };
-    const nextFilters = showPartner ? playerMatchFilters(values) : teamMatchFilters(values);
+    const parseSubjectFilters = showPartner ? playerMatchFilters : teamMatchFilters;
+    const nextFilters = options.opponents ? parseSubjectFilters(values) : matchFilters(values);
     const error = matchFilterDateError(nextFilters);
     setDateError(error ? { fieldsKey, message: error } : undefined);
     if (!error) onApply(nextFilters);
@@ -103,7 +111,7 @@ export function MatchFilterForm({
             Date to
             <input {...dateInputProps} name="date_to" defaultValue={filters.date_to ?? ""} />
           </label>
-          {showPartner && (
+          {showPartner && options.partners && (
             <PlayerFilter
               name="partner"
               label="Partner"
@@ -111,12 +119,14 @@ export function MatchFilterForm({
               players={options.partners}
             />
           )}
-          <PlayerFilter
-            name="opponent"
-            label="Opponent"
-            value={filters.opponent}
-            players={options.opponents}
-          />
+          {options.opponents && (
+            <PlayerFilter
+              name="opponent"
+              label="Opponent"
+              value={filters.opponent}
+              players={options.opponents}
+            />
+          )}
         </div>
         {dateError && (
           <p className="match-filter-error" id={dateErrorId} role="alert">

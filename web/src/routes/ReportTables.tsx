@@ -281,7 +281,7 @@ function ValueRow({
               (skips ? (
                 <span className="report-muted">doesn&apos;t split by this</span>
               ) : (
-                <Value
+                <ReportCellValue
                   value={values[column.id]}
                   kind={stat.kind}
                   countsOnly={stat.id === "outcome_reason"}
@@ -294,14 +294,14 @@ function ValueRow({
   );
 }
 
-function Value({
+export function ReportCellValue({
   value,
   kind,
-  countsOnly,
+  countsOnly = false,
 }: {
   value?: ReportValue;
   kind: ReportStat["kind"];
-  countsOnly: boolean;
+  countsOnly?: boolean;
 }) {
   let content;
   if (value && "categories" in value) {
