@@ -1,11 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryKey, type UseQueryOptions } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, isRetryable } from "../api/client";
 import { waitUntilSaved } from "../lib/unsavedChanges";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
 
-export function useReportQuery<T>(key: string[], read: (signal: AbortSignal) => Promise<T>) {
-  return useQuery({
+export function useReportQuery<T>(
+  key: QueryKey,
+  read: (signal: AbortSignal) => Promise<T>,
+  placeholderData?: UseQueryOptions<T>["placeholderData"],
+) {
+  return useQuery<T>({
     queryKey: key,
     queryFn: async ({ signal }) => {
       // Annotate can still be flushing its last edit when a report opens.
@@ -14,6 +18,7 @@ export function useReportQuery<T>(key: string[], read: (signal: AbortSignal) => 
       return read(signal);
     },
     gcTime: 0,
+    placeholderData,
     refetchOnMount: "always",
     retry: (failures, error) => failures < 3 && isRetryable(error),
   });
