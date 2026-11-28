@@ -143,6 +143,25 @@
   background: var(--panel);
 }
 
+.report-table[data-columns="3"] {
+  min-width: 680px;
+}
+
+.report-table[data-columns="1"] {
+  min-width: 300px;
+}
+
+.report-link {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  text-decoration-color: var(--faint);
+}
+
+.report-link:hover,
+.report-link:focus-visible {
+  text-decoration-color: currentColor;
+}
+
 .report-table caption {
   padding: 0 0 8px;
   text-align: left;
@@ -291,6 +310,98 @@
   white-space: nowrap;
 }
 
+.subject-index {
+  max-width: 880px;
+}
+
+.subject-index .report-header {
+  margin-bottom: 14px;
+}
+
+.subject-connections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+}
+
+.subject-connections h2,
+.subject-matches h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.subject-connections ul,
+.subject-scores {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.subject-connections li + li {
+  margin-top: 4px;
+}
+
+.subject-connections li ul,
+.subject-connections li span {
+  color: var(--dim);
+}
+
+.subject-matches {
+  margin: 22px 0;
+}
+
+.subject-list-scroll {
+  overflow-x: auto;
+}
+
+.subject-list {
+  width: 100%;
+  border-spacing: 0;
+  background: var(--panel);
+}
+
+.subject-matches .subject-list {
+  min-width: 700px;
+}
+
+.subject-list th,
+.subject-list td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.subject-list thead {
+  color: var(--dim);
+  background: var(--header);
+}
+
+.subject-list tbody th {
+  font-weight: 500;
+}
+
+.subject-list .subject-number {
+  text-align: right;
+}
+
+.subject-number,
+.subject-date,
+.subject-scores {
+  font-variant-numeric: tabular-nums;
+}
+
+.subject-date,
+.subject-scores {
+  white-space: nowrap;
+}
+
+.subject-scores {
+  display: flex;
+  gap: 8px;
+}
+
 @media (max-width: 1180px) {
   .report-table-scroll {
     isolation: isolate;
@@ -310,11 +421,11 @@
 }
 
 @media (max-width: 640px) {
-  .app:has(> .match-report) {
+  .app:has(> .match-report, > .topbar .dashboard-tabs) {
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .app:has(> .match-report) .topbar {
+  .app:has(> .match-report, > .topbar .dashboard-tabs) .topbar {
     grid-template-areas:
       "left right"
       "tabs tabs";
@@ -323,7 +434,7 @@
     gap: 0 8px;
   }
 
-  .app:has(> .match-report) .topbar-left {
+  .app:has(> .match-report, > .topbar .dashboard-tabs) .topbar-left {
     grid-area: left;
   }
 
@@ -331,11 +442,11 @@
     display: none;
   }
 
-  .app:has(> .match-report) .topbar-right {
+  .app:has(> .match-report, > .topbar .dashboard-tabs) .topbar-right {
     grid-area: right;
   }
 
-  .app:has(> .match-report) .workspace-tabs {
+  .app:has(> .match-report, > .topbar .dashboard-tabs) .workspace-tabs {
     grid-area: tabs;
     justify-self: center;
   }

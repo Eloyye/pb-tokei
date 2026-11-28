@@ -13,3 +13,12 @@ export function asReportSplit(value: unknown): ReportSplit | undefined {
   if (typeof value === "string" && Object.hasOwn(REPORT_SPLITS, value)) return value as ReportSplit;
   return undefined;
 }
+
+export function reportSearch(search: Record<string, unknown>): { by?: ReportSplit } {
+  const by = asReportSplit(search.by);
+  return by ? { by } : {};
+}
+
+export function matchCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "Match" : "Matches"}`;
+}

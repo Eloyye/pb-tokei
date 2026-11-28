@@ -122,6 +122,44 @@ export async function getMatchReport(
   return data as Schemas["MatchReport"];
 }
 
+export async function listPlayers(signal?: AbortSignal) {
+  const { data, error, response } = await api.GET("/api/players", { cache: "no-store", signal });
+  if (data === undefined) throw apiError(response, error);
+  return data;
+}
+
+export async function listTeams(signal?: AbortSignal): Promise<Schemas["TeamListEntry"][]> {
+  const { data, error, response } = await api.GET("/api/teams", { cache: "no-store", signal });
+  if (data === undefined) throw apiError(response, error);
+  return data as Schemas["TeamListEntry"][];
+}
+
+export async function getPlayerReport(
+  playerId: string,
+  signal?: AbortSignal,
+): Promise<Schemas["PlayerReport"]> {
+  const { data, error, response } = await api.GET("/api/players/{player_id}", {
+    params: { path: { player_id: playerId } },
+    cache: "no-store",
+    signal,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data as Schemas["PlayerReport"];
+}
+
+export async function getTeamReport(
+  teamId: string,
+  signal?: AbortSignal,
+): Promise<Schemas["TeamReport"]> {
+  const { data, error, response } = await api.GET("/api/teams/{team_id}", {
+    params: { path: { team_id: teamId } },
+    cache: "no-store",
+    signal,
+  });
+  if (data === undefined) throw apiError(response, error);
+  return data as Schemas["TeamReport"];
+}
+
 export async function upsertOperatorSession(
   matchId: string,
   sessionId: string,

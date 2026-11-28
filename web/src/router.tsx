@@ -9,7 +9,9 @@ import { isWorkspace } from "./lib/workspaces";
 import { MatchList } from "./routes/MatchList";
 import { MatchPage } from "./routes/MatchPage";
 import { NewMatchPage } from "./routes/NewMatchPage";
-import { asReportSplit, type ReportSplit } from "./routes/reportOptions";
+import { reportSearch } from "./routes/reportOptions";
+import { PlayersPage, TeamsPage } from "./routes/SubjectIndexPage";
+import { PlayerReportPage, TeamReportPage } from "./routes/SubjectReportPage";
 import { AppShell } from "./shell/AppShell";
 
 const rootRoute = createRootRoute({
@@ -21,6 +23,32 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: MatchList,
+});
+
+const playersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/players",
+  component: PlayersPage,
+});
+
+const playerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/players/$playerId",
+  validateSearch: reportSearch,
+  component: PlayerReportPage,
+});
+
+const teamsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/teams",
+  component: TeamsPage,
+});
+
+const teamRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/teams/$teamId",
+  validateSearch: reportSearch,
+  component: TeamReportPage,
 });
 
 const newMatchRoute = createRoute({
@@ -45,10 +73,7 @@ const matchRoute = createRoute({
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/matches/$matchId/$workspace",
-  validateSearch: (search): { by?: ReportSplit } => {
-    const by = asReportSplit(search.by);
-    return by ? { by } : {};
-  },
+  validateSearch: reportSearch,
   beforeLoad: ({ params }) => {
     if (!isWorkspace(params.workspace)) throw notFound();
   },
@@ -56,7 +81,16 @@ const workspaceRoute = createRoute({
 });
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute, newMatchRoute, matchRoute, workspaceRoute]),
+  routeTree: rootRoute.addChildren([
+    indexRoute,
+    playersRoute,
+    playerRoute,
+    teamsRoute,
+    teamRoute,
+    newMatchRoute,
+    matchRoute,
+    workspaceRoute,
+  ]),
 });
 
 declare module "@tanstack/react-router" {

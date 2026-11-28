@@ -86,6 +86,7 @@ _OPERATOR_TOTALS = """
     COALESCE(SUM(active_seconds) FILTER (WHERE workspace = 'annotate'), 0) AS annotate_seconds,
     COALESCE(SUM(active_seconds) FILTER (WHERE workspace = 'review'), 0) AS review_seconds
 """
+_MATCH_ORDER = "m.date DESC NULLS LAST, t.name, m.id"
 
 
 def stored_video_path(video_path: Path, db_path: Path) -> Path:
@@ -569,7 +570,7 @@ class RallyLog:
                 GROUP BY match_id
             ) rc ON rc.match_id = m.id
             WHERE {where}
-            ORDER BY m.date DESC NULLS LAST, t.name, m.id
+            ORDER BY {_MATCH_ORDER}
             """,
             *params,
         )
@@ -614,7 +615,8 @@ class RallyLog:
             ) in rows
         ]
 
-    def load_match(self, match_id: MatchId) -> Match:
+    def load_match(self, match_id: MatchId, *, include_workspace: bool = True) -> Match:
+        """Read a Match and its Games, optionally skipping the annotation workspace data."""
         (
             tournament,
             team_a,
@@ -647,65 +649,54 @@ class RallyLog:
             source_video_frames=video_frames,
             annotation_mode=AnnotationMode(mode),
             games=self._load_games(match_id),
-            play_segments=self._load_play_segments(match_id),
-            calibrations=self._load_calibrations(match_id),
-            player_anchors=self._load_player_anchors(match_id),
-            team_ends=self._load_team_ends(match_id),
+            play_segments=self._load_play_segments(match_id) if include_workspace else (),
+            calibrations=self._load_calibrations(match_id) if include_workspace else (),
+            player_anchors=self._load_player_anchors(match_id) if include_workspace else (),
+            team_ends=self._load_team_ends(match_id) if include_workspace else (),
         )
 
     def get_match_roster(self, match_id: MatchId) -> MatchRoster:
         """The two Teams and four Players of a Match, each Team's Players in name order."""
-        row = self._db.execute(
-            """
-            SELECT m.team_a_id, m.team_b_id,
+        rosters = self._match_rosters("m.id = ?", match_id)
+        if not rosters:
+            raise MatchNotFound(match_id)
+        return rosters[0]
+
+    def list_match_rosters(
+        self, *, player_id: PlayerId | None = None, team_id: TeamId | None = None
+    ) -> list[MatchRoster]:
+        """Match rosters in Match date order, optionally limited to a Player or a Team."""
+        return self._match_rosters(
+            "(? IS NULL OR ? IN (ta.player_low_id, ta.player_high_id, "
+            "tb.player_low_id, tb.player_high_id)) AND (? IS NULL OR ? IN (ta.id, tb.id))",
+            player_id,
+            player_id,
+            team_id,
+            team_id,
+        )
+
+    def _match_rosters(self, where: str, *params: Any) -> list[MatchRoster]:
+        rows = self._all(
+            f"""
+            SELECT m.id, m.team_a_id, m.team_b_id,
                 pa1.id, pa1.name, pa1.handedness,
                 pa2.id, pa2.name, pa2.handedness,
                 pb1.id, pb1.name, pb1.handedness,
                 pb2.id, pb2.name, pb2.handedness
             FROM matches m
+            JOIN tournaments t ON t.id = m.tournament_id
             JOIN teams ta ON ta.id = m.team_a_id
             JOIN players pa1 ON pa1.id = ta.player_low_id
             JOIN players pa2 ON pa2.id = ta.player_high_id
             JOIN teams tb ON tb.id = m.team_b_id
             JOIN players pb1 ON pb1.id = tb.player_low_id
             JOIN players pb2 ON pb2.id = tb.player_high_id
-            WHERE m.id = ?
+            WHERE {where}
+            ORDER BY {_MATCH_ORDER}
             """,
-            [match_id],
-        ).fetchone()
-        if row is None:
-            raise MatchNotFound(match_id)
-        (
-            team_a_id,
-            team_b_id,
-            pa1_id,
-            pa1_name,
-            pa1_hand,
-            pa2_id,
-            pa2_name,
-            pa2_hand,
-            pb1_id,
-            pb1_name,
-            pb1_hand,
-            pb2_id,
-            pb2_name,
-            pb2_hand,
-        ) = row
-        team_a_players = _sorted_players(
-            Player(PlayerId(pa1_id), pa1_name, Handedness(pa1_hand)),
-            Player(PlayerId(pa2_id), pa2_name, Handedness(pa2_hand)),
+            *params,
         )
-        team_b_players = _sorted_players(
-            Player(PlayerId(pb1_id), pb1_name, Handedness(pb1_hand)),
-            Player(PlayerId(pb2_id), pb2_name, Handedness(pb2_hand)),
-        )
-        return MatchRoster(
-            match_id=match_id,
-            team_a_id=TeamId(team_a_id),
-            team_b_id=TeamId(team_b_id),
-            team_a_players=team_a_players,
-            team_b_players=team_b_players,
-        )
+        return [_match_roster(row) for row in rows]
 
     # --- Play Segments, Calibrations, Player Anchors, and Team Ends -----------------------
 
@@ -1019,6 +1010,39 @@ def _pair(a: str, b: str) -> tuple[str, str]:
 def _sorted_players(a: Player, b: Player) -> tuple[Player, Player]:
     first, second = sorted((a, b), key=lambda p: (p.name, p.id))
     return first, second
+
+
+def _match_roster(row: Row) -> MatchRoster:
+    (
+        match_id,
+        team_a_id,
+        team_b_id,
+        pa1_id,
+        pa1_name,
+        pa1_hand,
+        pa2_id,
+        pa2_name,
+        pa2_hand,
+        pb1_id,
+        pb1_name,
+        pb1_hand,
+        pb2_id,
+        pb2_name,
+        pb2_hand,
+    ) = row
+    return MatchRoster(
+        match_id=MatchId(match_id),
+        team_a_id=TeamId(team_a_id),
+        team_b_id=TeamId(team_b_id),
+        team_a_players=_sorted_players(
+            Player(PlayerId(pa1_id), pa1_name, Handedness(pa1_hand)),
+            Player(PlayerId(pa2_id), pa2_name, Handedness(pa2_hand)),
+        ),
+        team_b_players=_sorted_players(
+            Player(PlayerId(pb1_id), pb1_name, Handedness(pb1_hand)),
+            Player(PlayerId(pb2_id), pb2_name, Handedness(pb2_hand)),
+        ),
+    )
 
 
 def _source_video(url: str | None, video_id: str | None, path: str | None) -> SourceVideo | None:

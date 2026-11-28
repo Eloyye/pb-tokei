@@ -1,16 +1,16 @@
-"""Shape one Match's Team and Player tallies for the report."""
+"""Shape Team and Player tallies for the Match and dashboard reports."""
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from pb_tokei.rally_log import Game, Match, MatchRoster, RallyStatus, TeamId, Zone
+from pb_tokei.rally_log import Game, Match, MatchRoster, Player, RallyStatus, TeamId, Zone
 
 from .derived import (
     OPENING_LAST_SHOT_NUMBER,
@@ -31,6 +31,7 @@ from .stats import (
     StatKind,
     StatRow,
     SubjectKind,
+    compute_stats,
     wilson_interval,
 )
 
@@ -63,6 +64,7 @@ class ReportKind(StrEnum):
     RATE = "rate"
     PER100 = "per100"
     COUNT = "count"
+    PER_MATCH = "per_match"
     MIX = "mix"
 
 
@@ -84,6 +86,11 @@ class ReportRate(ReportCount):
     high: float | None
 
 
+class ReportPerMatch(ReportCount):
+    matches: int
+    average: float
+
+
 class ReportCategory(BaseModel):
     id: str
     label: str
@@ -99,7 +106,7 @@ class ReportMix(BaseModel):
     left_out: int
 
 
-type ReportValue = ReportRate | ReportCount | ReportMix
+type ReportValue = ReportRate | ReportPerMatch | ReportCount | ReportMix
 type ReportValues = dict[UUID, ReportValue]
 type ReportBreakdowns = dict[ReportSplit, dict[str, ReportValues]]
 
@@ -129,10 +136,21 @@ class ReportPlayer(BaseModel):
     id: UUID
     name: str
 
+    @staticmethod
+    def from_player(player: Player) -> ReportPlayer:
+        return ReportPlayer(id=player.id, name=player.name)
+
 
 class ReportTeam(BaseModel):
     id: UUID
     players: tuple[ReportPlayer, ReportPlayer]
+
+    @staticmethod
+    def from_players(team_id: TeamId, players: tuple[Player, Player]) -> ReportTeam:
+        first, second = sorted(players, key=lambda player: (player.name, player.id))
+        return ReportTeam(
+            id=team_id, players=(ReportPlayer.from_player(first), ReportPlayer.from_player(second))
+        )
 
 
 class ReportGame(BaseModel):
@@ -147,16 +165,28 @@ class ReportRallies(BaseModel):
     empty: int
 
 
-class ReportHeader(BaseModel):
-    tournament: str
-    teams: tuple[ReportTeam, ReportTeam]
-    games: list[ReportGame]
+class _ReportHeader(BaseModel):
     rallies: ReportRallies
     uncredited: int
 
 
+class ReportHeader(_ReportHeader):
+    tournament: str
+    teams: tuple[ReportTeam, ReportTeam]
+    games: list[ReportGame]
+
+
 class MatchReport(BaseModel):
     header: ReportHeader
+    stats: list[ReportStat]
+
+
+class MultiMatchHeader(_ReportHeader):
+    match_count: int
+
+
+class MultiMatchReport(BaseModel):
+    header: MultiMatchHeader
     stats: list[ReportStat]
 
 
@@ -428,7 +458,15 @@ type _CellParts = dict[UUID, dict[StrEnum | None, list[StatRow]]]
 
 
 class _ReportTallies:
-    def __init__(self, rows: Iterable[StatRow]) -> None:
+    def __init__(
+        self,
+        rows: Iterable[StatRow],
+        *,
+        subjects: Mapping[UUID, SubjectKind] | None = None,
+        match_count: int = 0,
+    ) -> None:
+        self.subjects = subjects
+        self.match_count = match_count
         self.cells: defaultdict[_BucketKey, _CellParts] = defaultdict(dict)
         uncredited: dict[tuple[Stat, StatBreakdown], int] = {}
         for row in rows:
@@ -440,7 +478,9 @@ class _ReportTallies:
                 if row.subject.kind is SubjectKind.TEAM
                 else row.subject.player_id
             )
-            if subject_id is not None:
+            if subject_id is not None and (
+                subjects is None or subjects.get(subject_id) is row.subject.kind
+            ):
                 self._add(row, subject_id)
         self.uncredited = sum(uncredited.values())
 
@@ -485,13 +525,33 @@ class _ReportTallies:
                 add(split, _bucket(shot, split))
 
     def _values(self, key: _BucketKey) -> ReportValues:
-        stat, _, split, _ = key
+        stat, _, split, bucket = key
+        parts = self.cells.get(key, {})
+        if self.subjects is not None and stat.kind is StatKind.PER_MATCH:
+            if bucket == _UNKNOWN and not parts:
+                return {}
+            return {
+                subject: self._per_match_value(parts.get(subject, {}).get(None, ()))
+                for subject, kind in self.subjects.items()
+                if split is not ReportSplit.COURT_HALF or kind is SubjectKind.PLAYER
+            }
         definition = STAT_DEFINITIONS[stat]
         pooled = split is not None or definition.sub_rows is ReportDimension.SHOT_NUMBER
         return {
-            subject: _value(stat, definition, parts, pooled=pooled)
-            for subject, parts in self.cells.get(key, {}).items()
+            subject: _value(stat, definition, categories, pooled=pooled)
+            for subject, categories in parts.items()
         }
+
+    def _per_match_value(self, rows: Sequence[StatRow]) -> ReportPerMatch:
+        # Every displayed subject played all the chosen Matches. A breakdown may contain
+        # several rows from one Match or none at all, so keep the same denominator in each.
+        count = sum(row.count for row in rows)
+        return ReportPerMatch(
+            count=count,
+            left_out=sum(row.excluded for row in rows),
+            matches=self.match_count,
+            average=count / self.match_count,
+        )
 
     def _row(self, stat: Stat, fixed: str | None) -> ReportRow:
         breakdowns: ReportBreakdowns = {}
@@ -507,9 +567,12 @@ class _ReportTallies:
 
     def report_stats(self) -> list[ReportStat]:
         stats = []
+        show_team_stats = self.subjects is None or SubjectKind.TEAM in self.subjects.values()
         for stat, definition in STAT_DEFINITIONS.items():
             if stat is Stat.SHOT_DISADVANTAGE:
                 continue  # Displayed together with Advantage and Neutral in Shot Outcome.
+            if not show_team_stats and definition.applies_to is ReportSubject.TEAM:
+                continue
             dimension = definition.sub_rows
             rows: list[ReportSubRow] = []
             if dimension is None:
@@ -535,7 +598,11 @@ class _ReportTallies:
                     id="shot_outcome" if outcome else stat,
                     label="Shot Outcome" if outcome else definition.label,
                     group=definition.group,
-                    kind=definition.kind(stat),
+                    kind=(
+                        ReportKind.PER_MATCH
+                        if self.subjects is not None and stat.kind is StatKind.PER_MATCH
+                        else definition.kind(stat)
+                    ),
                     applies_to=definition.applies_to,
                     splits_by=definition.splits_by,
                     sub_rows=dimension,
@@ -547,7 +614,7 @@ class _ReportTallies:
         return stats
 
 
-def _game_score(game: Game, roster: MatchRoster) -> ReportGame:
+def _game_score(game: Game, roster: MatchRoster) -> tuple[int, int] | None:
     """The latest known score in Team A/B order, advanced through known side-out results."""
     latest = current = None
     previous = 0
@@ -576,7 +643,27 @@ def _game_score(game: Game, roster: MatchRoster) -> ReportGame:
             latest = current = (a + 1, b) if serving == roster.team_a_id else (a, b + 1)
         else:
             latest = current
-    return ReportGame(number=game.number, score=latest)
+    return latest
+
+
+def game_scores(match: Match, roster: MatchRoster, first_team_id: TeamId) -> list[ReportGame]:
+    games = []
+    for game in sorted(match.games, key=lambda game: game.number):
+        score = _game_score(game, roster)
+        if score is not None and first_team_id == roster.team_b_id:
+            score = score[1], score[0]
+        games.append(ReportGame(number=game.number, score=score))
+    return games
+
+
+def rally_counts(games: Iterable[Game]) -> ReportRallies:
+    statuses = Counter(rally.status for game in games for rally in game.rallies)
+    return ReportRallies(
+        counted=statuses.total(),
+        done=statuses[RallyStatus.DONE],
+        in_progress=statuses[RallyStatus.IN_PROGRESS],
+        empty=statuses[RallyStatus.EMPTY],
+    )
 
 
 def build_report(
@@ -584,34 +671,35 @@ def build_report(
 ) -> MatchReport:
     """Build the header and display rows from a single Rally Log snapshot."""
     tallies = _ReportTallies(rows)
-    statuses = Counter(rally.status for game in match.games for rally in game.rallies)
-    counted = statuses.total()
-
-    def team(team_id: TeamId) -> ReportTeam:
-        first, second = roster.team_players(team_id)
-        return ReportTeam(
-            id=team_id,
-            players=(
-                ReportPlayer(id=first.id, name=first.name),
-                ReportPlayer(id=second.id, name=second.name),
-            ),
-        )
-
+    rallies = rally_counts(match.games)
     return MatchReport(
         header=ReportHeader(
             tournament=tournament,
-            teams=(team(roster.team_a_id), team(roster.team_b_id)),
-            games=[
-                _game_score(game, roster)
-                for game in sorted(match.games, key=lambda game: game.number)
-            ],
-            rallies=ReportRallies(
-                counted=counted,
-                done=statuses[RallyStatus.DONE],
-                in_progress=statuses[RallyStatus.IN_PROGRESS],
-                empty=statuses[RallyStatus.EMPTY],
+            teams=(
+                ReportTeam.from_players(roster.team_a_id, roster.team_a_players),
+                ReportTeam.from_players(roster.team_b_id, roster.team_b_players),
             ),
+            games=game_scores(match, roster, roster.team_a_id),
+            rallies=rallies,
             uncredited=tallies.uncredited,
         ),
-        stats=tallies.report_stats() if counted else [],
+        stats=tallies.report_stats() if rallies.counted else [],
+    )
+
+
+def build_multi_match_report(
+    matches: Sequence[tuple[Match, MatchRoster]], subjects: Mapping[UUID, SubjectKind]
+) -> MultiMatchReport:
+    """Pool the selected Matches for the subjects present in every one of them."""
+    rallies = rally_counts(game for match, _ in matches for game in match.games)
+    tallies = _ReportTallies(
+        compute_stats(matches) if rallies.counted else (),
+        subjects=subjects,
+        match_count=len(matches),
+    )
+    return MultiMatchReport(
+        header=MultiMatchHeader(
+            match_count=len(matches), rallies=rallies, uncredited=tallies.uncredited
+        ),
+        stats=tallies.report_stats() if rallies.counted else [],
     )

@@ -115,27 +115,31 @@ function TopBar({
         <Link to="/" className="brand">
           pb-tokei
         </Link>
-        <nav className="crumbs" aria-label="Breadcrumb">
-          {matchId === undefined ? (
-            <span className="here">Home</span>
-          ) : (
-            <>
-              <Link to="/">Home</Link>
-              {match.data && (
-                <>
-                  <span className="sep">›</span>
-                  <span>{match.data.tournament}</span>
-                  <span className="sep">›</span>
-                  <span className="here">{teamsLabel(match.data)}</span>
-                </>
-              )}
-            </>
-          )}
-        </nav>
+        {matchId !== undefined && (
+          <nav className="crumbs" aria-label="Breadcrumb">
+            <Link to="/">Home</Link>
+            {match.data && (
+              <>
+                <span className="sep">›</span>
+                <span>{match.data.tournament}</span>
+                <span className="sep">›</span>
+                <span className="here">{teamsLabel(match.data)}</span>
+              </>
+            )}
+          </nav>
+        )}
       </div>
-      <nav className="workspace-tabs" aria-label="Workspaces">
-        {matchId !== undefined &&
-          WORKSPACES.map((w) => (
+      {matchId === undefined ? (
+        <nav className="workspace-tabs dashboard-tabs" aria-label="Dashboard">
+          <Link to="/" activeOptions={{ exact: true }}>
+            Matches
+          </Link>
+          <Link to="/players">Players</Link>
+          <Link to="/teams">Teams</Link>
+        </nav>
+      ) : (
+        <nav className="workspace-tabs" aria-label="Workspaces">
+          {WORKSPACES.map((w) => (
             <Link
               key={w}
               to="/matches/$matchId/$workspace"
@@ -145,7 +149,8 @@ function TopBar({
               {WORKSPACE_LABELS[w]}
             </Link>
           ))}
-      </nav>
+        </nav>
+      )}
       <div className="topbar-right">
         <RallyLogButton rallyLog={rallyLog} onPicker={onPicker} />
         <button
