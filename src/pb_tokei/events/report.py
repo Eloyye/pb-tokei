@@ -82,6 +82,10 @@ class ReportSubject(StrEnum):
     PLAYER = "player"
     BOTH = "both"
 
+    def includes(self, kind: SubjectKind) -> bool:
+        """Whether a stat that applies to this subject has values for `kind`."""
+        return self is ReportSubject.BOTH or self is _REPORT_SUBJECTS[kind]
+
 
 class ReportCount(BaseModel):
     count: int
@@ -151,7 +155,7 @@ class LeaderboardStat(BaseModel):
 
     def supports(self, kind: SubjectKind, by: ReportSplit | None) -> bool:
         return (
-            (self.applies_to is ReportSubject.BOTH or self.applies_to.value == kind.value)
+            self.applies_to.includes(kind)
             and (by is None or by in self.splits_by)
             and (by is not ReportSplit.COURT_HALF or kind is SubjectKind.PLAYER)
         )
@@ -215,6 +219,7 @@ class MultiMatchReport(BaseModel):
     stats: list[ReportStat]
 
 
+_REPORT_SUBJECTS = {SubjectKind.PLAYER: ReportSubject.PLAYER, SubjectKind.TEAM: ReportSubject.TEAM}
 _SHOT_SPLITS = tuple(ReportSplit)
 _TEAM_SHOT_SPLITS = tuple(split for split in ReportSplit if split is not ReportSplit.COURT_HALF)
 _SHOT_OUTCOMES = (ShotOutcome.ADVANTAGE, ShotOutcome.NEUTRAL, ShotOutcome.DISADVANTAGE)

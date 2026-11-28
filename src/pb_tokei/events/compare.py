@@ -19,6 +19,7 @@ from .match_filters import (
 )
 from .report import (
     MultiMatchHeader,
+    MultiMatchReport,
     ReportBreakdowns,
     ReportKind,
     ReportPlayer,
@@ -26,7 +27,6 @@ from .report import (
     ReportRow,
     ReportSplit,
     ReportStat,
-    ReportSubject,
     ReportSubRow,
     ReportTeam,
     ReportValue,
@@ -210,14 +210,18 @@ def _merge(first: ReportRow | None, second: ReportRow | None) -> ReportRow:
 def compare_stats(
     stats_a: list[ReportStat], stats_b: list[ReportStat], a: UUID, b: UUID
 ) -> list[CompareStat]:
-    """Merge two single-subject reports into one two-column report with difference marks."""
-    stats_by_id = {stat.id: stat for stat in stats_b}
+    """Merge two single-subject reports into one two-column report with difference marks.
+
+    A stat or sub-row only one side has (a side without Rallies has no stats at all) keeps that
+    side's values and leaves the other column empty.
+    """
+    by_id_a = {stat.id: stat for stat in stats_a}
+    by_id_b = {stat.id: stat for stat in stats_b}
     compared = []
-    for stat_a in stats_a:
-        stat_b = stats_by_id[stat_a.id]
-        # Either side can have an Unknown sub-row the other lacks; it stays last.
-        rows_a = {row.id: row for row in stat_a.rows}
-        rows_b = {row.id: row for row in stat_b.rows}
+    for stat_id, stat in (by_id_b | by_id_a).items():
+        stat_a, stat_b = by_id_a.get(stat_id), by_id_b.get(stat_id)
+        rows_a = {row.id: row for row in stat_a.rows} if stat_a else {}
+        rows_b = {row.id: row for row in stat_b.rows} if stat_b else {}
         rows, row_marks = [], {}
         for row_id, sub_row in (rows_b | rows_a).items():
             row = _merge(rows_a.get(row_id), rows_b.get(row_id))
@@ -226,36 +230,54 @@ def compare_stats(
                     id=row_id, label=sub_row.label, values=row.values, breakdowns=row.breakdowns
                 )
             )
-            row_marks[row_id] = _marks(stat_a.kind, row, a, b)
+            row_marks[row_id] = _marks(stat.kind, row, a, b)
         overall = _merge(stat_a, stat_b)
         compared.append(
             CompareStat(
-                **stat_a.model_dump(exclude={"values", "breakdowns", "rows"}),
+                **stat.model_dump(exclude={"values", "breakdowns", "rows"}),
                 values=overall.values,
                 breakdowns=overall.breakdowns,
                 rows=rows,
-                marks=_marks(stat_a.kind, overall, a, b),
+                marks=_marks(stat.kind, overall, a, b),
                 row_marks=row_marks,
             )
         )
     return compared
 
 
-def _side_report(
-    kind: SubjectKind, selection: CompareSelection | None
-) -> tuple[dict[str, object] | None, list[ReportStat]]:
+def _report(kind: SubjectKind, selection: CompareSelection | None) -> MultiMatchReport | None:
     if selection is None:
-        return None, []
+        return None
     sources = selection.matches.sources
-    report = build_multi_match_report(
+    return build_multi_match_report(
         [(source.match, source.roster) for source in sources], {selection.subject.id: kind}
     )
-    side = {
-        "subject": selection.subject,
-        "header": report.header,
-        "undated_matches_excluded": selection.matches.undated_matches_excluded,
-    }
-    return side, report.stats
+
+
+def _player_side(
+    selection: CompareSelection | None, report: MultiMatchReport | None
+) -> ComparePlayerSide | None:
+    if selection is None or report is None:
+        return None
+    assert isinstance(selection.subject, ReportPlayer)
+    return ComparePlayerSide(
+        subject=selection.subject,
+        header=report.header,
+        undated_matches_excluded=selection.matches.undated_matches_excluded,
+    )
+
+
+def _team_side(
+    selection: CompareSelection | None, report: MultiMatchReport | None
+) -> CompareTeamSide | None:
+    if selection is None or report is None:
+        return None
+    assert isinstance(selection.subject, ReportTeam)
+    return CompareTeamSide(
+        subject=selection.subject,
+        header=report.header,
+        undated_matches_excluded=selection.matches.undated_matches_excluded,
+    )
 
 
 def _filter_options(*selections: CompareSelection | None) -> MatchFilterOptions:
@@ -269,27 +291,31 @@ def _filter_options(*selections: CompareSelection | None) -> MatchFilterOptions:
 
 
 def build_comparison(snapshot: CompareSnapshot) -> PlayerComparison | TeamComparison:
-    kind = snapshot.kind
-    side_a, stats_a = _side_report(kind, snapshot.a)
-    side_b, stats_b = _side_report(kind, snapshot.b)
+    kind, a, b = snapshot.kind, snapshot.a, snapshot.b
+    report_a, report_b = _report(kind, a), _report(kind, b)
     stats: list[CompareStat] = []
-    if snapshot.a is not None and snapshot.b is not None and (stats_a or stats_b):
-        # A side without Rallies has no stat rows. Line its empty values up with the other side.
+    if a is not None and b is not None and report_a is not None and report_b is not None:
         stats = [
             stat
-            for stat in compare_stats(
-                stats_a or stats_b, stats_b or stats_a, snapshot.a.subject.id, snapshot.b.subject.id
-            )
+            for stat in compare_stats(report_a.stats, report_b.stats, a.subject.id, b.subject.id)
             # A Team compare shows Team columns only, so Player-only stats would be blank rows.
-            if stat.applies_to is ReportSubject.BOTH or stat.applies_to.value == kind.value
+            if stat.applies_to.includes(kind)
         ]
-    fields = {
-        "choices": snapshot.choices,
-        "a": side_a,
-        "b": side_b,
-        "stats": stats,
-        "filter_options": _filter_options(snapshot.a, snapshot.b),
-    }
+    filter_options = _filter_options(a, b)
     if kind is SubjectKind.PLAYER:
-        return PlayerComparison.model_validate({"kind": kind, **fields})
-    return TeamComparison.model_validate({"kind": kind, **fields})
+        return PlayerComparison(
+            kind=SubjectKind.PLAYER,
+            choices=[c for c in snapshot.choices if isinstance(c, ReportPlayer)],
+            a=_player_side(a, report_a),
+            b=_player_side(b, report_b),
+            stats=stats,
+            filter_options=filter_options,
+        )
+    return TeamComparison(
+        kind=SubjectKind.TEAM,
+        choices=[c for c in snapshot.choices if isinstance(c, ReportTeam)],
+        a=_team_side(a, report_a),
+        b=_team_side(b, report_b),
+        stats=stats,
+        filter_options=filter_options,
+    )

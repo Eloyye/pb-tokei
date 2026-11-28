@@ -75,6 +75,31 @@ function stats(a: string, b: string): CompareStat[] {
       breakdowns: { shot_number: {} },
       marks: NO_MARKS,
     },
+    {
+      ...base,
+      id: "shot_disadvantage",
+      label: "Shot Disadvantage",
+      group: "Other",
+      sub_rows: "shot_type",
+      values: {},
+      breakdowns: {},
+      rows: [
+        {
+          id: "dink",
+          label: "Dink",
+          values: { [a]: rate(1, 20, 0.01, 0.2), [b]: rate(12, 20, 0.4, 0.75) },
+          breakdowns: {},
+        },
+        {
+          id: "drive",
+          label: "Drive",
+          values: { [a]: rate(3, 10, 0.1, 0.6), [b]: rate(4, 10, 0.2, 0.7) },
+          breakdowns: {},
+        },
+      ],
+      marks: NO_MARKS,
+      row_marks: { dink: { clearly_different: true, breakdowns: {} }, drive: NO_MARKS },
+    },
   ];
 }
 
@@ -200,6 +225,18 @@ it("marks only clearly different rows, overall and per breakdown bucket", async 
   expect(within(shot3).getByText("Clearly different")).toBeTruthy();
   expect(within(shot4).queryByText("Clearly different")).toBeNull();
   expect(getComparison).toHaveBeenCalledTimes(1);
+});
+
+it("marks a clearly different sub-row without marking its stat or sibling rows", async () => {
+  renderCompare(`/compare?a=${ALEX.id}&b=${AVERY.id}`);
+  const table = within(await screen.findByRole("table", { name: "Other" }));
+  const heading = table.getByRole("rowheader", { name: "Shot Disadvantage" }).closest("tr");
+  expect(heading && within(heading).queryByText("Clearly different")).toBeNull();
+  const dink = table.getByRole("row", { name: /^Dink/ });
+  expect(within(dink).getByText("Clearly different")).toBeTruthy();
+  expect(dink.className).toBe("report-row-different");
+  const drive = table.getByRole("row", { name: /^Drive/ });
+  expect(within(drive).queryByText("Clearly different")).toBeNull();
 });
 
 it("round-trips kind, subjects, breakdown and shared Match filters through the URL", async () => {

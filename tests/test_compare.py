@@ -1,14 +1,25 @@
 from collections.abc import Iterator
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from pb_tokei.annotate.app import create_app
 from pb_tokei.demo_match import DEMO_MLP_DATE, DEMO_MLP_TOURNAMENT, write_demo_matches
-from pb_tokei.events.compare import intervals_separated
-from pb_tokei.events.report import ReportCount, ReportMix, ReportRate
+from pb_tokei.events.compare import compare_stats, intervals_separated
+from pb_tokei.events.report import (
+    ReportCount,
+    ReportDimension,
+    ReportGroup,
+    ReportKind,
+    ReportMix,
+    ReportRate,
+    ReportSplit,
+    ReportStat,
+    ReportSubject,
+    ReportSubRow,
+)
 from pb_tokei.rally_log import RallyLog
 
 type Json = dict[str, Any]
@@ -79,6 +90,59 @@ def test_only_disjoint_rate_intervals_are_clearly_different(
     separated: bool,
 ) -> None:
     assert intervals_separated(a, b) is separated
+
+
+def _sub_row(row_id: str, subject: UUID, value: ReportRate) -> ReportSubRow:
+    return ReportSubRow(
+        id=row_id,
+        label=row_id,
+        values={subject: value},
+        breakdowns={ReportSplit.OPENING: {"In": {subject: value}}},
+    )
+
+
+def _report_stat(stat_id: str, rows: list[ReportSubRow]) -> ReportStat:
+    return ReportStat(
+        id=stat_id,
+        label=stat_id,
+        group=ReportGroup.OTHER,
+        kind=ReportKind.RATE,
+        applies_to=ReportSubject.BOTH,
+        splits_by=(ReportSplit.OPENING,),
+        sub_rows=ReportDimension.SHOT_TYPE,
+        rows=rows,
+        values={},
+        breakdowns={},
+    )
+
+
+def test_compare_stats_marks_sub_rows_and_keeps_rows_only_one_side_has() -> None:
+    a, b = uuid4(), uuid4()
+    low, high = _rate(0.1, 0.3), _rate(0.6, 0.8)
+    compared = compare_stats(
+        [
+            _report_stat(
+                "shots",
+                [_sub_row("dink", a, low), _sub_row("drive", a, low), _sub_row("Unknown", a, low)],
+            ),
+            _report_stat("only_a", [_sub_row("dink", a, low)]),
+        ],
+        [_report_stat("shots", [_sub_row("dink", b, high), _sub_row("drive", b, _rate(0.2, 0.7))])],
+        a,
+        b,
+    )
+
+    assert [stat.id for stat in compared] == ["shots", "only_a"]
+    shots, only_a = compared
+    assert [row.id for row in shots.rows] == ["dink", "drive", "Unknown"]
+    assert shots.rows[0].values == {a: low, b: high}
+    assert shots.row_marks["dink"].clearly_different is True
+    assert shots.row_marks["dink"].breakdowns == {ReportSplit.OPENING: ["In"]}
+    assert shots.row_marks["drive"].clearly_different is False
+    assert shots.row_marks["Unknown"].clearly_different is False
+    assert shots.rows[2].values == {a: low}
+    assert only_a.rows[0].values == {a: low}
+    assert only_a.row_marks["dink"].clearly_different is False
 
 
 def test_endpoint_lists_choices_and_waits_for_two_subjects(client: TestClient) -> None:
@@ -204,6 +268,24 @@ def test_shared_filters_apply_to_both_sides(client: TestClient) -> None:
     undated = _compare(client, "player", "Alex One", "Blake One", date_from="2000-01-01")
     assert undated["a"]["undated_matches_excluded"] > 0
     assert undated["a"]["header"]["match_count"] < 4
+
+
+def test_a_side_without_rallies_lines_up_empty_against_the_other(client: TestClient) -> None:
+    result = _compare(client, "player", "Devon Five", "Alex One")
+    devon, alex = result["a"]["subject"]["id"], result["b"]["subject"]["id"]
+    assert result["a"]["header"]["match_count"] == 1
+    assert result["a"]["header"]["rallies"]["counted"] == 0
+    assert result["b"]["header"]["rallies"]["counted"] > 0
+    assert result["stats"]
+    assert all(stat["applies_to"] != "team" for stat in result["stats"])
+    assert alex in _stat(result, "hit_share")["values"]
+    for stat in result["stats"]:
+        assert devon not in stat["values"]
+        assert stat["marks"]["clearly_different"] is False
+        assert not any(stat["marks"]["breakdowns"].values())
+        for marks in stat["row_marks"].values():
+            assert marks["clearly_different"] is False
+            assert not any(marks["breakdowns"].values())
 
 
 @pytest.mark.parametrize(
