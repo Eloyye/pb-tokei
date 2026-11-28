@@ -137,14 +137,8 @@ describe("the tab's Rally Log", () => {
         date: "2026-04-12",
         tournament: "Atlanta Open",
         tour: "ppa",
-        team_a: [
-          { name: "A1", handedness: "right", gender: "female" },
-          { name: "A2", handedness: "right", gender: "male" },
-        ],
-        team_b: [
-          { name: "B1", handedness: "left", gender: "female" },
-          { name: "B2", handedness: "right", gender: "male" },
-        ],
+        team_a: ["p-existing-1", { name: "A2", handedness: "right", gender: "male" }],
+        team_b: [{ name: "B1", handedness: "left", gender: "female" }, "p-existing-2"],
       },
       ONE,
     );

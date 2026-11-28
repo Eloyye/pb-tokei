@@ -13,7 +13,7 @@ export const TOURS = { ppa: "PPA", app: "APP", mlp: "MLP" } satisfies Record<
 
 const UUID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 
-function asId(value: unknown) {
+export function asId(value: unknown) {
   return typeof value === "string" && UUID_RE.test(value) ? value.toLowerCase() : undefined;
 }
 

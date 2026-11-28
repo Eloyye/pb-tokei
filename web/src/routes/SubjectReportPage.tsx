@@ -155,6 +155,15 @@ function SubjectReport({
                 <span className="pill discipline-pill">{disciplineLabel(profile.discipline)}</span>
               </p>
             )}
+            <p>
+              <Link
+                className="button"
+                to="/compare"
+                search={{ kind: teamProfile ? "team" : "player", a: profile.id }}
+              >
+                Compare
+              </Link>
+            </p>
             {!updating && (
               <>
                 <ReportCoverage

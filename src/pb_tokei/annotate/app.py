@@ -71,6 +71,12 @@ from pb_tokei.annotate.players import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.events.compare import (
+    CompareQuery,
+    Comparison,
+    build_comparison,
+    load_comparison,
+)
 from pb_tokei.events.leaderboard import (
     Leaderboard,
     LeaderboardQuery,
@@ -150,7 +156,9 @@ from pb_tokei.roster import (
     merge_player,
     merge_tournament,
     replace_match_player,
-    set_up_match,
+)
+from pb_tokei.roster import (
+    create_match as create_match_record,
 )
 from pb_tokei.roster import (
     delete_match as delete_match_record,
@@ -1121,6 +1129,14 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return build_leaderboard(snapshot, query)
 
+    @app.get("/api/compare", operation_id="getComparison")
+    def get_comparison(
+        response: Response, rally_log: OpenLog, query: Annotated[CompareQuery, Query()]
+    ) -> Comparison:
+        snapshot = rally_log.run(lambda log: load_comparison(log, query))
+        response.headers["Cache-Control"] = "no-store"
+        return build_comparison(snapshot)
+
     # --- Matches -------------------------------------------------------------------------
 
     @app.get("/api/matches", operation_id="listMatches")
@@ -1136,7 +1152,19 @@ def create_app(
     @app.post("/api/matches", operation_id="createMatch", status_code=201)
     def create_match(body: CreateMatchIn, rally_log: OpenLog) -> CreatedMatchOut:
         """Sets up a Match and optionally starts fetching its footage after it is saved."""
-        match = rally_log.run(lambda log: set_up_match(log, body.to_roster()))
+        team_a, team_b = body.resolved_teams()
+        franchise_match = None if body.franchise_match is None else body.franchise_match.to_roster()
+        match = rally_log.run(
+            lambda log: create_match_record(
+                log,
+                date=body.date,
+                tournament=body.tournament,
+                tour=body.tour,
+                team_a=team_a,
+                team_b=team_b,
+                franchise_match=franchise_match,
+            )
+        )
         if url := (body.footage_url or "").strip():
             try:
                 validate_url(url)

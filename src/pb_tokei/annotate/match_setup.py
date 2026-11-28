@@ -15,8 +15,8 @@ from pb_tokei.rally_log import (
     FranchiseMatchId,
     Gender,
     Handedness,
-    MatchId,
     Player,
+    PlayerId,
     RallyLog,
     Tour,
     Tournament,
@@ -25,7 +25,7 @@ from pb_tokei.rally_log import (
     new_id,
     parse_match_date,
 )
-from pb_tokei.roster import Roster, RosterFranchiseMatch, RosterPlayer
+from pb_tokei.roster import ExistingPlayerSlot, PlayerSlot, RosterFranchiseMatch, RosterPlayer
 
 
 def _validate_match_date(value: object) -> datetime.date:
@@ -69,27 +69,6 @@ class FranchiseMatchIn(BaseModel):
         )
 
 
-class CreateMatchIn(BaseModel):
-    date: MatchDate
-    tournament: str
-    tour: Tour
-    team_a: tuple[RosterPlayer, RosterPlayer]
-    team_b: tuple[RosterPlayer, RosterPlayer]
-    franchise_match: FranchiseMatchIn | None = None
-    footage_url: str | None = None
-
-    def to_roster(self) -> Roster:
-        return Roster(
-            match_id=MatchId(new_id()),
-            date=self.date,
-            tournament=self.tournament,
-            tour=self.tour,
-            team_a=self.team_a,
-            team_b=self.team_b,
-            franchise_match=self.franchise_match.to_roster() if self.franchise_match else None,
-        )
-
-
 class NewTournamentIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,6 +82,41 @@ class NewPlayerIn(BaseModel):
     name: str
     handedness: Handedness
     gender: Gender
+
+
+class ExistingPlayerBackfillIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    gender: Gender
+
+
+PlayerChoice = UUID | ExistingPlayerBackfillIn | NewPlayerIn
+
+
+class CreateMatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: MatchDate
+    tournament: str
+    tour: Tour
+    team_a: tuple[PlayerChoice, PlayerChoice]
+    team_b: tuple[PlayerChoice, PlayerChoice]
+    franchise_match: FranchiseMatchIn | None = None
+    footage_url: str | None = None
+
+    def resolved_teams(self) -> tuple[tuple[PlayerSlot, PlayerSlot], tuple[PlayerSlot, PlayerSlot]]:
+        def convert(slot: PlayerChoice) -> PlayerSlot:
+            if isinstance(slot, NewPlayerIn):
+                return RosterPlayer(slot.name, slot.handedness, slot.gender)
+            if isinstance(slot, ExistingPlayerBackfillIn):
+                return ExistingPlayerSlot(PlayerId(slot.id), slot.gender)
+            return PlayerId(slot)
+
+        return (
+            (convert(self.team_a[0]), convert(self.team_a[1])),
+            (convert(self.team_b[0]), convert(self.team_b[1])),
+        )
 
 
 class UpdateMatchIn(BaseModel):

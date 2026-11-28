@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+  "/api/compare": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Comparison */
+    get: operations["getComparison"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/franchises/{franchise_id}": {
     parameters: {
       query?: never;
@@ -823,6 +840,59 @@ export interface components {
       ruling: components["schemas"]["FactIO_Ruling_"];
     };
     /**
+     * CompareMarks
+     * @description Which values are clearly different: their 90% intervals do not overlap.
+     */
+    CompareMarks: {
+      /** Breakdowns */
+      breakdowns: {
+        [key: string]: string[];
+      };
+      /** Clearly Different */
+      clearly_different: boolean;
+    };
+    /** ComparePlayerSide */
+    ComparePlayerSide: {
+      header: components["schemas"]["MultiMatchHeader"];
+      subject: components["schemas"]["ReportPlayer"];
+      /** Unclassified Matches Excluded */
+      unclassified_matches_excluded: number;
+      /** Undated Matches Excluded */
+      undated_matches_excluded: number;
+    };
+    /** CompareStat */
+    CompareStat: {
+      applies_to: components["schemas"]["ReportSubject"];
+      breakdowns: components["schemas"]["ReportBreakdowns"];
+      group: components["schemas"]["ReportGroup"];
+      /** Id */
+      id: string;
+      kind: components["schemas"]["ReportKind"];
+      /** Label */
+      label: string;
+      marks: components["schemas"]["CompareMarks"];
+      /** Row Marks */
+      row_marks: {
+        [key: string]: components["schemas"]["CompareMarks"];
+      };
+      /** Rows */
+      rows: components["schemas"]["ReportSubRow"][];
+      /** Splits By */
+      splits_by: components["schemas"]["ReportSplit"][];
+      sub_rows: components["schemas"]["ReportDimension"] | null;
+      values: components["schemas"]["ReportValues"];
+    };
+    /** CompareTeamSide */
+    CompareTeamSide: {
+      header: components["schemas"]["MultiMatchHeader"];
+      subject: components["schemas"]["ReportTeam"];
+      /** Unclassified Matches Excluded */
+      unclassified_matches_excluded: number;
+      /** Undated Matches Excluded */
+      undated_matches_excluded: number;
+    };
+    Comparison: components["schemas"]["PlayerComparison"] | components["schemas"]["TeamComparison"];
+    /**
      * ContactKind
      * @enum {string}
      */
@@ -848,9 +918,31 @@ export interface components {
       footage_url?: string | null;
       franchise_match?: components["schemas"]["FranchiseMatchIn"] | null;
       /** Team A */
-      team_a: [components["schemas"]["RosterPlayer"], components["schemas"]["RosterPlayer"]];
+      team_a: [
+        (
+          | string
+          | components["schemas"]["ExistingPlayerBackfillIn"]
+          | components["schemas"]["NewPlayerIn"]
+        ),
+        (
+          | string
+          | components["schemas"]["ExistingPlayerBackfillIn"]
+          | components["schemas"]["NewPlayerIn"]
+        ),
+      ];
       /** Team B */
-      team_b: [components["schemas"]["RosterPlayer"], components["schemas"]["RosterPlayer"]];
+      team_b: [
+        (
+          | string
+          | components["schemas"]["ExistingPlayerBackfillIn"]
+          | components["schemas"]["NewPlayerIn"]
+        ),
+        (
+          | string
+          | components["schemas"]["ExistingPlayerBackfillIn"]
+          | components["schemas"]["NewPlayerIn"]
+        ),
+      ];
       tour: components["schemas"]["Tour"];
       /** Tournament */
       tournament: string;
@@ -892,6 +984,15 @@ export interface components {
      * @enum {string}
      */
     ErrorKind: "net" | "out" | "kitchen_fault" | "double_hit" | "body_hit";
+    /** ExistingPlayerBackfillIn */
+    ExistingPlayerBackfillIn: {
+      gender: components["schemas"]["Gender"];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+    };
     /** FactIO[ContactKind] */
     FactIO_ContactKind_: {
       certainty: components["schemas"]["Certainty"];
@@ -1582,6 +1683,21 @@ export interface components {
        */
       player_id: string;
     };
+    /** PlayerComparison */
+    PlayerComparison: {
+      a: components["schemas"]["ComparePlayerSide"] | null;
+      b: components["schemas"]["ComparePlayerSide"] | null;
+      /** Choices */
+      choices: components["schemas"]["ReportPlayer"][];
+      filter_options: components["schemas"]["MatchFilterOptions"];
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "player";
+      /** Stats */
+      stats: components["schemas"]["CompareStat"][];
+    };
     /** PlayerEditOut */
     PlayerEditOut: {
       /** Affected Matches */
@@ -1985,13 +2101,6 @@ export interface components {
       /** Tournaments */
       tournaments: components["schemas"]["Tournament"][];
     };
-    /** RosterPlayer */
-    RosterPlayer: {
-      gender: components["schemas"]["Gender"];
-      handedness: components["schemas"]["Handedness"];
-      /** Name */
-      name: string;
-    };
     /**
      * Ruling
      * @enum {string}
@@ -2108,6 +2217,21 @@ export interface components {
       rallies: components["schemas"]["ReportRallies"];
       /** Tournament */
       tournament: string;
+    };
+    /** TeamComparison */
+    TeamComparison: {
+      a: components["schemas"]["CompareTeamSide"] | null;
+      b: components["schemas"]["CompareTeamSide"] | null;
+      /** Choices */
+      choices: components["schemas"]["ReportTeam"][];
+      filter_options: components["schemas"]["MatchFilterOptions"];
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "team";
+      /** Stats */
+      stats: components["schemas"]["CompareStat"][];
     };
     /**
      * TeamEndIO
@@ -2294,6 +2418,44 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  getComparison: {
+    parameters: {
+      query?: {
+        tournament?: string[];
+        tour?: components["schemas"]["Tour"] | null;
+        discipline?: components["schemas"]["Discipline"] | null;
+        date_from?: string | null;
+        date_to?: string | null;
+        kind?: components["schemas"]["SubjectKind"];
+        a?: string | null;
+        b?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Comparison"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   updateFranchise: {
     parameters: {
       query?: {

@@ -1,38 +1,18 @@
 import { type KeyboardEvent, useId, useMemo, useState } from "react";
+import { fuzzyNearMatchScore, normalizeFuzzy, normalizeName } from "./nameMatching";
 
 /* oxlint-disable jsx-a11y/prefer-tag-over-role -- The editable combobox manages its own listbox. */
 
-function normalize(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function editDistance(a: string, b: string): number {
-  if (Math.abs(a.length - b.length) > 2) return Infinity;
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 0; i < a.length; i++) {
-    const row = [i + 1];
-    for (let j = 0; j < b.length; j++) {
-      row.push(Math.min(row[j]! + 1, previous[j + 1]! + 1, previous[j]! + Number(a[i] !== b[j])));
-    }
-    previous = row;
-  }
-  return previous[b.length]!;
-}
-
-function wordsContained(a: string, b: string): boolean {
-  const left = a.split(" ");
-  const right = b.split(" ");
-  return left.every((word) => right.includes(word)) || right.every((word) => left.includes(word));
-}
-
-function suggestName<T>(name: string, options: { choice: T; normalized: string }[]): T | undefined {
-  if (!name) return undefined;
+function suggestName<T>(
+  fuzzyQuery: string,
+  options: { choice: T; fuzzy: string }[],
+): T | undefined {
+  if (!fuzzyQuery) return undefined;
   let suggestion: T | undefined;
   let bestScore = Infinity;
-  for (const { choice, normalized } of options) {
-    const distance = editDistance(name, normalized);
-    const score = distance <= 2 ? distance : wordsContained(name, normalized) ? 3 : Infinity;
-    if (score < bestScore) {
+  for (const { choice, fuzzy } of options) {
+    const score = fuzzyNearMatchScore(fuzzyQuery, fuzzy);
+    if (score !== null && score < bestScore) {
       suggestion = choice;
       bestScore = score;
     }
@@ -65,17 +45,22 @@ export function NameField<T extends { name: string }>({
   const hintId = `${id}-hint`;
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
-  const search = normalize(name);
+  const search = normalizeName(name);
+  const fuzzySearch = normalizeFuzzy(name);
   const indexed = useMemo(
     () =>
       choices.map((choice) => ({
         choice,
-        normalized: normalize(choice.name),
+        normalized: normalizeName(choice.name),
+        fuzzy: normalizeFuzzy(choice.name),
         disabled: isChoiceDisabled ? isChoiceDisabled(choice) : false,
       })),
     [choices, isChoiceDisabled],
   );
-  const matched = indexed.filter(({ normalized }) => normalized.includes(search));
+  const matched = indexed.filter(
+    ({ normalized, fuzzy }) =>
+      normalized.includes(search) || (fuzzySearch !== "" && fuzzy.includes(fuzzySearch)),
+  );
   const eligible = matched.filter(({ disabled }) => !disabled);
   const ineligible = matched.filter(({ disabled }) => disabled);
   const options =
@@ -88,8 +73,8 @@ export function NameField<T extends { name: string }>({
     () =>
       choices.some((choice) => choice.name === name.trim())
         ? undefined
-        : suggestName(search, eligibleIndexed),
-    [choices, name, search, eligibleIndexed],
+        : suggestName(fuzzySearch, eligibleIndexed),
+    [choices, name, fuzzySearch, eligibleIndexed],
   );
 
   function pick(choice: T) {
