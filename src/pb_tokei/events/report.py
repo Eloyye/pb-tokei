@@ -10,7 +10,16 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from pb_tokei.rally_log import Game, Match, MatchRoster, Player, RallyStatus, TeamId, Zone
+from pb_tokei.rally_log import (
+    Game,
+    Match,
+    MatchGames,
+    MatchRoster,
+    Player,
+    RallyStatus,
+    TeamId,
+    Zone,
+)
 
 from .derived import (
     OPENING_LAST_SHOT_NUMBER,
@@ -463,10 +472,10 @@ class _ReportTallies:
         rows: Iterable[StatRow],
         *,
         subjects: Mapping[UUID, SubjectKind] | None = None,
-        match_count: int = 0,
+        matches_with_rallies: int = 0,
     ) -> None:
         self.subjects = subjects
-        self.match_count = match_count
+        self.matches_with_rallies = matches_with_rallies
         self.cells: defaultdict[_BucketKey, _CellParts] = defaultdict(dict)
         uncredited: dict[tuple[Stat, StatBreakdown], int] = {}
         for row in rows:
@@ -543,14 +552,14 @@ class _ReportTallies:
         }
 
     def _per_match_value(self, rows: Sequence[StatRow]) -> ReportPerMatch:
-        # Every displayed subject played all the chosen Matches. A breakdown may contain
-        # several rows from one Match or none at all, so keep the same denominator in each.
+        # Every displayed subject played these Matches. Use the same denominator for every
+        # breakdown, including buckets with several rows from one Match or none at all.
         count = sum(row.count for row in rows)
         return ReportPerMatch(
             count=count,
             left_out=sum(row.excluded for row in rows),
-            matches=self.match_count,
-            average=count / self.match_count,
+            matches=self.matches_with_rallies,
+            average=count / self.matches_with_rallies,
         )
 
     def _row(self, stat: Stat, fixed: str | None) -> ReportRow:
@@ -646,14 +655,16 @@ def _game_score(game: Game, roster: MatchRoster) -> tuple[int, int] | None:
     return latest
 
 
-def game_scores(match: Match, roster: MatchRoster, first_team_id: TeamId) -> list[ReportGame]:
-    games = []
-    for game in sorted(match.games, key=lambda game: game.number):
+def game_scores(
+    games: Iterable[Game], roster: MatchRoster, first_team_id: TeamId
+) -> list[ReportGame]:
+    scores = []
+    for game in sorted(games, key=lambda game: game.number):
         score = _game_score(game, roster)
         if score is not None and first_team_id == roster.team_b_id:
             score = score[1], score[0]
-        games.append(ReportGame(number=game.number, score=score))
-    return games
+        scores.append(ReportGame(number=game.number, score=score))
+    return scores
 
 
 def rally_counts(games: Iterable[Game]) -> ReportRallies:
@@ -679,7 +690,7 @@ def build_report(
                 ReportTeam.from_players(roster.team_a_id, roster.team_a_players),
                 ReportTeam.from_players(roster.team_b_id, roster.team_b_players),
             ),
-            games=game_scores(match, roster, roster.team_a_id),
+            games=game_scores(match.games, roster, roster.team_a_id),
             rallies=rallies,
             uncredited=tallies.uncredited,
         ),
@@ -688,14 +699,32 @@ def build_report(
 
 
 def build_multi_match_report(
-    matches: Sequence[tuple[Match, MatchRoster]], subjects: Mapping[UUID, SubjectKind]
+    matches: Sequence[tuple[MatchGames, MatchRoster]], subjects: Mapping[UUID, SubjectKind]
 ) -> MultiMatchReport:
     """Pool the selected Matches for the subjects present in every one of them."""
+    # Matches with no Rallies still appear in the report history. The stats engine takes
+    # Matches, so build inputs for it here from the read-only Rally Log snapshots.
+    stats_matches = [
+        (
+            Match(
+                id=match.id,
+                tournament_id=match.tournament_id,
+                team_a_id=roster.team_a_id,
+                team_b_id=roster.team_b_id,
+                franchise_match_id=match.franchise_match_id,
+                date=match.date,
+                games=match.games,
+            ),
+            roster,
+        )
+        for match, roster in matches
+        if any(game.rallies for game in match.games)
+    ]
     rallies = rally_counts(game for match, _ in matches for game in match.games)
     tallies = _ReportTallies(
-        compute_stats(matches) if rallies.counted else (),
+        compute_stats(stats_matches),
         subjects=subjects,
-        match_count=len(matches),
+        matches_with_rallies=len(stats_matches),
     )
     return MultiMatchReport(
         header=MultiMatchHeader(

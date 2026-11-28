@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { getPlayerReport, getTeamReport, listPlayers, listTeams } from "../api/client";
+import { ApiError, getPlayerReport, getTeamReport, listPlayers, listTeams } from "../api/client";
 import type { components } from "../api/schema";
 import { router as appRouter } from "../router";
 
@@ -147,7 +147,9 @@ it("shows the Player profile, Played for, Partners, Match history and per-Match 
   expect(
     screen.getByText("2 Matches · 6 Rallies counted · 4 Done, 1 In progress, 1 Empty"),
   ).toBeTruthy();
-  expect(screen.getByText("2 observations couldn't be credited to a Team")).toBeTruthy();
+  expect(
+    screen.getByText("2 observations across these Matches couldn't be credited to a Team"),
+  ).toBeTruthy();
 
   const partners = within(screen.getByRole("region", { name: "Partners" }));
   expect(partners.getByRole("link", { name: "Avery Two" }).getAttribute("href")).toBe(
@@ -168,7 +170,7 @@ it("shows the Player profile, Played for, Partners, Match history and per-Match 
   expect(latestMatch.getByText("Avery Two")).toBeTruthy();
   expect(latestMatch.getByText("Blake One / Brook Two")).toBeTruthy();
   expect(latestMatch.getByText("11–8")).toBeTruthy();
-  expect(latestMatch.getByText("4 Done / 1 In progress")).toBeTruthy();
+  expect(latestMatch.getByText("4 Done / 1 In progress / 1 Empty")).toBeTruthy();
   expect(latestMatch.getByRole("link").getAttribute("href")).toBe("/matches/mlp-match/report");
   expect(within(legacy).getByText("No Rallies yet")).toBeTruthy();
 
@@ -220,4 +222,40 @@ it("keeps the Player's Match visible when it has no Rallies", async () => {
   expect(screen.getByText("No Rallies yet")).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Played for" })).toBeNull();
   expect(screen.queryByRole("combobox", { name: "Break down by" })).toBeNull();
+});
+
+it("distinguishes an Empty Rally from a Match with no Rallies", async () => {
+  vi.mocked(getPlayerReport).mockResolvedValue({
+    ...PLAYER_REPORT,
+    matches: PLAYER_REPORT.matches.map((match) =>
+      match.id === "mlp-match"
+        ? { ...match, rallies: { counted: 1, done: 0, in_progress: 0, empty: 1 } }
+        : match,
+    ),
+  });
+  renderDashboard("/players/alex");
+  const matches = within(await screen.findByRole("table", { name: "Matches" }));
+  expect(matches.getByText("0 Done / 0 In progress / 1 Empty")).toBeTruthy();
+  expect(matches.getByText("No Rallies yet")).toBeTruthy();
+});
+
+it.each([
+  { index: "/players", list: "Players", load: getPlayerReport },
+  { index: "/teams", list: "Teams", load: getTeamReport },
+])("links a missing subject back to $list", async ({ index, list, load }) => {
+  vi.mocked(load).mockRejectedValueOnce(new ApiError(404, "Subject not found"));
+  renderDashboard(`${index}/missing`);
+  const back = await screen.findByRole("link", { name: `Back to ${list}` });
+  expect(back.getAttribute("href")).toBe(index);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  fireEvent.click(back);
+  expect(await screen.findByRole("table", { name: list })).toBeTruthy();
+});
+
+it("keeps the Matches tab highlighted on New Match", async () => {
+  renderDashboard("/matches/new");
+  const dashboard = within(await screen.findByRole("navigation", { name: "Dashboard" }));
+  expect(dashboard.getByRole("link", { name: "Matches" }).getAttribute("aria-current")).toBe(
+    "page",
+  );
 });

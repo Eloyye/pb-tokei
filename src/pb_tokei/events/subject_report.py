@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from pb_tokei.rally_log import (
     Franchise,
     Handedness,
-    Match,
+    MatchGames,
     MatchRoster,
     Player,
     PlayerId,
@@ -116,7 +116,7 @@ def list_teams(log: RallyLog) -> list[TeamListEntry]:
 
 @dataclass(frozen=True, slots=True)
 class SubjectMatchSource:
-    match: Match
+    match: MatchGames
     roster: MatchRoster
     tournament: Tournament
     franchise: Franchise | None
@@ -127,16 +127,17 @@ def _load_matches(
 ) -> list[SubjectMatchSource]:
     if not rosters:
         return []
-    matches = [(log.load_match(r.match_id, include_workspace=False), r) for r in rosters]
+    matches = log.load_match_games([roster.match_id for roster in rosters])
     tournaments = {t.id: t for t in log.list_tournaments()}
     franchise_matches = {}
     franchises = {}
-    if player_id is not None and any(m.franchise_match_id is not None for m, _ in matches):
+    if player_id is not None and any(m.franchise_match_id is not None for m in matches.values()):
         franchise_matches = {m.id: m for m in log.list_franchise_matches()}
         franchises = {f.id: f for f in log.list_franchises()}
 
     sources = []
-    for match, roster in matches:
+    for roster in rosters:
+        match = matches[roster.match_id]
         tournament = tournaments[match.tournament_id]
         franchise = None
         if (
@@ -191,7 +192,7 @@ def _match_row(
         tournament=source.tournament.name,
         partner=partner,
         opponents=ReportTeam.from_players(opponents, roster.team_players(opponents)),
-        games=game_scores(match, roster, team_id),
+        games=game_scores(match.games, roster, team_id),
         rallies=rally_counts(match.games),
     )
 

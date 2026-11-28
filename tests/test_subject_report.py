@@ -8,7 +8,16 @@ from fastapi.testclient import TestClient
 from pb_tokei import main
 from pb_tokei.annotate.app import create_app
 from pb_tokei.demo_match import DEMO_DATE, DEMO_MLP_DATE, DEMO_MLP_TOURNAMENT, write_demo_matches
-from pb_tokei.rally_log import FranchiseMatchId, MatchId, RallyLog, TournamentId, new_id
+from pb_tokei.rally_log import (
+    FranchiseMatchId,
+    Game,
+    MatchId,
+    Rally,
+    RallyLog,
+    RallyStatus,
+    TournamentId,
+    new_id,
+)
 
 LOCAL = "http://127.0.0.1"
 
@@ -126,13 +135,13 @@ def test_player_history_and_stats_pool_matches_across_teams(
             assert faults["values"][subject_id] == {
                 "count": 1,
                 "left_out": 0,
-                "matches": 2,
-                "average": 0.5,
+                "matches": 1,
+                "average": 1,
             }
             shots = faults["breakdowns"]["shot_number"]
-            assert shots["1"][subject_id]["matches"] == shots["3"][subject_id]["matches"] == 2
+            assert shots["1"][subject_id]["matches"] == shots["3"][subject_id]["matches"] == 1
             assert shots["1"][subject_id]["average"] == 0
-            assert shots["3"][subject_id]["average"] == 0.5
+            assert shots["3"][subject_id]["average"] == 1
 
         match_report = client.get(f"/api/matches/{first}/report").json()
         faults = next(s for s in match_report["stats"] if s["id"] == "kitchen_faults_per_match")
@@ -145,6 +154,43 @@ def test_player_history_and_stats_pool_matches_across_teams(
         assert refreshed["header"]["match_count"] == 4
         assert refreshed["header"]["rallies"]["counted"] == 12
         assert refreshed["matches"][0]["rallies"]["counted"] == 0
+
+
+@pytest.mark.parametrize("status", [RallyStatus.EMPTY, RallyStatus.IN_PROGRESS])
+def test_per_match_denominator_updates_as_soon_as_a_match_has_a_rally(
+    demo_db: tuple[Path, tuple[MatchId, ...]], status: RallyStatus
+) -> None:
+    db, (_, _, _, empty) = demo_db
+    with TestClient(create_app(db), base_url=LOCAL) as client:
+        avery = next(p for p in client.get("/api/players").json() if p["name"] == "Avery Two")
+        endpoint = f"/api/players/{avery['id']}"
+
+        def faults() -> tuple[int, int, float]:
+            report = client.get(endpoint).json()
+            assert report["header"]["match_count"] == 2
+            stat = next(s for s in report["stats"] if s["id"] == "kitchen_faults_per_match")
+            value = stat["values"][avery["id"]]
+            return value["count"], value["matches"], value["average"]
+
+        assert faults() == (1, 1, 1.0)
+        with RallyLog.open(db) as log:
+            log.replace_games(empty, (Game(1, (Rally(1, status=status),)),))
+        assert faults() == (1, 2, 0.5)
+
+
+def test_batch_game_reads_keep_rallies_shots_and_positions_separate_across_matches(
+    demo_db: tuple[Path, tuple[MatchId, ...]],
+) -> None:
+    db, (first, _, undated, empty) = demo_db
+    with RallyLog.open(db) as log, log.transaction():
+        selected = (undated, first, empty)
+        snapshots = log.load_match_games(selected)
+        assert set(snapshots) == set(selected)
+        for match_id in selected:
+            assert snapshots[match_id].games == log.get_games(match_id)
+        assert snapshots[undated].date is None
+        assert snapshots[first].date == DEMO_DATE
+        assert snapshots[empty].games == ()
 
 
 def test_played_for_groups_by_franchise_and_tournament_in_both_team_positions(

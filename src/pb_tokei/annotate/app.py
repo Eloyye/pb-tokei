@@ -920,7 +920,7 @@ def create_app(
         def load(log: RallyLog) -> tuple[Match, MatchRoster, str]:
             with log.transaction():
                 roster = log.get_match_roster(mid)
-                match = log.load_match(mid, include_workspace=False)
+                match = log.load_match(mid)
                 tournament = log.get_tournament(match.tournament_id).name
             return match, roster, tournament
 

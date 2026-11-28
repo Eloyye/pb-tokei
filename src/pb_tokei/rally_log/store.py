@@ -36,6 +36,7 @@ from .model import (
     Handedness,
     Landmark,
     Match,
+    MatchGames,
     MatchId,
     MatchRoster,
     MatchSummary,
@@ -615,8 +616,7 @@ class RallyLog:
             ) in rows
         ]
 
-    def load_match(self, match_id: MatchId, *, include_workspace: bool = True) -> Match:
-        """Read a Match and its Games, optionally skipping the annotation workspace data."""
+    def load_match(self, match_id: MatchId) -> Match:
         (
             tournament,
             team_a,
@@ -649,11 +649,36 @@ class RallyLog:
             source_video_frames=video_frames,
             annotation_mode=AnnotationMode(mode),
             games=self._load_games(match_id),
-            play_segments=self._load_play_segments(match_id) if include_workspace else (),
-            calibrations=self._load_calibrations(match_id) if include_workspace else (),
-            player_anchors=self._load_player_anchors(match_id) if include_workspace else (),
-            team_ends=self._load_team_ends(match_id) if include_workspace else (),
+            play_segments=self._load_play_segments(match_id),
+            calibrations=self._load_calibrations(match_id),
+            player_anchors=self._load_player_anchors(match_id),
+            team_ends=self._load_team_ends(match_id),
         )
+
+    def load_match_games(self, match_ids: Sequence[MatchId]) -> dict[MatchId, MatchGames]:
+        """Read the Games and metadata for the selected Match IDs in one batch."""
+        if not match_ids:
+            return {}
+        ids = list(match_ids)
+        rows = self._all(
+            "SELECT id, tournament_id, franchise_match_id, date FROM matches "
+            "WHERE id IN (SELECT unnest(?::UUID[]))",
+            ids,
+        )
+        games = self._load_games_by_match("match_id IN (SELECT unnest(?::UUID[]))", ids)
+        result = {}
+        for id_, tournament_id, franchise_match_id, date in rows:
+            match_id = MatchId(id_)
+            result[match_id] = MatchGames(
+                id=match_id,
+                tournament_id=TournamentId(tournament_id),
+                franchise_match_id=(
+                    None if franchise_match_id is None else FranchiseMatchId(franchise_match_id)
+                ),
+                date=date,
+                games=games.get(match_id, ()),
+            )
+        return result
 
     def get_match_roster(self, match_id: MatchId) -> MatchRoster:
         """The two Teams and four Players of a Match, each Team's Players in name order."""
@@ -935,42 +960,49 @@ class RallyLog:
     # --- Reading match content ------------------------------------------------------------
 
     def _load_games(self, match_id: MatchId) -> tuple[Game, ...]:
-        shots: dict[tuple[int, int], dict[int, Shot | ObservationGap]] = defaultdict(dict)
-        positions: dict[tuple[int, int, int], dict[PlayerId, PlayerPosition]] = defaultdict(dict)
-        for game, rally, pos, player, px, py, pc, settled, sc in self._all(
-            "SELECT game_number, rally_number, log_position, player_id, "
+        return self._load_games_by_match("match_id = ?", match_id).get(match_id, ())
+
+    def _load_games_by_match(
+        self, where: str, param: MatchId | list[MatchId]
+    ) -> dict[MatchId, tuple[Game, ...]]:
+        shots: defaultdict[tuple[MatchId, int, int], dict[int, Shot | ObservationGap]] = (
+            defaultdict(dict)
+        )
+        positions: defaultdict[tuple[MatchId, int, int, int], dict[PlayerId, PlayerPosition]] = (
+            defaultdict(dict)
+        )
+        for mid, game, rally, pos, player, px, py, pc, settled, sc in self._all(
+            "SELECT match_id, game_number, rally_number, log_position, player_id, "
             "position_x, position_y, position_certainty, settled, settled_certainty "
-            "FROM shot_positions WHERE match_id = ?",
-            match_id,
+            f"FROM shot_positions WHERE {where}",
+            param,
         ):
-            positions[game, rally, pos][PlayerId(player)] = PlayerPosition(
+            positions[mid, game, rally, pos][PlayerId(player)] = PlayerPosition(
                 position=_read_point(px, py, pc),
                 settled=_read(settled, sc, bool),
             )
-        for _, game, rally, pos, *row in self._all(
-            "SELECT * FROM shots WHERE match_id = ?", match_id
+        for mid, game, rally, pos, *row in self._all(f"SELECT * FROM shots WHERE {where}", param):
+            shots[mid, game, rally][pos] = _read_shot(row, positions[mid, game, rally, pos])
+        for mid, game, rally, pos, missing in self._all(
+            f"SELECT * FROM observation_gaps WHERE {where}", param
         ):
-            shots[game, rally][pos] = _read_shot(row, positions[game, rally, pos])
-        for _, game, rally, pos, missing in self._all(
-            "SELECT * FROM observation_gaps WHERE match_id = ?", match_id
-        ):
-            shots[game, rally][pos] = ObservationGap(Parity(missing))
+            shots[mid, game, rally][pos] = ObservationGap(Parity(missing))
 
-        rallies: dict[int, list[Rally]] = defaultdict(list)
-        for _, game, number, *row in self._all(
-            "SELECT * FROM rallies WHERE match_id = ? ORDER BY game_number, number", match_id
+        rallies: defaultdict[tuple[MatchId, int], list[Rally]] = defaultdict(list)
+        for mid, game, number, *row in self._all(
+            f"SELECT * FROM rallies WHERE {where} ORDER BY match_id, game_number, number", param
         ):
-            entries = shots[game, number]
-            rallies[game].append(
+            entries = shots[mid, game, number]
+            rallies[mid, game].append(
                 _read_rally(number, row, tuple(entries[p] for p in sorted(entries)))
             )
 
-        return tuple(
-            Game(number, tuple(rallies[number]))
-            for _, number in self._all(
-                "SELECT * FROM games WHERE match_id = ? ORDER BY number", match_id
-            )
-        )
+        games: defaultdict[MatchId, list[Game]] = defaultdict(list)
+        for mid, number in self._all(
+            f"SELECT * FROM games WHERE {where} ORDER BY match_id, number", param
+        ):
+            games[mid].append(Game(number, tuple(rallies[mid, number])))
+        return {mid: tuple(match_games) for mid, match_games in games.items()}
 
     # --- Plumbing -------------------------------------------------------------------------
 

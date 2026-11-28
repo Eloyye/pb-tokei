@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { ApiError, isRetryable } from "../api/client";
 import { waitUntilSaved } from "../lib/unsavedChanges";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
@@ -18,15 +19,30 @@ export function useReportQuery<T>(key: string[], read: (signal: AbortSignal) => 
   });
 }
 
-export function ReportLoadError({ error, retry }: { error: Error; retry: () => void }) {
+export function ReportLoadError({
+  error,
+  retry,
+  index,
+}: {
+  error: Error;
+  retry: () => void;
+  index?: "/players" | "/teams";
+}) {
   const openPicker = useOpenRallyLogPicker();
-  const conflict = error instanceof ApiError && error.status === 409;
+  const status = error instanceof ApiError ? error.status : undefined;
+  const conflict = status === 409;
   return (
     <p className="match-report notice error" role="alert">
       {error.message}{" "}
-      <button type="button" className="button" onClick={conflict ? openPicker : retry}>
-        {conflict ? "Choose a Rally Log" : "Retry"}
-      </button>
+      {status === 404 && index ? (
+        <Link to={index} className="button">
+          {index === "/players" ? "Back to Players" : "Back to Teams"}
+        </Link>
+      ) : (
+        <button type="button" className="button" onClick={conflict ? openPicker : retry}>
+          {conflict ? "Choose a Rally Log" : "Retry"}
+        </button>
+      )}
     </p>
   );
 }

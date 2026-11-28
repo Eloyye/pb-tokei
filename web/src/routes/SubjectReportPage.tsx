@@ -22,7 +22,9 @@ export function PlayerReportPage() {
   );
   if (report.isPending) return <p className="match-report notice">Loading Player report…</p>;
   if (report.isError) {
-    return <ReportLoadError error={report.error} retry={() => void report.refetch()} />;
+    return (
+      <ReportLoadError error={report.error} retry={() => void report.refetch()} index="/players" />
+    );
   }
   return (
     <SubjectReport
@@ -41,7 +43,9 @@ export function TeamReportPage() {
   const report = useReportQuery(["teams", teamId], (signal) => getTeamReport(teamId, signal));
   if (report.isPending) return <p className="match-report notice">Loading Team report…</p>;
   if (report.isError) {
-    return <ReportLoadError error={report.error} retry={() => void report.refetch()} />;
+    return (
+      <ReportLoadError error={report.error} retry={() => void report.refetch()} index="/teams" />
+    );
   }
   return (
     <SubjectReport
@@ -192,7 +196,7 @@ function SubjectMatches({
                   <td>
                     {rallies.counted === 0
                       ? "No Rallies yet"
-                      : `${rallies.done} Done / ${rallies.in_progress} In progress`}
+                      : `${rallies.done} Done / ${rallies.in_progress} In progress / ${rallies.empty} Empty`}
                   </td>
                   <td>
                     <Link

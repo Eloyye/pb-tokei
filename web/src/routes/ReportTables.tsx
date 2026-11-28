@@ -61,7 +61,12 @@ export function ReportCoverage({
         {rallies.counted} Rallies counted · {rallies.done} Done, {rallies.in_progress} In progress,{" "}
         {rallies.empty} Empty
       </p>
-      {uncredited > 0 && <p>{uncredited} observations couldn&apos;t be credited to a Team</p>}
+      {uncredited > 0 && (
+        <p>
+          {uncredited} observations{matchCount !== undefined && " across these Matches"}{" "}
+          couldn&apos;t be credited to a Team
+        </p>
+      )}
     </>
   );
 }

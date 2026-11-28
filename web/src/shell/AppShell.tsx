@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useMatch, useParams } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   getMatch,
@@ -103,6 +103,7 @@ function TopBar({
   rallyLog: RallyLogQuery;
 }) {
   const { matchId, workspace } = useParams({ strict: false });
+  const isNewMatch = useMatch({ from: "/matches/new", shouldThrow: false, select: () => true });
   const match = useQuery({
     queryKey: ["matches", matchId],
     queryFn: () => getMatch(matchId ?? ""),
@@ -131,7 +132,11 @@ function TopBar({
       </div>
       {matchId === undefined ? (
         <nav className="workspace-tabs dashboard-tabs" aria-label="Dashboard">
-          <Link to="/" activeOptions={{ exact: true }}>
+          <Link
+            to="/"
+            activeOptions={{ exact: true }}
+            inactiveProps={isNewMatch ? { "aria-current": "page" } : undefined}
+          >
             Matches
           </Link>
           <Link to="/players">Players</Link>
