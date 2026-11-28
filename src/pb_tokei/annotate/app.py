@@ -70,6 +70,12 @@ from pb_tokei.annotate.players import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.events.compare import (
+    CompareQuery,
+    Comparison,
+    build_comparison,
+    load_comparison,
+)
 from pb_tokei.events.leaderboard import (
     Leaderboard,
     LeaderboardQuery,
@@ -1103,6 +1109,14 @@ def create_app(
         snapshot = rally_log.run(lambda log: load_leaderboard_matches(log, query))
         response.headers["Cache-Control"] = "no-store"
         return build_leaderboard(snapshot, query)
+
+    @app.get("/api/compare", operation_id="getComparison")
+    def get_comparison(
+        response: Response, rally_log: OpenLog, query: Annotated[CompareQuery, Query()]
+    ) -> Comparison:
+        snapshot = rally_log.run(lambda log: load_comparison(log, query))
+        response.headers["Cache-Control"] = "no-store"
+        return build_comparison(snapshot)
 
     # --- Matches -------------------------------------------------------------------------
 

@@ -13,6 +13,10 @@ type ReportRate = components["schemas"]["ReportRate"];
 type ReportMix = components["schemas"]["ReportMix"];
 type ReportTeam = components["schemas"]["ReportTeam"];
 type ReportRallies = components["schemas"]["ReportRallies"];
+type CompareMarks = components["schemas"]["CompareMarks"];
+/** A Compare stat carries which of its values are clearly different. */
+type MarkedStat = ReportStat &
+  Partial<Pick<components["schemas"]["CompareStat"], "marks" | "row_marks">>;
 
 export type ReportColumn = { id: string; label: string; link?: boolean } & (
   | { kind: "team"; teamLetter: "a" | "b" }
@@ -75,11 +79,17 @@ export function ReportTables({
   stats,
   columns,
   by,
+  splits = Object.keys(REPORT_SPLITS) as ReportSplit[],
   onSplitChange,
-}: TableContext & { stats: ReportStat[]; onSplitChange: (value: string) => void }) {
+}: TableContext & {
+  stats: MarkedStat[];
+  splits?: ReportSplit[];
+  onSplitChange: (value: string) => void;
+}) {
   const context = { columns, by };
   const reasons = stats.find((stat) => stat.id === "outcome_reason");
   const groups = new Set(stats.map((stat) => stat.group));
+  const marked = stats.some((stat) => stat.marks !== undefined);
   return (
     <>
       <div className="report-tools">
@@ -87,14 +97,20 @@ export function ReportTables({
           Break down by
           <select value={by ?? ""} onChange={(event) => onSplitChange(event.currentTarget.value)}>
             <option value="">None</option>
-            {Object.entries(REPORT_SPLITS).map(([id, label]) => (
+            {splits.map((id) => (
               <option key={id} value={id}>
-                {label}
+                {REPORT_SPLITS[id]}
               </option>
             ))}
           </select>
         </label>
         <span>Rate bars show 90% Wilson intervals</span>
+        {marked && (
+          <span>
+            <span className="report-different">Clearly different</span>: the 90% intervals
+            don&apos;t overlap
+          </span>
+        )}
       </div>
       {[...groups].map((group) => (
         <div className="report-table-scroll" key={group}>
@@ -148,12 +164,14 @@ function StatRows({
   reasons,
   context,
 }: {
-  stat: ReportStat;
+  stat: MarkedStat;
   reasons?: ReportStat;
   context: TableContext;
 }) {
   if (stat.sub_rows === null) {
-    return <ValueRows label={stat.label} stat={stat} row={stat} context={context} />;
+    return (
+      <ValueRows label={stat.label} stat={stat} row={stat} context={context} marks={stat.marks} />
+    );
   }
   return (
     <>
@@ -164,7 +182,14 @@ function StatRows({
       </tr>
       {stat.rows.map((row) => (
         <Fragment key={row.id}>
-          <ValueRows label={row.label} stat={stat} row={row} context={context} indent={1} />
+          <ValueRows
+            label={row.label}
+            stat={stat}
+            row={row}
+            context={context}
+            indent={1}
+            marks={stat.row_marks?.[row.id]}
+          />
           {reasons && <WhyRows shotType={row} reasons={reasons} context={context} />}
         </Fragment>
       ))}
@@ -211,17 +236,26 @@ function ValueRows({
   row,
   context,
   indent = 0,
+  marks,
 }: {
   label: string;
   stat: ReportStat;
   row: ReportStat | ReportSubRow;
   context: TableContext;
   indent?: number;
+  marks?: CompareMarks;
 }) {
   const { columns, by } = context;
   if (by === undefined || !stat.splits_by.includes(by)) {
     return (
-      <ValueRow label={label} stat={stat} values={row.values} context={context} indent={indent} />
+      <ValueRow
+        label={label}
+        stat={stat}
+        values={row.values}
+        context={context}
+        indent={indent}
+        different={marks?.clearly_different}
+      />
     );
   }
   return (
@@ -239,6 +273,7 @@ function ValueRows({
           values={values}
           context={context}
           indent={indent + 1}
+          different={marks?.breakdowns[by]?.includes(bucket)}
         />
       ))}
     </>
@@ -257,18 +292,26 @@ function ValueRow({
   values,
   context,
   indent,
+  different = false,
 }: {
   label: string;
   stat: ReportStat;
   values: ReportValues;
   context: TableContext;
   indent: number;
+  different?: boolean;
 }) {
   const { columns, by } = context;
   return (
-    <tr>
+    <tr className={different ? "report-row-different" : undefined}>
       <th scope="row" data-indent={indent}>
         {label}
+        {different && (
+          <>
+            {" "}
+            <span className="report-different">Clearly different</span>
+          </>
+        )}
       </th>
       {columns.map((column) => {
         const applies = stat.applies_to === "both" || stat.applies_to === column.kind;

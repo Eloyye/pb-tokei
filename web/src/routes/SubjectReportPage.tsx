@@ -136,6 +136,15 @@ function SubjectReport({
           <div className="report-matchup">
             <h1>{title}</h1>
             {player && <p>{player.profile.handedness === "left" ? "Left" : "Right"}-handed</p>}
+            <p>
+              <Link
+                className="button"
+                to="/compare"
+                search={{ kind: teamProfile ? "team" : "player", a: profile.id }}
+              >
+                Compare
+              </Link>
+            </p>
             {!updating && (
               <>
                 <ReportCoverage
