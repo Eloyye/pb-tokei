@@ -12,7 +12,7 @@ import { EditMatchPage } from "./routes/EditMatchPage";
 import { LeaderboardPage } from "./routes/LeaderboardPage";
 import { leaderboardSearch } from "./routes/leaderboardSearch";
 import { playerReportSearch, teamReportSearch } from "./routes/matchFilters";
-import { MatchList } from "./routes/MatchList";
+import { HomePrototype } from "./routes/home-prototype/HomePrototype";
 import { MatchPage } from "./routes/MatchPage";
 import { NewMatchPage } from "./routes/NewMatchPage";
 import { reportSearch } from "./routes/reportOptions";
@@ -25,10 +25,24 @@ const rootRoute = createRootRoute({
   notFoundComponent: () => <p className="notice">Page not found.</p>,
 });
 
+// PROTOTYPE (branch prototype/home-screen): `?variant=` and `?data=sample` pick a Home variant.
+const searchText = (value: unknown) =>
+  typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: MatchList,
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { variant?: string; data?: string; select?: string; clean?: string } => {
+    return {
+      variant: searchText(search.variant),
+      data: searchText(search.data),
+      select: searchText(search.select),
+      clean: searchText(search.clean),
+    };
+  },
+  component: HomePrototype,
 });
 
 const playersRoute = createRoute({
