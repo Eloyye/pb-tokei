@@ -34,16 +34,20 @@ from pb_tokei.footage import (
 )
 from pb_tokei.rally_log import (
     DEFAULT_DB_PATH,
+    Gender,
     MatchId,
     MatchNotFound,
     MatchSummary,
+    PlayerId,
     RallyLog,
+    RecordNotFound,
     parse_match_date,
     stored_video_path,
 )
 from pb_tokei.roster import (
     AmbiguousFranchiseMatchError,
     RosterError,
+    edit_player,
     read_roster,
     roster_template,
     set_up_match,
@@ -150,6 +154,19 @@ def build_parser() -> argparse.ArgumentParser:
     _db_argument(set_date)
     set_date.set_defaults(handler=_match_set_date)
 
+    player = subparsers.add_parser("player", help="Update Player records in the Rally Log.")
+    player_commands = player.add_subparsers(dest="player_command", required=True)
+
+    set_gender = player_commands.add_parser(
+        "set-gender", help="Set or change a Player's gender (male | female)."
+    )
+    set_gender.add_argument("player", help="Player UUID or exact name in the Rally Log.")
+    set_gender.add_argument(
+        "gender", choices=[g.value for g in Gender], help="Player gender (male | female)."
+    )
+    _db_argument(set_gender)
+    set_gender.set_defaults(handler=_player_set_gender)
+
     annotate = subparsers.add_parser(
         "annotate", help="Open the annotation web app on this machine (127.0.0.1 only)."
     )
@@ -231,6 +248,8 @@ def main(
     if args.command == "convert":
         return _run_convert(args, run=run)
     if args.command == "match":
+        return args.handler(args)
+    if args.command == "player":
         return args.handler(args)
     if args.command == "annotate":
         return _run_annotate(args)
@@ -546,10 +565,56 @@ def _match_set_date(args: argparse.Namespace) -> int:
     return 0
 
 
+def _player_set_gender(args: argparse.Namespace) -> int:
+    identifier = args.player.strip()
+    if not identifier:
+        print("error: Player id or name must not be empty", file=sys.stderr)
+        return 1
+    gender = Gender(args.gender)
+    db_path = _resolve_cli_db(args.db)
+    if db_path is None:
+        return 1
+    try:
+        player_id: PlayerId | None = None
+        try:
+            player_id = PlayerId(UUID(identifier))
+        except ValueError:
+            player_id = None
+        with RallyLog.open(db_path) as log:
+            if player_id is None:
+                players = log.list_players()
+                exact = [p for p in players if p.name == identifier]
+                if len(exact) == 1:
+                    player_id = exact[0].id
+                elif len(exact) > 1:
+                    print(
+                        f"error: multiple Players named {identifier!r}; pass a Player UUID instead",
+                        file=sys.stderr,
+                    )
+                    return 1
+                else:
+                    normalized = " ".join(identifier.split()).casefold()
+                    hint = next(
+                        (p for p in players if " ".join(p.name.split()).casefold() == normalized),
+                        None,
+                    )
+                    suffix = f" (did you mean {hint.name!r}?)" if hint is not None else ""
+                    print(f"error: Player not found: {identifier!r}{suffix}", file=sys.stderr)
+                    return 1
+            updated, _ = edit_player(log, player_id, gender=gender)
+    except (RecordNotFound, RosterError, ValueError, duckdb.Error, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    assert updated.gender is not None
+    print(f"{updated.id}  {updated.name}  {updated.gender.value}")
+    return 0
+
+
 def _match_line(summary: MatchSummary) -> str:
     teams = f"{' / '.join(summary.team_a)}  vs  {' / '.join(summary.team_b)}"
     match_date = summary.date.isoformat() if summary.date is not None else "—"
-    parts = [str(summary.id), match_date, summary.tournament, teams]
+    discipline = summary.discipline.label if summary.discipline is not None else "—"
+    parts = [str(summary.id), match_date, summary.tournament, discipline, teams]
     if summary.franchise_a is not None:
         parts.append(f"({summary.franchise_a} vs {summary.franchise_b})")
     parts.append("video" if summary.has_video else "no video")

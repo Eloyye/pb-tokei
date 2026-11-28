@@ -12,7 +12,7 @@ from test_roster import DALLAS_VS_MIAMI, MLP, roster_toml
 
 from pb_tokei.annotate.app import create_app
 from pb_tokei.annotate.footage_jobs import FootageJobService
-from pb_tokei.rally_log import Handedness, MatchId, RallyLog
+from pb_tokei.rally_log import Discipline, Gender, Handedness, MatchId, RallyLog
 from pb_tokei.roster import Roster, parse_roster, set_up_match
 from pb_tokei.state import read_cookies_from_browser, write_cookies_from_browser
 
@@ -50,7 +50,9 @@ def form(roster: Roster | None = None) -> dict[str, Any]:
 def test_create_match_is_equivalent_to_its_roster_file(client: TestClient, db: Path) -> None:
     with RallyLog.open(db) as log:
         first = set_up_match(log, parse_roster(roster_toml()))
-    roster = parse_roster(roster_toml(team_b=(("Eve Park", "left"), ("Dan Kim", "right"))))
+    roster = parse_roster(
+        roster_toml(team_b=(("Eve Park", "left", "female"), ("Dan Kim", "right", "male")))
+    )
     body = form(roster)
     body["tournament"] += " "
     body["team_a"][0]["name"] += " "
@@ -152,11 +154,14 @@ def test_roster_catalog_includes_matches_grouped_by_franchise_match(
 
     assert response.status_code == 200, response.text
     catalog = response.json()
-    assert [{"name": p["name"], "handedness": p["handedness"]} for p in catalog["players"]] == [
-        {"name": "Anna Bright", "handedness": "right"},
-        {"name": "Ben Johns", "handedness": "right"},
-        {"name": "Cara Lee", "handedness": "left"},
-        {"name": "Dan Kim", "handedness": "right"},
+    assert [
+        {"name": p["name"], "handedness": p["handedness"], "gender": p["gender"]}
+        for p in catalog["players"]
+    ] == [
+        {"name": "Anna Bright", "handedness": "right", "gender": "female"},
+        {"name": "Ben Johns", "handedness": "right", "gender": "male"},
+        {"name": "Cara Lee", "handedness": "left", "gender": "female"},
+        {"name": "Dan Kim", "handedness": "right", "gender": "male"},
     ]
     assert all(UUID(p["id"]) for p in catalog["players"])
     assert {item["tour"] for item in catalog["tournaments"]} == {"ppa", "mlp"}
@@ -168,7 +173,11 @@ def test_roster_catalog_includes_matches_grouped_by_franchise_match(
             "franchise_a_id": franchises["Dallas Flash"],
             "franchise_b_id": franchises["Miami Pickleball Club"],
             "matches": [
-                {"team_a": ["Anna Bright", "Ben Johns"], "team_b": ["Cara Lee", "Dan Kim"]}
+                {
+                    "team_a": ["Anna Bright", "Ben Johns"],
+                    "team_b": ["Cara Lee", "Dan Kim"],
+                    "discipline": "mixed_doubles",
+                }
             ],
         }
     ]
@@ -315,3 +324,79 @@ def test_patch_match_date_checks_existence_origin_and_rally_log(
     )
     with RallyLog.open(db) as log:
         assert log.load_match(match.id).date == date(2026, 3, 1)
+
+
+def test_match_creation_validates_gender_and_discipline_without_writing(
+    client: TestClient, db: Path
+) -> None:
+    missing_gender = form()
+    del missing_gender["team_a"][0]["gender"]
+    assert client.post("/api/matches", json=missing_gender).status_code == 422
+
+    bad_gender = form()
+    bad_gender["team_a"][0]["gender"] = "other"
+    assert client.post("/api/matches", json=bad_gender).status_code == 422
+
+    for team_a_genders, team_b_genders in (
+        (("male", "male"), ("female", "male")),
+        (("male", "male"), ("female", "female")),
+        (("female", "female"), ("female", "male")),
+    ):
+        body = form()
+        body["team_a"][0]["gender"], body["team_a"][1]["gender"] = team_a_genders
+        body["team_b"][0]["gender"], body["team_b"][1]["gender"] = team_b_genders
+        resp = client.post("/api/matches", json=body)
+        assert resp.status_code == 422
+        assert "Invalid Match lineup" in resp.json()["detail"]
+
+    with RallyLog.open(db) as log:
+        assert not log.list_matches()
+        assert not log.list_players()
+
+
+def test_match_creation_backfills_legacy_null_gender_and_refuses_conflicts(
+    client: TestClient, db: Path
+) -> None:
+    with RallyLog.open(db) as log:
+        first = set_up_match(log, parse_roster(roster_toml()))
+        anna = log.find_player("Anna Bright")
+        assert anna is not None
+        log.save_player(replace(anna, gender=None))
+
+    assert client.get(f"/api/matches/{first.id}").json()["discipline"] is None
+
+    # Supplying a conflicting gender for legacy Anna (would turn `first` into M+M vs F+M) is 422.
+    conflicting = form(
+        parse_roster(
+            roster_toml(
+                team_a=(("Anna Bright", "right", "male"), ("Ben Johns", "right", "male")),
+                team_b=(("Dan Kim", "right", "male"), ("New Guy", "right", "male")),
+            )
+        )
+    )
+    bad = client.post("/api/matches", json=conflicting)
+    assert bad.status_code == 422
+    assert "PPA Atlanta Open 2026" in bad.json()["detail"]
+    with RallyLog.open(db) as log:
+        assert log.get_player(anna.id).gender is None
+        assert log.find_player("New Guy") is None
+
+    # Compatible backfill succeeds atomically and derives Discipline on both Matches.
+    compatible = form(
+        parse_roster(
+            roster_toml(
+                team_a=(("Anna Bright", "right", "female"), ("Ben Johns", "right", "male")),
+                team_b=(("Eve Park", "left", "female"), ("Dan Kim", "right", "male")),
+            )
+        )
+    )
+    ok = client.post("/api/matches", json=compatible)
+    assert ok.status_code == 201, ok.text
+    with RallyLog.open(db) as log:
+        assert log.get_player(anna.id).gender is Gender.FEMALE
+        assert log.get_match_summary(first.id).discipline is Discipline.MIXED_DOUBLES
+
+    # Once set, a disagreeing gender on Match setup is rejected with 422.
+    disagree = client.post("/api/matches", json=conflicting)
+    assert disagree.status_code == 422
+    assert "Anna Bright is stored as female" in disagree.json()["detail"]

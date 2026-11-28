@@ -38,6 +38,7 @@ const STATS: Stat[] = [
 const ALEX = { id: "alex", name: "Alex One" };
 const TEAM: components["schemas"]["ReportTeam"] = {
   id: "team",
+  discipline: "mixed_doubles",
   players: [ALEX, { id: "avery", name: "Avery Two" }],
 };
 const TOURNAMENT = "10000000-0000-4000-8000-000000000003";
@@ -71,6 +72,7 @@ beforeEach(() => {
       },
       match_count: 1,
       undated_matches_excluded: 0,
+      unclassified_matches_excluded: 0,
       hidden_count: minimum === 30 ? 4 : 1,
       rows:
         minimum === 30
@@ -150,6 +152,9 @@ it("round-trips the selected stat, kind, minimum, bucket and Match filters throu
   fireEvent.change(screen.getByRole("combobox", { name: "Bucket" }), { target: { value: "2" } });
   fireEvent.click(filters.getByRole("checkbox", { name: "Synthetic MLP Open (MLP)" }));
   fireEvent.change(filters.getByRole("combobox", { name: "Tour" }), { target: { value: "mlp" } });
+  fireEvent.change(filters.getByRole("combobox", { name: "Discipline" }), {
+    target: { value: "mixed_doubles" },
+  });
   fireEvent.change(filters.getByLabelText("Date from"), { target: { value: DATE } });
   fireEvent.change(filters.getByLabelText("Date to"), { target: { value: DATE } });
   fireEvent.click(filters.getByRole("button", { name: "Apply filters" }));
@@ -161,6 +166,7 @@ it("round-trips the selected stat, kind, minimum, bucket and Match filters throu
     by: "shot_number",
     bucket: "2",
     tour: "mlp",
+    discipline: "mixed_doubles",
     tournament: [TOURNAMENT],
     date_from: DATE,
     date_to: DATE,
@@ -186,6 +192,9 @@ it("round-trips the selected stat, kind, minimum, bucket and Match filters throu
     restored.getByRole("checkbox", { name: "Synthetic MLP Open (MLP)", checked: true }),
   ).toBeTruthy();
   expect((restored.getByRole("combobox", { name: "Tour" }) as HTMLSelectElement).value).toBe("mlp");
+  expect((restored.getByRole("combobox", { name: "Discipline" }) as HTMLSelectElement).value).toBe(
+    "mixed_doubles",
+  );
   expect((restored.getByLabelText("Date from") as HTMLInputElement).value).toBe(DATE);
   expect((restored.getByLabelText("Date to") as HTMLInputElement).value).toBe(DATE);
 });
@@ -230,4 +239,31 @@ it("retries a failed Leaderboard load without changing the ranking settings", as
     kind: "team",
     minimum: "1",
   });
+});
+
+it("displays the excluded unclassified Match count when Discipline filter is active", async () => {
+  vi.mocked(getLeaderboard).mockResolvedValueOnce({
+    stat: SERVE_IN.id,
+    stats: STATS,
+    bucket: null,
+    buckets: { shot_number: ["1"], court_half: ["Left"] },
+    filter_options: { tournaments: [] },
+    match_count: 2,
+    undated_matches_excluded: 0,
+    unclassified_matches_excluded: 3,
+    hidden_count: 0,
+    rows: [
+      {
+        rank: 1,
+        kind: "player",
+        subject: ALEX,
+        value: { count: 10, of: 12, estimate: 10 / 12, low: 0.6, high: 0.95, left_out: 0 },
+      },
+    ],
+  });
+  renderLeaderboard("/leaderboard?minimum=1&discipline=mens_doubles");
+  expect(await screen.findByText("3 Matches left out because of unknown Discipline")).toBeTruthy();
+  expect((screen.getByRole("combobox", { name: "Discipline" }) as HTMLSelectElement).value).toBe(
+    "mens_doubles",
+  );
 });

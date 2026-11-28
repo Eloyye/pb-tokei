@@ -5,6 +5,8 @@ import {
   ApiError,
   createMatch,
   type CreateMatchIn,
+  type Discipline,
+  type Gender,
   getRallyLog,
   getRoster,
   getTabRallyLog,
@@ -13,21 +15,38 @@ import {
   subscribeTabRallyLog,
 } from "../api/client";
 import { useOpenRallyLogPicker } from "../shell/rallyLog";
+import {
+  deriveMatchDiscipline,
+  DISCIPLINE_LIST,
+  DISCIPLINES,
+  franchiseMatchLabel,
+  genderLabel,
+  genderShort,
+  isGenderEligible,
+  playerMetaBadge,
+  requiredGenderForSlot,
+} from "./discipline";
 import { isValidMatchDate } from "./matchDate";
 import { NameField } from "./NameField";
-import { teamsLabel } from "./teams";
 
 type Tour = CreateMatchIn["tour"];
 type RosterTeam = CreateMatchIn["team_a"];
 type Handedness = RosterTeam[number]["handedness"];
-type PlayerDraft = { name: string; handedness: Handedness | "" };
+type PlayerDraft = { name: string; handedness: Handedness | ""; gender: Gender | "" };
 type TeamDraft = [PlayerDraft, PlayerDraft];
 
 const TOURS: Tour[] = ["ppa", "app", "mlp"];
 const EMPTY_TEAM: TeamDraft = [
-  { name: "", handedness: "" },
-  { name: "", handedness: "" },
+  { name: "", handedness: "", gender: "" },
+  { name: "", handedness: "", gender: "" },
 ];
+
+function clearDraftGenders(team: TeamDraft): TeamDraft {
+  return [
+    { ...team[0], gender: "" },
+    { ...team[1], gender: "" },
+  ];
+}
 
 export function NewMatchPage() {
   const openPicker = useOpenRallyLogPicker();
@@ -81,6 +100,7 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
   const [tournamentName, setTournamentName] = useState("");
   const [tourChoice, setTourChoice] = useState<Tour | "">("");
   const [date, setDate] = useState("");
+  const [disciplineHelper, setDisciplineHelper] = useState<Discipline | "">("");
   const [teamA, setTeamA] = useState(EMPTY_TEAM);
   const [teamB, setTeamB] = useState(EMPTY_TEAM);
   const [franchiseA, setFranchiseA] = useState("");
@@ -138,13 +158,34 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
     setMeetingChoice(null);
   }
 
+  function changeDisciplineHelper(next: Discipline | "") {
+    setDisciplineHelper(next);
+    setValidationError(null);
+    setTeamA(clearDraftGenders);
+    setTeamB(clearDraftGenders);
+  }
+
+  const resolvedTeamA = resolveTeam(teamA, roster.players, disciplineHelper);
+  const resolvedTeamB = resolveTeam(teamB, roster.players, disciplineHelper);
+  const derived = deriveMatchDiscipline(
+    [resolvedTeamA[0].gender, resolvedTeamA[1].gender],
+    [resolvedTeamB[0].gender, resolvedTeamB[1].gender],
+  );
+  const helperMismatch = helperConflict(
+    disciplineHelper,
+    resolvedTeamA,
+    resolvedTeamB,
+    derived.discipline,
+  );
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (create.isPending) return;
     create.reset();
     const names = [...teamA, ...teamB].map((player) => player.name.trim());
-    const team_a = completeTeam(teamA, roster.players);
-    const team_b = completeTeam(teamB, roster.players);
+    const allResolved = [...resolvedTeamA, ...resolvedTeamB];
+    const team_a = toRosterTeam(resolvedTeamA);
+    const team_b = toRosterTeam(resolvedTeamB);
     let error: string | null = null;
     if (!tournamentText) error = "Enter a Tournament name.";
     else if (!tour) error = "Choose a Tour.";
@@ -153,7 +194,10 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
     else if (names.some((name) => !name)) error = "Enter all four Player names.";
     else if (new Set(names).size !== names.length)
       error = "A Player can't appear twice in a Match.";
-    else if (!team_a || !team_b) error = "Choose handedness for each new Player.";
+    else if (allResolved.some((slot) => !slot.handedness))
+      error = "Choose handedness for each new Player.";
+    else if (allResolved.some((slot) => !slot.gender)) error = "Choose gender for each Player.";
+    else if (derived.error) error = derived.error;
     else if (tour === "mlp") {
       if (!franchiseAText || !franchiseBText) error = "Enter both Franchise names.";
       else if (franchiseAText === franchiseBText) error = "A Franchise can't play itself.";
@@ -241,12 +285,66 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
                   onChange={(event) => setDate(event.target.value)}
                 />
               </label>
+              <label className="new-match-field">
+                <span>
+                  Discipline <span className="new-match-optional">(optional)</span>
+                </span>
+                <select
+                  aria-label="Discipline"
+                  value={disciplineHelper}
+                  onChange={(event) =>
+                    changeDisciplineHelper(event.target.value as Discipline | "")
+                  }
+                >
+                  <option value="">Any</option>
+                  {DISCIPLINE_LIST.map((item) => (
+                    <option key={item} value={item}>
+                      {DISCIPLINES[item]}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             <div className="new-match-teams">
-              <TeamFields side="A" team={teamA} players={roster.players} onChange={setTeamA} />
-              <TeamFields side="B" team={teamB} players={roster.players} onChange={setTeamB} />
+              <TeamFields
+                side="A"
+                team={teamA}
+                resolved={resolvedTeamA}
+                players={roster.players}
+                disciplineHelper={disciplineHelper}
+                onChange={(next) => {
+                  setTeamA(next);
+                  setValidationError(null);
+                }}
+              />
+              <TeamFields
+                side="B"
+                team={teamB}
+                resolved={resolvedTeamB}
+                players={roster.players}
+                disciplineHelper={disciplineHelper}
+                onChange={(next) => {
+                  setTeamB(next);
+                  setValidationError(null);
+                }}
+              />
             </div>
+
+            {derived.discipline && (
+              <p className="new-match-discipline">
+                Discipline:{" "}
+                <span className="pill discipline-pill">{DISCIPLINES[derived.discipline]}</span>
+              </p>
+            )}
+            {derived.error && !error && (
+              <p className="new-match-error new-match-inline-error" role="alert">
+                {derived.error}
+              </p>
+            )}
+            {!derived.error && helperMismatch && (
+              <output className="new-match-warning">{helperMismatch}</output>
+            )}
 
             {tour === "mlp" && (
               <section className="new-match-franchises" aria-labelledby="franchise-match-heading">
@@ -281,7 +379,7 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
                       {meetings.map((item, index) => (
                         <option key={item.id} value={item.id}>
                           Meeting {index + 1} ·{" "}
-                          {item.matches.map(teamsLabel).join(" · ") || "No Matches"}
+                          {item.matches.map(franchiseMatchLabel).join(" · ") || "No Matches"}
                         </option>
                       ))}
                       <option value="new">New Franchise Match</option>
@@ -319,24 +417,82 @@ function NewMatchForm({ roster, path }: { roster: Roster; path: string }) {
   );
 }
 
-function completeTeam(team: TeamDraft, players: Roster["players"]): RosterTeam | null {
-  const [first, second] = team.map((draft) => {
-    const name = draft.name.trim();
-    const hand = players.find((player) => player.name === name)?.handedness ?? draft.handedness;
-    return hand ? { name, handedness: hand } : null;
+type ResolvedSlot = {
+  name: string;
+  known: Roster["players"][number] | undefined;
+  handedness: Handedness | "";
+  gender: Gender | "";
+  forcedGender: Gender | null;
+};
+
+function resolveTeam(
+  team: TeamDraft,
+  players: Roster["players"],
+  disciplineHelper: Discipline | "",
+): [ResolvedSlot, ResolvedSlot] {
+  const knowns = team.map((draft) => players.find((player) => player.name === draft.name.trim()));
+  const intrinsicGenders: [Gender | "", Gender | ""] = [
+    knowns[0]?.gender ?? team[0].gender,
+    knowns[1]?.gender ?? team[1].gender,
+  ];
+  const slots = team.map((draft, index): ResolvedSlot => {
+    const known = knowns[index];
+    const partnerIntrinsic = intrinsicGenders[1 - index] ?? "";
+    const forcedGender = requiredGenderForSlot(disciplineHelper, partnerIntrinsic);
+    const gender: Gender | "" = known?.gender ?? forcedGender ?? draft.gender;
+    return {
+      name: draft.name.trim(),
+      known,
+      handedness: known?.handedness ?? draft.handedness,
+      gender,
+      forcedGender,
+    };
   });
+  return [slots[0]!, slots[1]!];
+}
+
+function toRosterTeam(team: [ResolvedSlot, ResolvedSlot]): RosterTeam | null {
+  const [first, second] = team.map((slot) =>
+    slot.handedness && slot.gender
+      ? { name: slot.name, handedness: slot.handedness, gender: slot.gender }
+      : null,
+  );
   return first && second ? [first, second] : null;
+}
+
+function helperConflict(
+  helper: Discipline | "",
+  teamA: [ResolvedSlot, ResolvedSlot],
+  teamB: [ResolvedSlot, ResolvedSlot],
+  derivedDiscipline: Discipline | null,
+): string | null {
+  if (!helper) return null;
+  if (derivedDiscipline && derivedDiscipline !== helper) {
+    return `Selected Players form ${DISCIPLINES[derivedDiscipline]}, not ${DISCIPLINES[helper]}.`;
+  }
+  for (const team of [teamA, teamB]) {
+    for (const slot of team) {
+      if (slot.known?.gender && slot.forcedGender && slot.known.gender !== slot.forcedGender) {
+        return `${slot.known.name} (${genderShort(slot.known.gender)}) does not fit ${DISCIPLINES[helper]}.`;
+      }
+    }
+  }
+  return null;
 }
 
 function TeamFields({
   side,
   team,
+  resolved,
   players,
+  disciplineHelper,
   onChange,
 }: {
   side: "A" | "B";
   team: TeamDraft;
+  resolved: [ResolvedSlot, ResolvedSlot];
   players: Roster["players"];
+  disciplineHelper: Discipline | "";
   onChange: (team: TeamDraft) => void;
 }) {
   function update(index: number, player: PlayerDraft) {
@@ -351,35 +507,82 @@ function TeamFields({
         <span className={`swatch team-${side.toLowerCase()}`} aria-hidden="true" /> Team {side}
       </legend>
       {team.map((player, index) => {
-        const known = players.find(({ name }) => name === player.name.trim());
+        const slot = resolved[index]!;
+        const known = slot.known;
         const label = `Player ${index + 1}`;
+        const isLegacyMissingGender = known !== undefined && known.gender === null;
+        const isNewDraft = slot.name !== "" && known === undefined;
+        const genderLocked =
+          (known !== undefined && known.gender !== null) || slot.forcedGender !== null;
         const rename = (name: string) =>
-          update(index, { name, handedness: known ? "" : player.handedness });
+          update(index, {
+            name,
+            handedness: known ? "" : player.handedness,
+            gender: known ? "" : player.gender,
+          });
         return (
-          <div className="new-match-player" key={index}>
-            <NameField
-              label={label}
-              name={player.name}
-              choices={players}
-              onChange={rename}
-              onPick={({ name }) => rename(name)}
-            />
-            <label className="new-match-field">
-              Handedness
-              <select
-                aria-label={`${label} handedness`}
-                value={known?.handedness ?? player.handedness}
-                disabled={known !== undefined}
-                onChange={(event) =>
-                  update(index, { ...player, handedness: event.target.value as Handedness | "" })
+          <div className="new-match-player-slot" key={index}>
+            <div className="new-match-player-meta">
+              {known && <span className="pill player-meta-badge">{playerMetaBadge(known)}</span>}
+              {isNewDraft && <span className="pill pill-active player-new-pill">NEW</span>}
+            </div>
+            <div className="new-match-player">
+              <NameField
+                label={label}
+                name={player.name}
+                choices={players}
+                choiceLabel={(item) => `${item.name} · ${playerMetaBadge(item)}`}
+                isChoiceDisabled={
+                  slot.forcedGender
+                    ? (item) => !isGenderEligible(item.gender, slot.forcedGender)
+                    : undefined
                 }
-                required
-              >
-                <option value="">Choose</option>
-                <option value="left">Left</option>
-                <option value="right">Right</option>
-              </select>
-            </label>
+                disabledChoiceLabel={(item) =>
+                  `${item.name} · ${playerMetaBadge(item)} (ineligible)`
+                }
+                onChange={rename}
+                onPick={({ name }) => rename(name)}
+              />
+              <label className="new-match-field">
+                Handedness
+                <select
+                  aria-label={`${label} handedness`}
+                  value={slot.handedness}
+                  disabled={known !== undefined}
+                  onChange={(event) =>
+                    update(index, { ...player, handedness: event.target.value as Handedness | "" })
+                  }
+                  required
+                >
+                  <option value="">Choose</option>
+                  <option value="left">Left</option>
+                  <option value="right">Right</option>
+                </select>
+              </label>
+              <label className="new-match-field">
+                Gender
+                <select
+                  aria-label={`${label} gender`}
+                  value={slot.gender}
+                  disabled={genderLocked}
+                  onChange={(event) =>
+                    update(index, { ...player, gender: event.target.value as Gender | "" })
+                  }
+                  required
+                >
+                  <option value="">Choose</option>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                </select>
+              </label>
+            </div>
+            {isLegacyMissingGender && (
+              <p className="backfill-hint">
+                {slot.forcedGender
+                  ? `Existing Player missing gender — will save as ${genderLabel(slot.forcedGender)} (${genderShort(slot.forcedGender)}) for ${disciplineHelper ? DISCIPLINES[disciplineHelper] : "this Match"}.`
+                  : "Existing Player missing gender — choose Male or Female to backfill."}
+              </p>
+            )}
           </div>
         );
       })}

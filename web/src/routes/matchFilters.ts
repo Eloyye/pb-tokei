@@ -1,5 +1,6 @@
-import type { PlayerMatchFilters, TeamMatchFilters } from "../api/client";
+import type { Discipline, PlayerMatchFilters, TeamMatchFilters } from "../api/client";
 import type { components } from "../api/schema";
+import { DISCIPLINES } from "./discipline";
 import { isValidMatchDate } from "./matchDate";
 import { reportSearch } from "./reportOptions";
 
@@ -18,6 +19,12 @@ function asId(value: unknown) {
 
 function asDate(value: unknown) {
   return typeof value === "string" && isValidMatchDate(value) ? value : undefined;
+}
+
+function asDiscipline(value: unknown): Discipline | undefined {
+  return typeof value === "string" && Object.hasOwn(DISCIPLINES, value)
+    ? (value as Discipline)
+    : undefined;
 }
 
 export function hasMatchFilters(filters: MatchFilters): boolean {
@@ -42,17 +49,23 @@ export function matchFilters(search: Record<string, unknown>): MatchFilters {
       typeof tour === "string" && Object.hasOwn(TOURS, tour)
         ? (tour as keyof typeof TOURS)
         : undefined,
+    discipline: asDiscipline(search.discipline),
     date_from: asDate(search.date_from),
     date_to: asDate(search.date_to),
   };
 }
 
 export function teamMatchFilters(search: Record<string, unknown>): TeamMatchFilters {
-  return { ...matchFilters(search), opponent: asId(search.opponent) };
+  const { discipline: _discipline, ...base } = matchFilters(search);
+  return { ...base, opponent: asId(search.opponent) };
 }
 
 export function playerMatchFilters(search: Record<string, unknown>): PlayerMatchFilters {
-  return { ...teamMatchFilters(search), partner: asId(search.partner) };
+  return {
+    ...matchFilters(search),
+    opponent: asId(search.opponent),
+    partner: asId(search.partner),
+  };
 }
 
 export function teamReportSearch(search: Record<string, unknown>) {

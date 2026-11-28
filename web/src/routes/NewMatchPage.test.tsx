@@ -33,10 +33,10 @@ const PATH = "/data/log.duckdb";
 const VIDEO_URL = "https://www.youtube.com/watch?v=abc123";
 const roster: Roster = {
   players: [
-    { id: "p1", name: "Anna Bright", handedness: "right" },
-    { id: "p2", name: "Anna-Leigh Waters", handedness: "right" },
-    { id: "p3", name: "Cara Lee", handedness: "left" },
-    { id: "p4", name: "Dan Kim", handedness: "right" },
+    { id: "p1", name: "Anna Bright", handedness: "right", gender: "female" },
+    { id: "p2", name: "Anna-Leigh Waters", handedness: "right", gender: "female" },
+    { id: "p3", name: "Cara Lee", handedness: "left", gender: "female" },
+    { id: "p4", name: "Dan Kim", handedness: "right", gender: "male" },
   ],
   tournaments: [
     { id: "ppa-tournament", name: "Atlanta Open", tour: "ppa" },
@@ -52,7 +52,13 @@ const roster: Roster = {
       tournament_id: "mlp-tournament",
       franchise_a_id: "dallas",
       franchise_b_id: "miami",
-      matches: [{ team_a: ["Anna Bright", "Anna-Leigh Waters"], team_b: ["Cara Lee", "Dan Kim"] }],
+      matches: [
+        {
+          team_a: ["Anna Bright", "Anna-Leigh Waters"],
+          team_b: ["Cara Lee", "Eve Park"],
+          discipline: "womens_doubles",
+        },
+      ],
     },
   ],
 };
@@ -97,18 +103,22 @@ function change(field: HTMLElement, value: string) {
 function teamFields(side: "A" | "B") {
   const group = within(screen.getByRole("group", { name: `Team ${side}` }));
   return {
+    group,
     player1: group.getByRole<HTMLInputElement>("combobox", { name: "Player 1" }),
     player2: group.getByRole<HTMLInputElement>("combobox", { name: "Player 2" }),
     hand1: group.getByLabelText<HTMLSelectElement>("Player 1 handedness"),
     hand2: group.getByLabelText<HTMLSelectElement>("Player 2 handedness"),
+    gender1: group.getByLabelText<HTMLSelectElement>("Player 1 gender"),
+    gender2: group.getByLabelText<HTMLSelectElement>("Player 2 gender"),
   };
 }
 
 function fillPlayers() {
   const teamA = teamFields("A");
   change(teamA.player1, "Anna Bright");
-  change(teamA.player2, "Eve Park");
+  change(teamA.player2, "Sam Park");
   change(teamA.hand2, "left");
+  change(teamA.gender2, "male");
   const teamB = teamFields("B");
   change(teamB.player1, "Cara Lee");
   change(teamB.player2, "Dan Kim");
@@ -148,26 +158,34 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("suggests Player names and locks known handedness after picking one", async () => {
+it("suggests Player names and locks known handedness and gender after picking one", async () => {
   renderForm();
   await screen.findByRole("heading", { name: "New Match" });
   const team = teamFields("A");
   expect(team.hand1.value).toBe("");
   expect(team.hand1.disabled).toBe(false);
+  expect(team.gender1.value).toBe("");
+  expect(team.gender1.disabled).toBe(false);
 
   change(team.player1, "Anan Bright");
-  fireEvent.click(screen.getByRole("button", { name: "Anna Bright" }));
+  fireEvent.click(screen.getByRole("button", { name: "Anna Bright · R · W" }));
   expect(team.player1.value).toBe("Anna Bright");
   expect(team.hand1.value).toBe("right");
   expect(team.hand1.disabled).toBe(true);
+  expect(team.gender1.value).toBe("female");
+  expect(team.gender1.disabled).toBe(true);
+  expect(team.group.getByText("R · W")).toBeTruthy();
   change(team.player1, "Anna Bright ");
   expect(team.hand1.value).toBe("right");
   expect(team.hand1.disabled).toBe(true);
+  expect(team.gender1.value).toBe("female");
+  expect(team.gender1.disabled).toBe(true);
 
   change(team.player2, "Waters");
-  fireEvent.click(screen.getByRole("button", { name: "Anna-Leigh Waters" }));
+  fireEvent.click(screen.getByRole("button", { name: "Anna-Leigh Waters · R · W" }));
   expect(team.player2.value).toBe("Anna-Leigh Waters");
   expect(team.hand2.disabled).toBe(true);
+  expect(team.gender2.disabled).toBe(true);
   expect(getRoster).toHaveBeenCalledExactlyOnceWith(PATH);
 });
 
@@ -193,11 +211,14 @@ it.each(["existing", "new"])("can choose a %s Franchise Match for MLP", async (c
   change(screen.getByLabelText("Franchise B (Team B)"), "Dallas Flash");
   const meeting = screen.getByRole<HTMLSelectElement>("combobox", { name: "Franchise Match" });
   expect(meeting.value).toBe("meeting-uuid");
-  expect(meeting.selectedOptions[0]?.textContent).toContain("Anna Bright / Anna-Leigh Waters");
+  expect(meeting.selectedOptions[0]?.textContent).toContain(
+    "Anna Bright / Anna-Leigh Waters vs Cara Lee / Eve Park (Women's Doubles)",
+  );
   expect(meeting.textContent).not.toContain("meeting-uuid");
   if (choice === "new") change(meeting, "new");
 
   fillPlayers();
+  expect(screen.getByText("Mixed Doubles", { selector: ".discipline-pill" })).toBeTruthy();
   changeDate("2026-04-12");
   fireEvent.click(screen.getByRole("button", { name: "Create Match" }));
   await screen.findByRole("heading", { name: "Match Workspace" });
@@ -207,12 +228,12 @@ it.each(["existing", "new"])("can choose a %s Franchise Match for MLP", async (c
       tournament: "MLP Dallas",
       tour: "mlp",
       team_a: [
-        { name: "Anna Bright", handedness: "right" },
-        { name: "Eve Park", handedness: "left" },
+        { name: "Anna Bright", handedness: "right", gender: "female" },
+        { name: "Sam Park", handedness: "left", gender: "male" },
       ],
       team_b: [
-        { name: "Cara Lee", handedness: "left" },
-        { name: "Dan Kim", handedness: "right" },
+        { name: "Cara Lee", handedness: "left", gender: "female" },
+        { name: "Dan Kim", handedness: "right", gender: "male" },
       ],
       franchise_match: {
         franchise_a: "Miami Pickleball Club",
@@ -241,7 +262,7 @@ it("keeps the draft on a RosterError and opens the Workspace on success", async 
   expect((await screen.findByRole("alert")).textContent).toBe("Choose the stored Player name");
   expect(tournament.value).toBe("Atlanta Open");
   expect(dateField.value).toBe("2026-04-12");
-  expect(teamFields("A").player2.value).toBe("Eve Park");
+  expect(teamFields("A").player2.value).toBe("Sam Park");
   expect(video.value).toBe(VIDEO_URL);
 
   fireEvent.click(button);
@@ -278,7 +299,7 @@ it("lets the server match a meeting that was absent when the form opened", async
     name: "Franchise Match",
   });
   expect(meeting.value).toBe("");
-  expect(teamFields("A").player2.value).toBe("Eve Park");
+  expect(teamFields("A").player2.value).toBe("Sam Park");
 
   change(meeting, "meeting-uuid");
   submit();
@@ -298,6 +319,15 @@ it.each([
   {
     error: "Choose handedness for each new Player.",
     adjust: () => change(teamFields("A").hand2, ""),
+  },
+  {
+    error: "Choose gender for each Player.",
+    adjust: () => change(teamFields("A").gender2, ""),
+  },
+  {
+    error:
+      "Invalid Match lineup: Women's Doubles vs Mixed Doubles (must be Men's Doubles, Women's Doubles, or Mixed Doubles).",
+    adjust: () => change(teamFields("A").gender2, "female"),
   },
   {
     error: "Enter both Franchise names.",
@@ -348,4 +378,96 @@ it("stays off the old Match Workspace if the Rally Log changes during creation",
 
   await screen.findByRole("button", { name: "Create Match" });
   expect(router.state.location.pathname).toBe("/matches/new");
+});
+
+it("uses the optional Discipline helper to filter/disable ineligible Players and lock new genders", async () => {
+  renderForm();
+  await screen.findByRole("heading", { name: "New Match" });
+  const helper = screen.getByLabelText<HTMLSelectElement>("Discipline");
+  expect(helper.value).toBe("");
+
+  // Women's Doubles disables male Players and pre-fills & locks new Players to female.
+  change(helper, "womens_doubles");
+  const teamA = teamFields("A");
+  expect(teamA.gender1.value).toBe("female");
+  expect(teamA.gender1.disabled).toBe(true);
+  fireEvent.focus(teamA.player1);
+  const danOption = screen.getByRole<HTMLButtonElement>("option", {
+    name: "Dan Kim · R · M (ineligible)",
+  });
+  expect(danOption.disabled).toBe(true);
+  expect(
+    screen.getByRole<HTMLButtonElement>("option", { name: "Anna Bright · R · W" }).disabled,
+  ).toBe(false);
+
+  // Mixed Doubles: picking Anna Bright (W) locks Player 2 to Male and disables female Players.
+  change(helper, "mixed_doubles");
+  expect(teamA.gender1.disabled).toBe(false);
+  change(teamA.player1, "Anna Bright");
+  expect(teamA.gender2.value).toBe("male");
+  expect(teamA.gender2.disabled).toBe(true);
+  fireEvent.focus(teamA.player2);
+  const alwOption = screen.getByRole<HTMLButtonElement>("option", {
+    name: "Anna-Leigh Waters · R · W (ineligible)",
+  });
+  expect(alwOption.disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("option", { name: "Dan Kim · R · M" }).disabled).toBe(
+    false,
+  );
+
+  // Typing a new Player shows NEW pill and keeps forced Male gender.
+  change(teamA.player2, "Brand New Man");
+  expect(teamA.group.getByText("NEW")).toBeTruthy();
+  expect(teamA.gender2.value).toBe("male");
+  expect(teamA.gender2.disabled).toBe(true);
+});
+
+it("prompts inline to backfill gender for a legacy Player and submits the chosen gender", async () => {
+  vi.mocked(getRoster).mockResolvedValue({
+    ...roster,
+    players: [
+      ...roster.players,
+      { id: "p-legacy", name: "Pat Legacy", handedness: "left", gender: null },
+    ],
+  });
+  renderForm();
+  await screen.findByRole("heading", { name: "New Match" });
+  changeTournament("Atlanta Open");
+  changeDate("2026-04-12");
+
+  const teamA = teamFields("A");
+  change(teamA.player1, "Anna Bright");
+  change(teamA.player2, "Pat Legacy");
+  expect(teamA.group.getByText("L · ?")).toBeTruthy();
+  expect(teamA.hand2.value).toBe("left");
+  expect(teamA.hand2.disabled).toBe(true);
+  expect(teamA.gender2.value).toBe("");
+  expect(teamA.gender2.disabled).toBe(false);
+  expect(
+    teamA.group.getByText("Existing Player missing gender — choose Male or Female to backfill."),
+  ).toBeTruthy();
+
+  const teamB = teamFields("B");
+  change(teamB.player1, "Cara Lee");
+  change(teamB.player2, "Dan Kim");
+
+  // Missing gender blocks submit.
+  submit();
+  expect(screen.getByRole("alert").textContent).toBe("Choose gender for each Player.");
+  expect(createMatch).not.toHaveBeenCalled();
+
+  // Choosing Male completes Mixed Doubles and submits Pat Legacy with gender: "male".
+  change(teamA.gender2, "male");
+  expect(screen.getByText("Mixed Doubles", { selector: ".discipline-pill" })).toBeTruthy();
+  submit();
+  await screen.findByRole("heading", { name: "Match Workspace" });
+  expect(createMatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      team_a: [
+        { name: "Anna Bright", handedness: "right", gender: "female" },
+        { name: "Pat Legacy", handedness: "left", gender: "male" },
+      ],
+    }),
+    PATH,
+  );
 });

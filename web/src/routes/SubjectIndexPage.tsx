@@ -1,11 +1,19 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { listPlayers, listTeams } from "../api/client";
+import { disciplineLabel, genderLabel } from "./discipline";
 import { ReportLoadError, useReportQuery } from "./reportQuery";
 import { reportTeamLabel } from "./teams";
 import "./report.css";
 
-type IndexRow = { id: string; name: ReactNode; hand?: string; matchCount: number };
+type IndexRow = {
+  id: string;
+  name: ReactNode;
+  hand?: string;
+  gender?: string;
+  discipline?: string;
+  matchCount: number;
+};
 
 export function PlayersPage() {
   const players = useReportQuery(["players"], listPlayers);
@@ -18,6 +26,7 @@ export function PlayersPage() {
       title="Players"
       nameHeading="Name"
       showHandedness
+      showGender
       rows={players.data.map((player) => ({
         id: player.id,
         name: (
@@ -26,6 +35,7 @@ export function PlayersPage() {
           </Link>
         ),
         hand: player.handedness === "left" ? "Left" : "Right",
+        gender: genderLabel(player.gender),
         matchCount: player.match_count,
       }))}
     />
@@ -42,6 +52,7 @@ export function TeamsPage() {
     <SubjectIndex
       title="Teams"
       nameHeading="Team"
+      showDiscipline
       rows={teams.data.map((team) => ({
         id: team.id,
         name: (
@@ -49,6 +60,7 @@ export function TeamsPage() {
             {reportTeamLabel(team)}
           </Link>
         ),
+        discipline: disciplineLabel(team.discipline),
         matchCount: team.match_count,
       }))}
     />
@@ -59,11 +71,15 @@ function SubjectIndex({
   title,
   nameHeading,
   showHandedness = false,
+  showGender = false,
+  showDiscipline = false,
   rows,
 }: {
   title: "Players" | "Teams";
   nameHeading: string;
   showHandedness?: boolean;
+  showGender?: boolean;
+  showDiscipline?: boolean;
   rows: IndexRow[];
 }) {
   return (
@@ -80,6 +96,8 @@ function SubjectIndex({
               <tr>
                 <th scope="col">{nameHeading}</th>
                 {showHandedness && <th scope="col">Handedness</th>}
+                {showGender && <th scope="col">Gender</th>}
+                {showDiscipline && <th scope="col">Discipline</th>}
                 <th scope="col" className="subject-number">
                   Matches
                 </th>
@@ -90,6 +108,8 @@ function SubjectIndex({
                 <tr key={row.id}>
                   <th scope="row">{row.name}</th>
                   {showHandedness && <td>{row.hand}</td>}
+                  {showGender && <td>{row.gender}</td>}
+                  {showDiscipline && <td>{row.discipline}</td>}
                   <td className="subject-number">{row.matchCount}</td>
                 </tr>
               ))}

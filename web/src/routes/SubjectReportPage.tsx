@@ -7,6 +7,7 @@ import {
   type TeamMatchFilters,
 } from "../api/client";
 import type { components } from "../api/schema";
+import { disciplineLabel, genderLabel } from "./discipline";
 import { MatchFilterForm } from "./MatchFilterForm";
 import { hasMatchFilters, matchFilterDateError } from "./matchFilters";
 import { asReportSplit, matchCountLabel, type ReportSplit } from "./reportOptions";
@@ -120,7 +121,14 @@ function SubjectReport({
   onFiltersChange: (value: PlayerMatchFilters) => void;
   onSplitChange: (value: string) => void;
 }) {
-  const { header, matches, profile, stats, undated_matches_excluded: undated } = report;
+  const {
+    header,
+    matches,
+    profile,
+    stats,
+    undated_matches_excluded: undated,
+    unclassified_matches_excluded: unclassified,
+  } = report;
   const player = "partners" in report ? report : null;
   const filtered = hasMatchFilters(filters);
   const teamProfile = "players" in profile;
@@ -135,7 +143,18 @@ function SubjectReport({
         <header className="report-header">
           <div className="report-matchup">
             <h1>{title}</h1>
-            {player && <p>{player.profile.handedness === "left" ? "Left" : "Right"}-handed</p>}
+            {player && (
+              <p className="subject-profile-meta">
+                <span>{player.profile.handedness === "left" ? "Left" : "Right"}-handed</span>
+                <span aria-hidden="true"> · </span>
+                <span>{genderLabel(player.profile.gender)}</span>
+              </p>
+            )}
+            {teamProfile && (
+              <p className="subject-profile-meta">
+                <span className="pill discipline-pill">{disciplineLabel(profile.discipline)}</span>
+              </p>
+            )}
             {!updating && (
               <>
                 <ReportCoverage
@@ -146,6 +165,9 @@ function SubjectReport({
                 {undated > 0 && (
                   <p>{matchCountLabel(undated)} left out because of missing dates.</p>
                 )}
+                {unclassified > 0 && (
+                  <p>{matchCountLabel(unclassified)} left out because of unknown Discipline.</p>
+                )}
               </>
             )}
           </div>
@@ -155,6 +177,7 @@ function SubjectReport({
           filters={filters}
           options={report.filter_options}
           showPartner={player !== null}
+          showDiscipline={player !== null}
           onApply={onFiltersChange}
         />
         {updating ? (
@@ -245,6 +268,7 @@ function SubjectMatches({
               <tr>
                 <th scope="col">Date</th>
                 <th scope="col">Tournament</th>
+                {showPartner && <th scope="col">Discipline</th>}
                 {showPartner && <th scope="col">Partner</th>}
                 <th scope="col">Opponents</th>
                 <th scope="col">Game scores</th>
@@ -253,44 +277,47 @@ function SubjectMatches({
               </tr>
             </thead>
             <tbody>
-              {matches.map(({ id, date, tournament, partner, opponents, games, rallies }) => (
-                <tr key={id}>
-                  <td className="subject-date">
-                    {date ? <time dateTime={date}>{date}</time> : "—"}
-                  </td>
-                  <th scope="row">{tournament}</th>
-                  {showPartner && <td>{partner?.name}</td>}
-                  <td>{reportTeamLabel(opponents)}</td>
-                  <td>
-                    {games.length === 0 ? (
-                      "—"
-                    ) : (
-                      <ul className="subject-scores">
-                        {games.map(({ number, score }) => (
-                          <li key={number}>
-                            <span className="report-segment-label">Game {number}: </span>
-                            {score === null ? "—" : score.join("–")}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </td>
-                  <td>
-                    {rallies.counted === 0
-                      ? "No Rallies yet"
-                      : `${rallies.done} Done / ${rallies.in_progress} In progress / ${rallies.empty} Empty`}
-                  </td>
-                  <td>
-                    <Link
-                      to="/matches/$matchId/$workspace"
-                      params={{ matchId: id, workspace: "report" }}
-                      className="report-link"
-                    >
-                      Report
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+              {matches.map(
+                ({ id, date, tournament, discipline, partner, opponents, games, rallies }) => (
+                  <tr key={id}>
+                    <td className="subject-date">
+                      {date ? <time dateTime={date}>{date}</time> : "—"}
+                    </td>
+                    <th scope="row">{tournament}</th>
+                    {showPartner && <td>{disciplineLabel(discipline)}</td>}
+                    {showPartner && <td>{partner?.name}</td>}
+                    <td>{reportTeamLabel(opponents)}</td>
+                    <td>
+                      {games.length === 0 ? (
+                        "—"
+                      ) : (
+                        <ul className="subject-scores">
+                          {games.map(({ number, score }) => (
+                            <li key={number}>
+                              <span className="report-segment-label">Game {number}: </span>
+                              {score === null ? "—" : score.join("–")}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                    <td>
+                      {rallies.counted === 0
+                        ? "No Rallies yet"
+                        : `${rallies.done} Done / ${rallies.in_progress} In progress / ${rallies.empty} Empty`}
+                    </td>
+                    <td>
+                      <Link
+                        to="/matches/$matchId/$workspace"
+                        params={{ matchId: id, workspace: "report" }}
+                        className="report-link"
+                      >
+                        Report
+                      </Link>
+                    </td>
+                  </tr>
+                ),
+              )}
             </tbody>
           </table>
         </div>

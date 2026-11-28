@@ -207,6 +207,7 @@ export function LeaderboardPage() {
         <MatchFilterForm
           options={data.filter_options}
           filters={filters}
+          showDiscipline
           onApply={(value) => updateSearch(matchFilters(value))}
         />
         {report.isPlaceholderData ? (
@@ -223,6 +224,12 @@ export function LeaderboardPage() {
               {data.undated_matches_excluded > 0 && (
                 <span>
                   {matchCountLabel(data.undated_matches_excluded)} left out because of missing dates
+                </span>
+              )}
+              {data.unclassified_matches_excluded > 0 && (
+                <span>
+                  {matchCountLabel(data.unclassified_matches_excluded)} left out because of unknown
+                  Discipline
                 </span>
               )}
             </output>

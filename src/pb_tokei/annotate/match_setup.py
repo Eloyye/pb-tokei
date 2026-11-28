@@ -10,8 +10,10 @@ from uuid import UUID
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from pb_tokei.rally_log import (
+    Discipline,
     Franchise,
     FranchiseMatchId,
+    Gender,
     Handedness,
     MatchId,
     Player,
@@ -100,6 +102,7 @@ class NewPlayerIn(BaseModel):
 
     name: str
     handedness: Handedness
+    gender: Gender
 
 
 class UpdateMatchIn(BaseModel):
@@ -132,15 +135,18 @@ class UpdatePlayerIn(BaseModel):
 
     name: str | None = None
     handedness: Handedness | None = None
+    gender: Gender | None = None
 
     @model_validator(mode="after")
     def _check_fields(self) -> UpdatePlayerIn:
         if not self.model_fields_set:
-            raise ValueError("Provide name or handedness to update")
+            raise ValueError("Provide name, handedness, or gender to update")
         if "name" in self.model_fields_set and self.name is None:
             raise ValueError("Player name cannot be cleared")
         if "handedness" in self.model_fields_set and self.handedness is None:
             raise ValueError("Player handedness cannot be cleared")
+        if "gender" in self.model_fields_set and self.gender is None:
+            raise ValueError("Player gender cannot be cleared")
         return self
 
 
@@ -181,8 +187,24 @@ class DeletedMatchOut(BaseModel):
     id: UUID
 
 
+class PlayerOut(BaseModel):
+    id: UUID
+    name: str
+    handedness: Handedness
+    gender: Gender | None
+
+    @classmethod
+    def from_domain(cls, player: Player) -> PlayerOut:
+        return cls(
+            id=player.id,
+            name=player.name,
+            handedness=player.handedness,
+            gender=player.gender,
+        )
+
+
 class PlayerEditOut(BaseModel):
-    player: Player
+    player: PlayerOut
     affected_matches: int
     dry_run: bool
 
@@ -202,6 +224,7 @@ class FranchiseEditOut(BaseModel):
 class MatchTeams(BaseModel):
     team_a: tuple[str, str]
     team_b: tuple[str, str]
+    discipline: Discipline | None
 
 
 class FranchiseMatchOut(BaseModel):
@@ -213,7 +236,7 @@ class FranchiseMatchOut(BaseModel):
 
 
 class RosterOut(BaseModel):
-    players: list[Player]
+    players: list[PlayerOut]
     tournaments: list[Tournament]
     franchises: list[Franchise]
     franchise_matches: list[FranchiseMatchOut]
@@ -225,10 +248,14 @@ def roster_catalog(log: RallyLog) -> RosterOut:
         for match in log.list_matches():
             if match.franchise_match_id is not None:
                 matches[match.franchise_match_id].append(
-                    MatchTeams(team_a=match.team_a, team_b=match.team_b)
+                    MatchTeams(
+                        team_a=match.team_a,
+                        team_b=match.team_b,
+                        discipline=match.discipline,
+                    )
                 )
         return RosterOut(
-            players=log.list_players(),
+            players=[PlayerOut.from_domain(player) for player in log.list_players()],
             tournaments=log.list_tournaments(),
             franchises=log.list_franchises(),
             franchise_matches=[

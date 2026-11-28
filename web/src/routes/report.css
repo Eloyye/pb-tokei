@@ -31,6 +31,16 @@
   font-size: 13px;
 }
 
+.report-discipline {
+  color: var(--dim);
+}
+
+.subject-profile-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .report-matchup h1 {
   display: flex;
   flex-wrap: wrap;

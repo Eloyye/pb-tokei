@@ -22,6 +22,7 @@ from .model import (
     Certainty,
     ContactKind,
     ErrorKind,
+    Gender,
     Handedness,
     Landmark,
     OperatorWorkspace,
@@ -402,6 +403,42 @@ def migrate(db: duckdb.DuckDBPyConnection) -> None:
 
     _migrate_rally_status(db)
     _migrate_drop_foreign_keys(db)
+    _migrate_players(db)
+
+
+def players_table(name: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    id UUID PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    handedness VARCHAR NOT NULL {_one_of("handedness", Handedness)},
+    gender VARCHAR {_one_of("gender", Gender)}
+)"""
+
+
+def _migrate_players(db: duckdb.DuckDBPyConnection) -> None:
+    """Adds nullable `gender` with its CHECK constraint to an older `players` table."""
+    columns = {
+        name
+        for (name,) in db.execute(
+            "SELECT column_name FROM duckdb_columns() WHERE table_name = 'players'"
+        ).fetchall()
+    }
+    if "gender" in columns:
+        return
+    db.execute("BEGIN TRANSACTION")
+    try:
+        db.execute(players_table("players_migrated"))
+        db.execute(
+            "INSERT INTO players_migrated (id, name, handedness) "
+            "SELECT id, name, handedness FROM players"
+        )
+        db.execute("DROP TABLE players")
+        db.execute("ALTER TABLE players_migrated RENAME TO players")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+    db.execute("COMMIT")
 
 
 def teams_table(name: str) -> str:
@@ -530,12 +567,7 @@ CREATE TABLE IF NOT EXISTS tournaments (
     name VARCHAR NOT NULL,
     tour VARCHAR NOT NULL {_one_of("tour", Tour)}
 )""",
-    f"""
-CREATE TABLE IF NOT EXISTS players (
-    id UUID PRIMARY KEY,
-    name VARCHAR NOT NULL,
-    handedness VARCHAR NOT NULL {_one_of("handedness", Handedness)}
-)""",
+    players_table("players"),
     teams_table("teams"),
     """
 CREATE TABLE IF NOT EXISTS franchises (

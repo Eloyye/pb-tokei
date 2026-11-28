@@ -92,6 +92,7 @@ uv run pb-tokei match new rosters/<tournament>/<match>.toml
 uv run pb-tokei match add rosters/<tournament>/<match>.toml [--db <path>]
 uv run pb-tokei match list [--tournament <name>] [--db <path>]
 uv run pb-tokei match set-date <match-id> <YYYY-MM-DD> [--db <path>]
+uv run pb-tokei player set-gender <player-id-or-name> <male|female> [--db <path>]
 ```
 
 ### Annotation app

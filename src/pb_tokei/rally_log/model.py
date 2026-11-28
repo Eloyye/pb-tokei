@@ -93,6 +93,74 @@ class Handedness(StrEnum):
     RIGHT = "right"
 
 
+class Gender(StrEnum):
+    MALE = "male"
+    FEMALE = "female"
+
+
+class Discipline(StrEnum):
+    """Derived doubles category of a Team or Match (ADR 0003; never stored)."""
+
+    MENS_DOUBLES = "mens_doubles"
+    WOMENS_DOUBLES = "womens_doubles"
+    MIXED_DOUBLES = "mixed_doubles"
+
+    @property
+    def label(self) -> str:
+        return _DISCIPLINE_LABELS[self]
+
+
+_DISCIPLINE_LABELS: dict[Discipline, str] = {
+    Discipline.MENS_DOUBLES: "Men's Doubles",
+    Discipline.WOMENS_DOUBLES: "Women's Doubles",
+    Discipline.MIXED_DOUBLES: "Mixed Doubles",
+}
+
+
+def team_discipline(genders: tuple[Gender | None, Gender | None]) -> Discipline | None:
+    """Derives a Team's Discipline from its two Players' genders, or None if either is unset."""
+    first, second = genders
+    if first is None or second is None:
+        return None
+    if first is second:
+        return Discipline.MENS_DOUBLES if first is Gender.MALE else Discipline.WOMENS_DOUBLES
+    return Discipline.MIXED_DOUBLES
+
+
+def match_discipline(
+    team_a: tuple[Gender | None, Gender | None],
+    team_b: tuple[Gender | None, Gender | None],
+) -> Discipline | None:
+    """Derives a Match's Discipline when all four Players have compatible genders, else None."""
+    disc_a = team_discipline(team_a)
+    disc_b = team_discipline(team_b)
+    if disc_a is None or disc_b is None or disc_a is not disc_b:
+        return None
+    return disc_a
+
+
+def check_match_lineup(
+    team_a: tuple[Gender | None, Gender | None],
+    team_b: tuple[Gender | None, Gender | None],
+) -> Discipline | None:
+    """Validates a Match's four-Player gender lineup.
+
+    Returns the derived Discipline when all four Players have compatible genders, returns None
+    when any Player has `gender = None`, and raises `ValueError` when a fully-gendered Match does
+    not form Men's Doubles, Women's Doubles, or Mixed Doubles.
+    """
+    disc_a = team_discipline(team_a)
+    disc_b = team_discipline(team_b)
+    if disc_a is None or disc_b is None:
+        return None
+    if disc_a is not disc_b:
+        raise ValueError(
+            f"Invalid Match lineup: {disc_a.label} vs {disc_b.label} "
+            "(must be Men's Doubles, Women's Doubles, or Mixed Doubles)"
+        )
+    return disc_a
+
+
 class Zone(StrEnum):
     FRONTCOURT = "frontcourt"
     MIDCOURT = "midcourt"
@@ -236,6 +304,7 @@ class Player:
     id: PlayerId
     name: str
     handedness: Handedness
+    gender: Gender | None = None
 
 
 @dataclass(frozen=True)
@@ -752,6 +821,13 @@ class MatchRoster:
     def player_ids(self) -> frozenset[PlayerId]:
         return frozenset(p.id for p in self.players)
 
+    @property
+    def discipline(self) -> Discipline | None:
+        return match_discipline(
+            (self.team_a_players[0].gender, self.team_a_players[1].gender),
+            (self.team_b_players[0].gender, self.team_b_players[1].gender),
+        )
+
     def team_id_for(self, player_id: PlayerId) -> TeamId:
         if any(p.id == player_id for p in self.team_a_players):
             return self.team_a_id
@@ -850,6 +926,7 @@ class MatchSummary:
     source_video_frames: int | None = field(default=None, kw_only=True)
     operator_time: OperatorTimeSummary = field(default_factory=OperatorTimeSummary, kw_only=True)
     franchise_match_id: FranchiseMatchId | None = None
+    discipline: Discipline | None = field(default=None, kw_only=True)
     done_rallies: int = 0
     total_rallies: int = 0
 

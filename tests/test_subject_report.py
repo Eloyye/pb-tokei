@@ -12,10 +12,17 @@ from pb_tokei.demo_match import DEMO_DATE, DEMO_MLP_DATE, DEMO_MLP_TOURNAMENT, w
 from pb_tokei.rally_log import (
     FranchiseMatchId,
     Game,
+    Gender,
+    Handedness,
+    Match,
     MatchId,
+    Player,
+    PlayerId,
     Rally,
     RallyLog,
     RallyStatus,
+    Team,
+    TeamId,
     Tour,
     TournamentId,
     new_id,
@@ -42,23 +49,29 @@ def test_indexes_and_detail_endpoints_open_the_whole_demo(
         teams = client.get("/api/teams")
         assert players.status_code == teams.status_code == 200
         assert players.headers["Cache-Control"] == teams.headers["Cache-Control"] == "no-store"
-        assert [(p["name"], p["handedness"], p["match_count"]) for p in players.json()] == [
-            ("Alex One", "right", 4),
-            ("Avery Two", "left", 2),
-            ("Blake One", "right", 3),
-            ("Brook Two", "right", 3),
-            ("Casey Three", "left", 2),
-            ("Devon Five", "left", 1),
-            ("Drew Four", "right", 1),
+        assert [
+            (p["name"], p["handedness"], p["gender"], p["match_count"]) for p in players.json()
+        ] == [
+            ("Alex One", "right", "male", 4),
+            ("Avery Two", "left", "female", 2),
+            ("Blake One", "right", "male", 3),
+            ("Brook Two", "right", "female", 3),
+            ("Casey Three", "left", "female", 2),
+            ("Devon Five", "left", "female", 1),
+            ("Drew Four", "right", "male", 1),
         ]
         assert [
-            ([player["name"] for player in team["players"]], team["match_count"])
+            (
+                [player["name"] for player in team["players"]],
+                team["discipline"],
+                team["match_count"],
+            )
             for team in teams.json()
         ] == [
-            (["Alex One", "Avery Two"], 2),
-            (["Alex One", "Casey Three"], 2),
-            (["Blake One", "Brook Two"], 3),
-            (["Devon Five", "Drew Four"], 1),
+            (["Alex One", "Avery Two"], "mixed_doubles", 2),
+            (["Alex One", "Casey Three"], "mixed_doubles", 2),
+            (["Blake One", "Brook Two"], "mixed_doubles", 3),
+            (["Devon Five", "Drew Four"], "mixed_doubles", 1),
         ]
 
         for path, entries in (("/api/players", players.json()), ("/api/teams", teams.json())):
@@ -294,7 +307,7 @@ def test_details_validate_filter_query_parameters(
                 ("opponent", "no-id"),
             ]
             if collection == "players":
-                queries.append(("partner", "no-id"))
+                queries.extend([("partner", "no-id"), ("discipline", "singles")])
             for key, value in queries:
                 response = client.get(endpoint, params={key: value})
                 assert response.status_code == 422
@@ -398,3 +411,94 @@ def test_played_for_groups_by_franchise_and_tournament_in_both_team_positions(
                 ],
             }
         ]
+
+
+def test_discipline_filter_on_player_report_excludes_unclassified_and_respects_other_filters(
+    demo_db: tuple[Path, tuple[MatchId, ...]],
+) -> None:
+    db, (first, mlp, undated, empty) = demo_db
+    mens_match_id = MatchId(new_id())
+    legacy_match_id = MatchId(new_id())
+    with RallyLog.open(db) as log, log.transaction():
+        alex = log.find_player("Alex One")
+        blake = log.find_player("Blake One")
+        assert alex is not None and blake is not None
+        original = log.load_match(first)
+        # Add a Men's Doubles Match with Alex + a male partner vs Blake + a male partner.
+        m_partner = Player(PlayerId(new_id()), "Max Partner", Handedness.RIGHT, Gender.MALE)
+        m_opp = Player(PlayerId(new_id()), "Leo Opp", Handedness.RIGHT, Gender.MALE)
+        log.save_player(m_partner)
+        log.save_player(m_opp)
+        mens_a = Team(TeamId(new_id()), (alex.id, m_partner.id))
+        mens_b = Team(TeamId(new_id()), (blake.id, m_opp.id))
+        log.save_team(mens_a)
+        log.save_team(mens_b)
+        log.save_match(
+            Match(
+                id=mens_match_id,
+                tournament_id=original.tournament_id,
+                team_a_id=mens_a.id,
+                team_b_id=mens_b.id,
+                date=date(2026, 5, 1),
+            )
+        )
+        # Add a legacy unclassified Match where Alex's partner has gender=None (and no date).
+        legacy_partner = Player(PlayerId(new_id()), "Pat Legacy", Handedness.LEFT, None)
+        log.save_player(legacy_partner)
+        legacy_a = Team(TeamId(new_id()), (alex.id, legacy_partner.id))
+        log.save_team(legacy_a)
+        log.save_match(
+            Match(
+                id=legacy_match_id,
+                tournament_id=original.tournament_id,
+                team_a_id=legacy_a.id,
+                team_b_id=mens_b.id,
+                date=None,
+            )
+        )
+
+    with TestClient(create_app(db), base_url=LOCAL) as client:
+        # Match report exposes derived Discipline (and None for legacy Match).
+        assert client.get(f"/api/matches/{first}/report").json()["header"]["discipline"] == (
+            "mixed_doubles"
+        )
+        assert client.get(f"/api/matches/{mens_match_id}/report").json()["header"][
+            "discipline"
+        ] == ("mens_doubles")
+        assert (
+            client.get(f"/api/matches/{legacy_match_id}/report").json()["header"]["discipline"]
+            is None
+        )
+
+        # Unfiltered Player report includes all 6 Matches with 0 unclassified excluded.
+        all_report = client.get(f"/api/players/{alex.id}").json()
+        assert len(all_report["matches"]) == 6
+        assert all_report["unclassified_matches_excluded"] == 0
+        by_id = {m["id"]: m["discipline"] for m in all_report["matches"]}
+        assert by_id[str(first)] == "mixed_doubles"
+        assert by_id[str(mens_match_id)] == "mens_doubles"
+        assert by_id[str(legacy_match_id)] is None
+
+        # Filtering by mens_doubles picks only mens_match_id and reports 1 unclassified excluded
+        # (NOT the 4 Mixed Doubles Matches, which are definite mismatches).
+        mens = client.get(f"/api/players/{alex.id}", params={"discipline": "mens_doubles"}).json()
+        assert [m["id"] for m in mens["matches"]] == [str(mens_match_id)]
+        assert mens["unclassified_matches_excluded"] == 1
+        assert mens["undated_matches_excluded"] == 0
+
+        # Filtering by mixed_doubles picks the 4 demo Mixed Doubles Matches and excludes 1 legacy.
+        mixed = client.get(f"/api/players/{alex.id}", params={"discipline": "mixed_doubles"}).json()
+        assert [m["id"] for m in mixed["matches"]] == list(map(str, (mlp, empty, first, undated)))
+        assert mixed["unclassified_matches_excluded"] == 1
+
+        # Combining discipline=mens_doubles + date_from=2026-04-01:
+        # the 4 Mixed Doubles Matches (including undated!) are definite Discipline mismatches,
+        # so undated_matches_excluded is ONLY 1 (legacy_match_id, which is both undated and
+        # unclassified), NOT 2!
+        combined = client.get(
+            f"/api/players/{alex.id}",
+            params={"discipline": "mens_doubles", "date_from": "2026-04-01"},
+        ).json()
+        assert [m["id"] for m in combined["matches"]] == [str(mens_match_id)]
+        assert combined["undated_matches_excluded"] == 1
+        assert combined["unclassified_matches_excluded"] == 1

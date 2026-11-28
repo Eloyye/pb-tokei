@@ -13,6 +13,7 @@ from pb_tokei.rally_log import (
     Error,
     ErrorKind,
     Game,
+    Gender,
     Handedness,
     MatchId,
     MatchRoster,
@@ -179,12 +180,12 @@ def _demo_roster() -> Roster:
         tournament=DEMO_TOURNAMENT,
         tour=Tour.PPA,
         team_a=(
-            RosterPlayer("Alex One", Handedness.RIGHT),
-            RosterPlayer("Avery Two", Handedness.LEFT),
+            RosterPlayer("Alex One", Handedness.RIGHT, Gender.MALE),
+            RosterPlayer("Avery Two", Handedness.LEFT, Gender.FEMALE),
         ),
         team_b=(
-            RosterPlayer("Blake One", Handedness.RIGHT),
-            RosterPlayer("Brook Two", Handedness.RIGHT),
+            RosterPlayer("Blake One", Handedness.RIGHT, Gender.MALE),
+            RosterPlayer("Brook Two", Handedness.RIGHT, Gender.FEMALE),
         ),
     )
 
@@ -200,7 +201,7 @@ def write_demo_match(log: RallyLog) -> MatchId:
 def write_demo_matches(log: RallyLog) -> tuple[MatchId, ...]:
     """Append four Matches spanning Tournaments, Partners and Rally coverage."""
     base = _demo_roster()
-    new_team = base.team_a[0], RosterPlayer("Casey Three", Handedness.LEFT)
+    new_team = base.team_a[0], RosterPlayer("Casey Three", Handedness.LEFT, Gender.FEMALE)
     with log.transaction():
         first = write_demo_match(log)
         mlp = set_up_match(
@@ -229,8 +230,8 @@ def write_demo_matches(log: RallyLog) -> tuple[MatchId, ...]:
                 match_id=MatchId(new_id()),
                 date=datetime.date(2026, 5, 20),
                 team_b=(
-                    RosterPlayer("Drew Four", Handedness.RIGHT),
-                    RosterPlayer("Devon Five", Handedness.LEFT),
+                    RosterPlayer("Drew Four", Handedness.RIGHT, Gender.MALE),
+                    RosterPlayer("Devon Five", Handedness.LEFT, Gender.FEMALE),
                 ),
             ),
         )

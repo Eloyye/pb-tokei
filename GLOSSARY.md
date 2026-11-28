@@ -24,6 +24,10 @@ _Avoid_: MLP team
 An MLP contest between two Franchises, made of several Matches (each MLP doubles game is its own one-Game Match).
 _Avoid_: MLP match
 
+**Discipline**:
+The doubles category of a Match or Team, derived from its Players' genders: Men's Doubles, Women's Doubles, or Mixed Doubles.
+_Avoid_: Event, division
+
 **Rally**:
 Everything from a Serve until the ball is dead; the unit every stat is counted in.
 _Avoid_: Point (for a Rally in general), exchange

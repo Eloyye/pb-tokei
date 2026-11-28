@@ -525,7 +525,7 @@ export interface paths {
     head?: never;
     /**
      * Update Player
-     * @description Renames a Player or fixes handedness across all Matches.
+     * @description Renames a Player or fixes handedness/gender across all Matches.
      */
     patch: operations["updatePlayer"];
     trace?: never;
@@ -876,6 +876,12 @@ export interface components {
      * @enum {string}
      */
     DeviceKind: "cuda" | "mps" | "cpu";
+    /**
+     * Discipline
+     * @description Derived doubles category of a Team or Match (ADR 0003; never stored).
+     * @enum {string}
+     */
+    Discipline: "mens_doubles" | "womens_doubles" | "mixed_doubles";
     /** ErrorIO */
     ErrorIO: {
       kind: components["schemas"]["FactIO_ErrorKind_"];
@@ -1116,6 +1122,11 @@ export interface components {
        */
       type: "gap";
     };
+    /**
+     * Gender
+     * @enum {string}
+     */
+    Gender: "male" | "female";
     /** HTTPValidationError */
     HTTPValidationError: {
       /** Detail */
@@ -1192,6 +1203,8 @@ export interface components {
       stat: components["schemas"]["Stat"];
       /** Stats */
       stats: components["schemas"]["LeaderboardStat"][];
+      /** Unclassified Matches Excluded */
+      unclassified_matches_excluded: number;
       /** Undated Matches Excluded */
       undated_matches_excluded: number;
     };
@@ -1264,6 +1277,7 @@ export interface components {
       broadcast_seconds: number | null;
       /** Date */
       date: string | null;
+      discipline: components["schemas"]["Discipline"] | null;
       /**
        * Done Rallies
        * @default 0
@@ -1349,6 +1363,7 @@ export interface components {
       broadcast_seconds: number | null;
       /** Date */
       date: string | null;
+      discipline: components["schemas"]["Discipline"] | null;
       /**
        * Done Rallies
        * @default 0
@@ -1385,6 +1400,7 @@ export interface components {
      * @description One Player in a Match, with their Team assignment.
      */
     MatchPlayerOut: {
+      gender: components["schemas"]["Gender"] | null;
       handedness: components["schemas"]["Handedness"];
       /**
        * Id
@@ -1412,6 +1428,7 @@ export interface components {
     };
     /** MatchTeams */
     MatchTeams: {
+      discipline: components["schemas"]["Discipline"] | null;
       /** Team A */
       team_a: [string, string];
       /** Team B */
@@ -1435,6 +1452,7 @@ export interface components {
     };
     /** NewPlayerIn */
     NewPlayerIn: {
+      gender: components["schemas"]["Gender"];
       handedness: components["schemas"]["Handedness"];
       /** Name */
       name: string;
@@ -1546,17 +1564,6 @@ export interface components {
       /** Name */
       name: string;
     };
-    /** Player */
-    Player: {
-      handedness: components["schemas"]["Handedness"];
-      /**
-       * Id
-       * Format: uuid
-       */
-      id: string;
-      /** Name */
-      name: string;
-    };
     /**
      * PlayerAnchorIO
      * @description One operator-placed Player anchor on a frame, in normalised image coordinates (0 to 1).
@@ -1581,10 +1588,11 @@ export interface components {
       affected_matches: number;
       /** Dry Run */
       dry_run: boolean;
-      player: components["schemas"]["Player"];
+      player: components["schemas"]["PlayerOut"];
     };
     /** PlayerListEntry */
     PlayerListEntry: {
+      gender: components["schemas"]["Gender"] | null;
       handedness: components["schemas"]["Handedness"];
       /**
        * Id
@@ -1596,6 +1604,18 @@ export interface components {
       /** Name */
       name: string;
     };
+    /** PlayerOut */
+    PlayerOut: {
+      gender: components["schemas"]["Gender"] | null;
+      handedness: components["schemas"]["Handedness"];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+    };
     /** PlayerPositionIO */
     PlayerPositionIO: {
       position: components["schemas"]["FactIO_CourtPointIO_"];
@@ -1603,6 +1623,7 @@ export interface components {
     };
     /** PlayerProfile */
     PlayerProfile: {
+      gender: components["schemas"]["Gender"] | null;
       handedness: components["schemas"]["Handedness"];
       /**
        * Id
@@ -1625,6 +1646,8 @@ export interface components {
       profile: components["schemas"]["PlayerProfile"];
       /** Stats */
       stats: components["schemas"]["ReportStat"][];
+      /** Unclassified Matches Excluded */
+      unclassified_matches_excluded: number;
       /** Undated Matches Excluded */
       undated_matches_excluded: number;
     };
@@ -1817,6 +1840,7 @@ export interface components {
       | "Other";
     /** ReportHeader */
     ReportHeader: {
+      discipline: components["schemas"]["Discipline"] | null;
       /** Games */
       games: components["schemas"]["ReportGame"][];
       rallies: components["schemas"]["ReportRallies"];
@@ -1933,6 +1957,7 @@ export interface components {
     ReportSubject: "team" | "player" | "both";
     /** ReportTeam */
     ReportTeam: {
+      discipline: components["schemas"]["Discipline"] | null;
       /**
        * Id
        * Format: uuid
@@ -1956,12 +1981,13 @@ export interface components {
       /** Franchises */
       franchises: components["schemas"]["Franchise"][];
       /** Players */
-      players: components["schemas"]["Player"][];
+      players: components["schemas"]["PlayerOut"][];
       /** Tournaments */
       tournaments: components["schemas"]["Tournament"][];
     };
     /** RosterPlayer */
     RosterPlayer: {
+      gender: components["schemas"]["Gender"];
       handedness: components["schemas"]["Handedness"];
       /** Name */
       name: string;
@@ -2069,6 +2095,7 @@ export interface components {
     SubjectMatch: {
       /** Date */
       date: string | null;
+      discipline: components["schemas"]["Discipline"] | null;
       /** Games */
       games: components["schemas"]["ReportGame"][];
       /**
@@ -2097,6 +2124,7 @@ export interface components {
     };
     /** TeamListEntry */
     TeamListEntry: {
+      discipline: components["schemas"]["Discipline"] | null;
       /**
        * Id
        * Format: uuid
@@ -2116,6 +2144,8 @@ export interface components {
       profile: components["schemas"]["ReportTeam"];
       /** Stats */
       stats: components["schemas"]["ReportStat"][];
+      /** Unclassified Matches Excluded */
+      unclassified_matches_excluded: number;
       /** Undated Matches Excluded */
       undated_matches_excluded: number;
     };
@@ -2215,6 +2245,7 @@ export interface components {
     };
     /** UpdatePlayerIn */
     UpdatePlayerIn: {
+      gender?: components["schemas"]["Gender"] | null;
       handedness?: components["schemas"]["Handedness"] | null;
       /** Name */
       name?: string | null;
@@ -2342,6 +2373,7 @@ export interface operations {
       query?: {
         tournament?: string[];
         tour?: components["schemas"]["Tour"] | null;
+        discipline?: components["schemas"]["Discipline"] | null;
         date_from?: string | null;
         date_to?: string | null;
         kind?: components["schemas"]["SubjectKind"];
@@ -3350,6 +3382,7 @@ export interface operations {
       query?: {
         tournament?: string[];
         tour?: components["schemas"]["Tour"] | null;
+        discipline?: components["schemas"]["Discipline"] | null;
         date_from?: string | null;
         date_to?: string | null;
         opponent?: string | null;
@@ -3555,6 +3588,7 @@ export interface operations {
       query?: {
         tournament?: string[];
         tour?: components["schemas"]["Tour"] | null;
+        discipline?: components["schemas"]["Discipline"] | null;
         date_from?: string | null;
         date_to?: string | null;
         opponent?: string | null;

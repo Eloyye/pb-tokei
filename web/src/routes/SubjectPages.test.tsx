@@ -28,9 +28,14 @@ vi.mock("../api/client", async (importOriginal) => ({
 const ALEX = { id: "alex", name: "Alex One" };
 const AVERY = { id: "10000000-0000-4000-8000-000000000001", name: "Avery Two" };
 const BLAKE = { id: "10000000-0000-4000-8000-000000000002", name: "Blake One" };
-const TEAM: components["schemas"]["ReportTeam"] = { id: "team", players: [ALEX, AVERY] };
+const TEAM: components["schemas"]["ReportTeam"] = {
+  id: "team",
+  discipline: "mixed_doubles",
+  players: [ALEX, AVERY],
+};
 const OPPONENTS = {
   id: "opponents",
+  discipline: "mixed_doubles",
   players: [BLAKE, { id: "brook", name: "Brook Two" }],
 } satisfies components["schemas"]["ReportTeam"];
 const MLP_OPEN = "10000000-0000-4000-8000-000000000003";
@@ -53,7 +58,7 @@ const KITCHEN_FAULTS: ReportStat = {
   },
 };
 const PLAYER_REPORT: PlayerReport = {
-  profile: { ...ALEX, handedness: "left" },
+  profile: { ...ALEX, handedness: "left", gender: "male" },
   header: { match_count: 2, rallies: RALLIES, uncredited: 2 },
   filter_options: {
     tournaments: [
@@ -64,6 +69,7 @@ const PLAYER_REPORT: PlayerReport = {
     opponents: OPPONENTS.players,
   },
   undated_matches_excluded: 0,
+  unclassified_matches_excluded: 0,
   stats: [KITCHEN_FAULTS],
   partners: [{ team: TEAM, player: AVERY, match_count: 2 }],
   played_for: [
@@ -78,6 +84,7 @@ const PLAYER_REPORT: PlayerReport = {
       id: "mlp-match",
       date: "2026-06-04",
       tournament: "Synthetic MLP Open",
+      discipline: "mixed_doubles",
       partner: AVERY,
       opponents: OPPONENTS,
       games: [{ number: 1, score: [11, 8] }],
@@ -87,6 +94,7 @@ const PLAYER_REPORT: PlayerReport = {
       id: "legacy-match",
       date: null,
       tournament: "Synthetic Doubles Open",
+      discipline: null,
       partner: AVERY,
       opponents: OPPONENTS,
       games: [],
@@ -99,6 +107,7 @@ const TEAM_REPORT: TeamReport = {
   header: PLAYER_REPORT.header,
   filter_options: { ...PLAYER_REPORT.filter_options, partners: [] },
   undated_matches_excluded: 0,
+  unclassified_matches_excluded: 0,
   stats: [KITCHEN_FAULTS],
   matches: PLAYER_REPORT.matches.map((match) => ({ ...match, partner: null })),
 };
@@ -136,7 +145,7 @@ it("opens both indexes from the Dashboard and links to their reports", async () 
   );
   fireEvent.click(dashboard.getByRole("link", { name: "Players" }));
   const players = within(await screen.findByRole("table", { name: "Players" }));
-  const player = players.getByRole("row", { name: "Alex One Left 2" });
+  const player = players.getByRole("row", { name: "Alex One Left Male 2" });
   const playerLink = within(player).getByRole("link");
   expect(playerLink.getAttribute("href")).toBe("/players/alex");
   fireEvent.click(playerLink);
@@ -144,17 +153,20 @@ it("opens both indexes from the Dashboard and links to their reports", async () 
 
   fireEvent.click(dashboard.getByRole("link", { name: "Teams" }));
   const teams = within(await screen.findByRole("table", { name: "Teams" }));
-  const team = teams.getByRole("row", { name: "Alex One / Avery Two 2" });
+  const team = teams.getByRole("row", { name: "Alex One / Avery Two Mixed Doubles 2" });
   const teamLink = within(team).getByRole("link");
   expect(teamLink.getAttribute("href")).toBe("/teams/team");
   fireEvent.click(teamLink);
   await screen.findByRole("heading", { name: "Alex One / Avery Two" });
+  expect(screen.getByText("Mixed Doubles")).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "Discipline" })).toBeNull();
 });
 
 it("shows the Player profile, Played for, Partners, Match history and per-Match values", async () => {
   const history = renderDashboard("/players/alex");
   await screen.findByRole("heading", { name: "Alex One" });
   expect(screen.getByText("Left-handed")).toBeTruthy();
+  expect(screen.getByText("Male")).toBeTruthy();
   expect(
     screen.getByText("2 Matches · 6 Rallies counted · 4 Done, 1 In progress, 1 Empty"),
   ).toBeTruthy();
@@ -241,6 +253,9 @@ it("applies and restores combined Player filters alongside the stats breakdown",
   fireEvent.click(form.getByRole("checkbox", { name: "Synthetic Doubles Open (PPA)" }));
   fireEvent.click(form.getByRole("checkbox", { name: "Synthetic MLP Open (MLP)" }));
   fireEvent.change(form.getByRole("combobox", { name: "Tour" }), { target: { value: "mlp" } });
+  fireEvent.change(form.getByRole("combobox", { name: "Discipline" }), {
+    target: { value: "mixed_doubles" },
+  });
   fireEvent.change(form.getByLabelText("Date from"), { target: { value: "2026-06-01" } });
   fireEvent.change(form.getByLabelText("Date to"), { target: { value: "2026-06-04" } });
   fireEvent.change(form.getByRole("combobox", { name: "Partner" }), {
@@ -262,6 +277,7 @@ it("applies and restores combined Player filters alongside the stats breakdown",
   const filters = {
     tournament: [MLP_OPEN, DOUBLES_OPEN],
     tour: "mlp",
+    discipline: "mixed_doubles",
     date_from: "2026-06-01",
     date_to: "2026-06-04",
     partner: AVERY.id,
@@ -287,6 +303,9 @@ it("applies and restores combined Player filters alongside the stats breakdown",
   const restored = within(await screen.findByRole("group", { name: "Filter Matches" }));
   expect(restored.getAllByRole("checkbox", { checked: true })).toHaveLength(2);
   expect((restored.getByRole("combobox", { name: "Tour" }) as HTMLSelectElement).value).toBe("mlp");
+  expect((restored.getByRole("combobox", { name: "Discipline" }) as HTMLSelectElement).value).toBe(
+    "mixed_doubles",
+  );
   expect((restored.getByLabelText("Date to") as HTMLInputElement).value).toBe("2026-06-04");
   expect(getPlayerReport).toHaveBeenLastCalledWith(ALEX.id, filters, expect.any(AbortSignal));
 });
@@ -446,4 +465,16 @@ it("keeps the Matches tab highlighted on New Match", async () => {
   expect(dashboard.getByRole("link", { name: "Matches" }).getAttribute("aria-current")).toBe(
     "page",
   );
+});
+
+it("shows unclassified Match exclusions on Player report and em dash for legacy Players", async () => {
+  vi.mocked(getPlayerReport).mockResolvedValueOnce({
+    ...PLAYER_REPORT,
+    profile: { ...PLAYER_REPORT.profile, gender: null },
+    unclassified_matches_excluded: 1,
+  });
+  renderDashboard("/players/alex?discipline=mens_doubles");
+  await screen.findByRole("heading", { name: "Alex One" });
+  expect(screen.getByText("1 Match left out because of unknown Discipline.")).toBeTruthy();
+  expect(screen.getByText("Left-handed").parentElement?.textContent).toBe("Left-handed · —");
 });
