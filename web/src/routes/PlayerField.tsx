@@ -1,4 +1,12 @@
-import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type RefObject,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Handedness } from "../api/client";
 import {
   buildPlayerDropdown,
@@ -64,14 +72,10 @@ export function PlayerField({
   onEditPlayer?: (player: RosterPlayerOption) => void;
 }) {
   const id = useId();
-  const listId = `${id}-options`;
   const statusId = `${id}-status`;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const leftHandRef = useRef<HTMLButtonElement>(null);
-  const rightHandRef = useRef<HTMLButtonElement>(null);
   const pendingFocusRef = useRef<"search" | "handedness" | null>(null);
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
 
   useEffect(() => {
     if (value.kind === "searching" && pendingFocusRef.current === "search") {
@@ -83,297 +87,409 @@ export function PlayerField({
     }
   }, [value.kind]);
 
-  const dropdown = useMemo(
-    () =>
-      value.kind === "searching"
-        ? buildPlayerDropdown(value.query, players, otherSlots)
-        : { options: [], hasPlayerMatches: false, canCreate: false },
-    [value, players, otherSlots],
-  );
-
-  const draftCheck = useMemo(
-    () => (value.kind === "new" ? checkNewPlayerDraft(value.name, players, otherSlots) : null),
-    [value, players, otherSlots],
-  );
-
   function selectExisting(playerId: string) {
-    setOpen(false);
-    setActive(-1);
     onChange({ kind: "existing", id: playerId });
   }
 
   function startNewDraft(name: string) {
-    setOpen(false);
-    setActive(-1);
     pendingFocusRef.current = "handedness";
     onChange({ kind: "new", name, handedness: "", confirmedNearMatch: false });
   }
 
   function clearToSearch() {
-    setOpen(false);
-    setActive(-1);
     pendingFocusRef.current = "search";
     onChange(EMPTY_PLAYER_SLOT);
   }
 
   if (value.kind === "existing") {
-    const selected = players.find((player) => player.id === value.id);
-    if (!selected) {
-      if (rosterFetching) {
-        return (
-          <div className="new-match-field player-field">
-            <span className="player-field-label">{label}</span>
-            <div className="player-selected">
-              <span className="player-selected-name">Updating Player…</span>
-            </div>
-          </div>
-        );
-      }
+    return (
+      <ExistingPlayerSlot
+        label={label}
+        statusId={statusId}
+        selected={players.find((player) => player.id === value.id)}
+        rosterFetching={rosterFetching}
+        disabled={disabled}
+        onClear={clearToSearch}
+        onEditPlayer={onEditPlayer}
+      />
+    );
+  }
+
+  if (value.kind === "new") {
+    return (
+      <NewPlayerSlot
+        id={id}
+        statusId={statusId}
+        label={label}
+        value={value}
+        players={players}
+        otherSlots={otherSlots}
+        showValidation={showValidation}
+        disabled={disabled}
+        leftHandRef={leftHandRef}
+        onChange={onChange}
+        onSelectExisting={selectExisting}
+        onClear={clearToSearch}
+      />
+    );
+  }
+
+  return (
+    <SearchingPlayerSlot
+      id={id}
+      statusId={statusId}
+      label={label}
+      query={value.query}
+      players={players}
+      otherSlots={otherSlots}
+      showValidation={showValidation}
+      externalNotice={externalNotice}
+      disabled={disabled}
+      searchInputRef={searchInputRef}
+      onQueryChange={(query) => onChange({ kind: "searching", query })}
+      onSelectExisting={selectExisting}
+      onStartNew={startNewDraft}
+    />
+  );
+}
+
+function ExistingPlayerSlot({
+  label,
+  statusId,
+  selected,
+  rosterFetching,
+  disabled,
+  onClear,
+  onEditPlayer,
+}: {
+  label: string;
+  statusId: string;
+  selected: RosterPlayerOption | undefined;
+  rosterFetching: boolean;
+  disabled: boolean;
+  onClear: () => void;
+  onEditPlayer?: (player: RosterPlayerOption) => void;
+}) {
+  if (!selected) {
+    if (rosterFetching) {
       return (
         <div className="new-match-field player-field">
           <span className="player-field-label">{label}</span>
-          <div className="player-selected player-selected-missing">
-            <span className="player-selected-missing-text">
-              Player no longer exists in this Rally Log
-            </span>
-            <div className="player-selected-actions">
-              <button
-                type="button"
-                className="player-icon-button"
-                aria-label={`Clear ${label}`}
-                title="Clear selection"
-                disabled={disabled}
-                onClick={clearToSearch}
-              >
-                ×
-              </button>
-            </div>
+          <div className="player-selected">
+            <span className="player-selected-name">Updating Player…</span>
           </div>
-          <p className="player-field-error" id={statusId}>
-            This Player was merged or deleted. Clear this slot and choose another Player.
-          </p>
         </div>
       );
     }
-
     return (
       <div className="new-match-field player-field">
         <span className="player-field-label">{label}</span>
-        <div className="player-selected">
-          <span className="player-selected-name">{selected.name}</span>
-          <span
-            className="player-hand-tag"
-            title={handTitle(selected.handedness)}
-            aria-label={handTitle(selected.handedness)}
-          >
-            {handTag(selected.handedness)}
+        <div className="player-selected player-selected-missing">
+          <span className="player-selected-missing-text">
+            Player no longer exists in this Rally Log
           </span>
           <div className="player-selected-actions">
-            {onEditPlayer && (
-              <button
-                type="button"
-                className="player-icon-button"
-                aria-label={`Edit Player ${selected.name}`}
-                title={`Edit or merge "${selected.name}" across all Matches`}
-                disabled={disabled}
-                onClick={() => onEditPlayer(selected)}
-              >
-                ✎
-              </button>
-            )}
             <button
               type="button"
               className="player-icon-button"
               aria-label={`Clear ${label}`}
               title="Clear selection"
               disabled={disabled}
-              onClick={clearToSearch}
+              onClick={onClear}
             >
               ×
             </button>
           </div>
         </div>
+        <p className="player-field-error" id={statusId}>
+          This Player was merged or deleted. Clear this slot and choose another Player.
+        </p>
       </div>
     );
   }
 
-  if (value.kind === "new") {
-    const check = draftCheck ?? { kind: "ok" as const };
-    let validationMessage: string | null = null;
-    if (showValidation) {
-      if (check.kind === "empty") {
-        validationMessage = "Enter a name for the new Player.";
-      } else if (check.kind === "near-matches" && !value.confirmedNearMatch) {
-        validationMessage = "Confirm Create anyway or use the existing Player.";
-      } else if (
-        check.kind !== "existing-collision" &&
-        check.kind !== "staged-collision" &&
-        !value.handedness
-      ) {
-        validationMessage = "Choose handedness (Left or Right).";
-      }
-    }
-
-    const hasInlineError =
-      check.kind === "existing-collision" ||
-      check.kind === "staged-collision" ||
-      validationMessage !== null;
-
-    function handleHandKey(event: KeyboardEvent<HTMLButtonElement>) {
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        rightHandRef.current?.focus();
-      } else if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        leftHandRef.current?.focus();
-      }
-    }
-
-    return (
-      <div className="new-match-field player-field player-field-new">
-        <div className="player-new-header">
-          <div className="player-new-title">
-            <label htmlFor={id}>{label}</label>
-            <span className="player-new-badge">New</span>
-          </div>
+  return (
+    <div className="new-match-field player-field">
+      <span className="player-field-label">{label}</span>
+      <div className="player-selected">
+        <span className="player-selected-name">{selected.name}</span>
+        <span
+          className="player-hand-tag"
+          title={handTitle(selected.handedness)}
+          aria-label={handTitle(selected.handedness)}
+        >
+          {handTag(selected.handedness)}
+        </span>
+        <div className="player-selected-actions">
+          {onEditPlayer && (
+            <button
+              type="button"
+              className="player-icon-button"
+              aria-label={`Edit Player ${selected.name}`}
+              title={`Edit or merge "${selected.name}" across all Matches`}
+              disabled={disabled}
+              onClick={() => onEditPlayer(selected)}
+            >
+              ✎
+            </button>
+          )}
           <button
             type="button"
             className="player-icon-button"
             aria-label={`Clear ${label}`}
-            title="Back to search"
+            title="Clear selection"
             disabled={disabled}
-            onClick={clearToSearch}
+            onClick={onClear}
           >
             ×
           </button>
         </div>
-
-        <div className="player-new-controls">
-          <input
-            id={id}
-            value={value.name}
-            disabled={disabled}
-            autoComplete="off"
-            spellCheck={false}
-            aria-invalid={hasInlineError || undefined}
-            aria-describedby={
-              check.kind !== "ok" && check.kind !== "empty"
-                ? statusId
-                : validationMessage
-                  ? statusId
-                  : undefined
-            }
-            onChange={(event) =>
-              onChange({
-                ...value,
-                name: event.target.value,
-                confirmedNearMatch: false,
-              })
-            }
-            required
-          />
-          <div className="player-hand-toggle" role="group" aria-label={`${label} handedness`}>
-            <button
-              ref={leftHandRef}
-              type="button"
-              aria-pressed={value.handedness === "left"}
-              disabled={disabled}
-              onKeyDown={handleHandKey}
-              onClick={() => onChange({ ...value, handedness: "left" })}
-            >
-              Left
-            </button>
-            <button
-              ref={rightHandRef}
-              type="button"
-              aria-pressed={value.handedness === "right"}
-              disabled={disabled}
-              onKeyDown={handleHandKey}
-              onClick={() => onChange({ ...value, handedness: "right" })}
-            >
-              Right
-            </button>
-          </div>
-        </div>
-
-        {check.kind === "existing-collision" && (
-          <div className="player-collision" id={statusId}>
-            <span>
-              Player "{check.player.name}" already exists
-              {check.usedInSlot ? ` (already in ${check.usedInSlot}).` : "."}
-            </span>
-            {!check.usedInSlot && (
-              <button
-                type="button"
-                className="player-inline-action"
-                disabled={disabled}
-                onClick={() => selectExisting(check.player.id)}
-              >
-                Use {check.player.name} ({handTag(check.player.handedness)})
-              </button>
-            )}
-          </div>
-        )}
-
-        {check.kind === "staged-collision" && (
-          <p className="player-field-error" id={statusId}>
-            "{check.name}" is already staged as a new Player in {check.usedInSlot}.
-          </p>
-        )}
-
-        {check.kind === "near-matches" && (
-          <div className="player-near-match" id={statusId} role="status">
-            <p className="player-near-match-title">
-              Similar to existing {check.matches.length === 1 ? "Player" : "Players"}:
-            </p>
-            <div className="player-near-match-list">
-              {check.matches.map(({ player: candidate, usedInSlot }) =>
-                usedInSlot ? (
-                  <span key={candidate.id} className="player-near-match-used">
-                    {candidate.name} ({handTag(candidate.handedness)}) — already in {usedInSlot}
-                  </span>
-                ) : (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    className="player-inline-action"
-                    disabled={disabled}
-                    onClick={() => selectExisting(candidate.id)}
-                  >
-                    Use {candidate.name} ({handTag(candidate.handedness)})
-                  </button>
-                ),
-              )}
-            </div>
-            <label className="player-create-anyway">
-              <input
-                type="checkbox"
-                checked={value.confirmedNearMatch}
-                disabled={disabled}
-                onChange={(event) =>
-                  onChange({ ...value, confirmedNearMatch: event.target.checked })
-                }
-              />
-              Create anyway
-            </label>
-          </div>
-        )}
-
-        {validationMessage && (
-          <p
-            className="player-field-error"
-            id={check.kind === "ok" || check.kind === "empty" ? statusId : undefined}
-          >
-            {validationMessage}
-          </p>
-        )}
       </div>
-    );
+    </div>
+  );
+}
+
+function NewPlayerSlot({
+  id,
+  statusId,
+  label,
+  value,
+  players,
+  otherSlots,
+  showValidation,
+  disabled,
+  leftHandRef,
+  onChange,
+  onSelectExisting,
+  onClear,
+}: {
+  id: string;
+  statusId: string;
+  label: string;
+  value: Extract<PlayerSlotState, { kind: "new" }>;
+  players: readonly RosterPlayerOption[];
+  otherSlots: OtherSlotUsage;
+  showValidation: boolean;
+  disabled: boolean;
+  leftHandRef: RefObject<HTMLButtonElement | null>;
+  onChange: (next: PlayerSlotState) => void;
+  onSelectExisting: (playerId: string) => void;
+  onClear: () => void;
+}) {
+  const rightHandRef = useRef<HTMLButtonElement>(null);
+  const check = useMemo(
+    () => checkNewPlayerDraft(value.name, players, otherSlots),
+    [value.name, players, otherSlots],
+  );
+
+  let validationMessage: string | null = null;
+  if (showValidation) {
+    if (check.kind === "empty") {
+      validationMessage = "Enter a name for the new Player.";
+    } else if (check.kind === "near-matches" && !value.confirmedNearMatch) {
+      validationMessage = "Confirm Create anyway or use the existing Player.";
+    } else if (
+      check.kind !== "existing-collision" &&
+      check.kind !== "staged-collision" &&
+      !value.handedness
+    ) {
+      validationMessage = "Choose handedness (Left or Right).";
+    }
   }
 
-  // Searching state
-  const trimmed = value.query.trim();
-  const { options, hasPlayerMatches, canCreate } = dropdown;
+  const hasInlineError =
+    check.kind === "existing-collision" ||
+    check.kind === "staged-collision" ||
+    validationMessage !== null;
+
+  function handleHandKey(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      rightHandRef.current?.focus();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      leftHandRef.current?.focus();
+    }
+  }
+
+  return (
+    <div className="new-match-field player-field player-field-new">
+      <div className="player-new-header">
+        <div className="player-new-title">
+          <label htmlFor={id}>{label}</label>
+          <span className="player-new-badge">New</span>
+        </div>
+        <button
+          type="button"
+          className="player-icon-button"
+          aria-label={`Clear ${label}`}
+          title="Back to search"
+          disabled={disabled}
+          onClick={onClear}
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="player-new-controls">
+        <input
+          id={id}
+          value={value.name}
+          disabled={disabled}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={hasInlineError || undefined}
+          aria-describedby={
+            check.kind !== "ok" && check.kind !== "empty"
+              ? statusId
+              : validationMessage
+                ? statusId
+                : undefined
+          }
+          onChange={(event) =>
+            onChange({
+              ...value,
+              name: event.target.value,
+              confirmedNearMatch: false,
+            })
+          }
+          required
+        />
+        <div className="player-hand-toggle" role="group" aria-label={`${label} handedness`}>
+          <button
+            ref={leftHandRef}
+            type="button"
+            aria-pressed={value.handedness === "left"}
+            disabled={disabled}
+            onKeyDown={handleHandKey}
+            onClick={() => onChange({ ...value, handedness: "left" })}
+          >
+            Left
+          </button>
+          <button
+            ref={rightHandRef}
+            type="button"
+            aria-pressed={value.handedness === "right"}
+            disabled={disabled}
+            onKeyDown={handleHandKey}
+            onClick={() => onChange({ ...value, handedness: "right" })}
+          >
+            Right
+          </button>
+        </div>
+      </div>
+
+      {check.kind === "existing-collision" && (
+        <div className="player-collision" id={statusId}>
+          <span>
+            Player "{check.player.name}" already exists
+            {check.usedInSlot ? ` (already in ${check.usedInSlot}).` : "."}
+          </span>
+          {!check.usedInSlot && (
+            <button
+              type="button"
+              className="player-inline-action"
+              disabled={disabled}
+              onClick={() => onSelectExisting(check.player.id)}
+            >
+              Use {check.player.name} ({handTag(check.player.handedness)})
+            </button>
+          )}
+        </div>
+      )}
+
+      {check.kind === "staged-collision" && (
+        <p className="player-field-error" id={statusId}>
+          "{check.name}" is already staged as a new Player in {check.usedInSlot}.
+        </p>
+      )}
+
+      {check.kind === "near-matches" && (
+        <div className="player-near-match" id={statusId} role="status">
+          <p className="player-near-match-title">
+            Similar to existing {check.matches.length === 1 ? "Player" : "Players"}:
+          </p>
+          <div className="player-near-match-list">
+            {check.matches.map(({ player: candidate, usedInSlot }) =>
+              usedInSlot ? (
+                <span key={candidate.id} className="player-near-match-used">
+                  {candidate.name} ({handTag(candidate.handedness)}) — already in {usedInSlot}
+                </span>
+              ) : (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  className="player-inline-action"
+                  disabled={disabled}
+                  onClick={() => onSelectExisting(candidate.id)}
+                >
+                  Use {candidate.name} ({handTag(candidate.handedness)})
+                </button>
+              ),
+            )}
+          </div>
+          <label className="player-create-anyway">
+            <input
+              type="checkbox"
+              checked={value.confirmedNearMatch}
+              disabled={disabled}
+              onChange={(event) => onChange({ ...value, confirmedNearMatch: event.target.checked })}
+            />
+            Create anyway
+          </label>
+        </div>
+      )}
+
+      {validationMessage && (
+        <p
+          className="player-field-error"
+          id={check.kind === "ok" || check.kind === "empty" ? statusId : undefined}
+        >
+          {validationMessage}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SearchingPlayerSlot({
+  id,
+  statusId,
+  label,
+  query,
+  players,
+  otherSlots,
+  showValidation,
+  externalNotice,
+  disabled,
+  searchInputRef,
+  onQueryChange,
+  onSelectExisting,
+  onStartNew,
+}: {
+  id: string;
+  statusId: string;
+  label: string;
+  query: string;
+  players: readonly RosterPlayerOption[];
+  otherSlots: OtherSlotUsage;
+  showValidation: boolean;
+  externalNotice: string | null;
+  disabled: boolean;
+  searchInputRef: RefObject<HTMLInputElement | null>;
+  onQueryChange: (query: string) => void;
+  onSelectExisting: (playerId: string) => void;
+  onStartNew: (name: string) => void;
+}) {
+  const listId = `${id}-options`;
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+
+  const trimmed = query.trim();
+  const { options, hasPlayerMatches, canCreate } = useMemo(
+    () => buildPlayerDropdown(query, players, otherSlots),
+    [query, players, otherSlots],
+  );
   const visible = open && options.length > 0 && !disabled;
   const effectiveActive =
     active >= 0 && active < options.length && !options[active]?.disabled ? active : -1;
@@ -383,10 +499,12 @@ export function PlayerField({
 
   function activateOption(option: DropdownOption) {
     if (option.disabled) return;
+    setOpen(false);
+    setActive(-1);
     if (option.kind === "existing") {
-      selectExisting(option.player.id);
+      onSelectExisting(option.player.id);
     } else if (option.kind === "create") {
-      startNewDraft(option.name);
+      onStartNew(option.name);
     }
   }
 
@@ -422,7 +540,9 @@ export function PlayerField({
       }
       if (!hasPlayerMatches && canCreate) {
         event.preventDefault();
-        startNewDraft(trimmed);
+        setOpen(false);
+        setActive(-1);
+        onStartNew(trimmed);
         return;
       }
       if (visible && hasPlayerMatches) {
@@ -454,11 +574,11 @@ export function PlayerField({
           }
           aria-invalid={searchError ? true : undefined}
           aria-describedby={externalNotice || searchError ? statusId : undefined}
-          value={value.query}
+          value={query}
           placeholder="Search or create Player…"
           disabled={disabled}
           onChange={(event) => {
-            onChange({ kind: "searching", query: event.target.value });
+            onQueryChange(event.target.value);
             setOpen(true);
             setActive(-1);
           }}

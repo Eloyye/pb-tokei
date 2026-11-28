@@ -354,6 +354,65 @@ def test_match_creation_reports_roster_errors_without_writing(client: TestClient
         assert not log.list_players()
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_detail"),
+    [
+        ({"foo": 1}, None),
+        (
+            {
+                "team_a": [
+                    {"name": "Anna Bright", "handedness": "right", "extra": True},
+                    {"name": "Ben Johns", "handedness": "right"},
+                ]
+            },
+            None,
+        ),
+        (
+            {"team_a": ["not-a-uuid", {"name": "Ben Johns", "handedness": "right"}]},
+            None,
+        ),
+        ({"tournament": "   "}, "Tournament name must be non-empty text"),
+        ({"tour": "mlp"}, "an MLP Match needs a Franchise Match"),
+        (
+            {"tour": "ppa", "franchise_match": DALLAS_VS_MIAMI},
+            "only MLP Matches have a Franchise Match",
+        ),
+        (
+            {
+                "tour": "mlp",
+                "franchise_match": {"franchise_a": "   ", "franchise_b": "Miami Pickleball Club"},
+            },
+            "each Franchise needs a name",
+        ),
+        (
+            {
+                "tour": "mlp",
+                "franchise_match": {
+                    "franchise_a": "Dallas Flash",
+                    "franchise_b": "Dallas Flash ",
+                },
+            },
+            "a Franchise can't play itself",
+        ),
+    ],
+)
+def test_create_match_rejects_extra_fields_malformed_slots_and_metadata_errors(
+    client: TestClient, db: Path, overrides: dict[str, Any], expected_detail: str | None
+) -> None:
+    body = {**form(), **overrides}
+
+    response = client.post("/api/matches", json=body)
+
+    assert response.status_code == 422
+    if expected_detail is not None:
+        assert response.json()["detail"] == expected_detail
+    with RallyLog.open(db) as log:
+        assert not log.list_matches()
+        assert not log.list_players()
+        assert not log.list_tournaments()
+        assert not log.list_franchises()
+
+
 def test_match_creation_rejects_foreign_origin_and_stale_rally_log(
     client: TestClient, db: Path, tmp_path: Path
 ) -> None:

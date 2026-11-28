@@ -365,17 +365,18 @@ match_write_lock = _setup_lock
 
 
 def set_up_match(log: RallyLog, roster: Roster, *, source_video_frames: int | None = None) -> Match:
-    """Creates the Match a Roster describes in one transaction.
+    """Name-based Match setup for TOML Roster Files / CLI in one transaction.
 
     After trimming outer whitespace, an exact name reuses the stored Player, Franchise or
     Tournament on its Tour. A name that only matches after folding case and internal whitespace
     raises RosterError. Tournament names are checked across Tours. Only new records are written.
     """
 
-    def resolve_teams(
-        new: list[Callable[[], None]],
-    ) -> tuple[tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId]]:
+    def resolve_teams() -> tuple[
+        tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId], list[Player]
+    ]:
         available_players: list[Player] | None = None
+        new_players: list[Player] = []
         player_ids: dict[str, PlayerId] = {}
         for entry in (*roster.team_a, *roster.team_b):
             player = log.find_player(entry.name)
@@ -384,7 +385,7 @@ def set_up_match(log: RallyLog, roster: Roster, *, source_video_frames: int | No
                     available_players = log.list_players()
                 _reject_normalized_name(available_players, entry.name, "Player")
                 player = Player(PlayerId(new_id()), entry.name, entry.handedness)
-                new.append(partial(log.save_player, player))
+                new_players.append(player)
                 available_players.append(player)
             elif player.handedness is not entry.handedness:
                 raise RosterError(
@@ -395,6 +396,7 @@ def set_up_match(log: RallyLog, roster: Roster, *, source_video_frames: int | No
         return (
             (player_ids[roster.team_a[0].name], player_ids[roster.team_a[1].name]),
             (player_ids[roster.team_b[0].name], player_ids[roster.team_b[1].name]),
+            new_players,
         )
 
     with _setup_lock, log.transaction():
@@ -422,7 +424,7 @@ def create_match(
     franchise_match: RosterFranchiseMatch | None = None,
     match_id: MatchId | None = None,
 ) -> Match:
-    """Creates a Match with explicit existing Player IDs and/or new Players in one transaction.
+    """PlayerId-based Match setup for the annotation API in one transaction.
 
     Each existing Player is resolved strictly by PlayerId (never by name). Each new Player is
     trimmed and rejected if empty or matching any existing Player's exact or normalized name.
@@ -433,10 +435,11 @@ def create_match(
     )
     resolved_match_id = match_id or MatchId(new_id())
 
-    def resolve_teams(
-        new: list[Callable[[], None]],
-    ) -> tuple[tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId]]:
+    def resolve_teams() -> tuple[
+        tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId], list[Player]
+    ]:
         stored_players: list[Player] | None = None
+        new_players: list[Player] = []
         seen_ids: set[PlayerId] = set()
         seen_new_names: set[str] = set()
         resolved: list[PlayerId] = []
@@ -460,17 +463,21 @@ def create_match(
                     raise RosterError("a Player can't appear twice in a Match")
                 if stored_players is None:
                     stored_players = log.list_players()
-                existing = next((p for p in stored_players if p.name == cleaned), None) or next(
-                    (p for p in stored_players if _normalize_name(p.name) == normalized), None
+                exact = next((p for p in stored_players if p.name == cleaned), None)
+                if exact is not None:
+                    raise RosterError(f"Player {exact.name!r} already exists")
+                _reject_normalized_name(
+                    stored_players,
+                    cleaned,
+                    "Player",
+                    message=lambda existing: f"Player {existing!r} already exists",
                 )
-                if existing is not None:
-                    raise RosterError(f"Player {existing.name!r} already exists")
                 seen_new_names.add(normalized)
                 player = Player(PlayerId(new_id()), cleaned, slot.handedness)
-                new.append(partial(log.save_player, player))
+                new_players.append(player)
                 seen_ids.add(player.id)
                 resolved.append(player.id)
-        return (resolved[0], resolved[1]), (resolved[2], resolved[3])
+        return (resolved[0], resolved[1]), (resolved[2], resolved[3]), new_players
 
     with _setup_lock, log.transaction():
         return _finish_match_setup(
@@ -492,8 +499,7 @@ def _finish_match_setup(
     tournament_name: str,
     tour: Tour,
     resolve_teams: Callable[
-        [list[Callable[[], None]]],
-        tuple[tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId]],
+        [], tuple[tuple[PlayerId, PlayerId], tuple[PlayerId, PlayerId], list[Player]]
     ],
     franchise_match: RosterFranchiseMatch | None,
     video: SourceVideo | None = None,
@@ -513,7 +519,9 @@ def _finish_match_setup(
         tournament = Tournament(TournamentId(new_id()), tournament_name, tour)
         new.append(partial(log.save_tournament, tournament))
 
-    team_a_players, team_b_players = resolve_teams(new)
+    team_a_players, team_b_players, new_players = resolve_teams()
+    for player in new_players:
+        new.append(partial(log.save_player, player))
 
     teams = []
     for a_id, b_id in (team_a_players, team_b_players):
@@ -564,14 +572,21 @@ def _finish_match_setup(
 
 
 def _reject_normalized_name(
-    records: Iterable[Player | Franchise | Tournament], name: str, kind: str
+    records: Iterable[Player | Franchise | Tournament],
+    name: str,
+    kind: str,
+    *,
+    message: Callable[[str], str] | None = None,
 ) -> None:
     normalized = _normalize_name(name)
     for record in records:
         if _normalize_name(record.name) == normalized:
-            raise RosterError(
-                f"{kind} {name!r} matches an existing name (did you mean {record.name!r}?)"
+            detail = (
+                message(record.name)
+                if message is not None
+                else f"{kind} {name!r} matches an existing name (did you mean {record.name!r}?)"
             )
+            raise RosterError(detail)
 
 
 def _franchise_match_for(

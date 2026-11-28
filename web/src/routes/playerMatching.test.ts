@@ -23,6 +23,7 @@ const NO_OTHERS: OtherSlotUsage = { existingIds: new Map(), stagedNew: [] };
 describe("playerMatching", () => {
   it("normalizes punctuation, whitespace, and case for fuzzy comparison", () => {
     expect(normalizeName("  Anna   Bright ")).toBe("anna bright");
+    expect(normalizeName("Straße")).toBe("strasse");
     expect(normalizeFuzzy("Anna-Leigh Waters")).toBe("anna leigh waters");
     expect(normalizeFuzzy("J.W. Johnson")).toBe("jw johnson");
     expect(normalizeFuzzy("Liam O’Brien")).toBe("liam obrien");
