@@ -1,11 +1,12 @@
 """Match selection shared by dashboard reports."""
 
+from collections.abc import Iterable, Mapping
 from datetime import date
 from typing import Self
 
 from pydantic import BaseModel, model_validator
 
-from pb_tokei.rally_log import PlayerId, Tour, Tournament, TournamentId
+from pb_tokei.rally_log import MatchMetadata, PlayerId, Tour, Tournament, TournamentId
 
 
 class FilterTournament(BaseModel):
@@ -51,6 +52,21 @@ class MatchFilters(BaseModel):
             and (self.date_from is None or match_date >= self.date_from)
             and (self.date_to is None or match_date <= self.date_to)
         )
+
+    def select_matches(
+        self, matches: Iterable[MatchMetadata], tournaments: Mapping[TournamentId, Tournament]
+    ) -> tuple[list[MatchMetadata], int]:
+        """Select Matches in input order and count undated ones excluded by the date range."""
+        selected = []
+        undated_excluded = 0
+        for match in matches:
+            if not self.includes_tournament(tournaments[match.tournament_id]):
+                continue
+            if self.includes_date(match.date):
+                selected.append(match)
+            elif match.date is None:
+                undated_excluded += 1
+        return selected, undated_excluded
 
 
 class TeamMatchFilters(MatchFilters):

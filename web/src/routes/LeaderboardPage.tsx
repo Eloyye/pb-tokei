@@ -11,7 +11,7 @@ import { reportTeamLabel } from "./teams";
 import "./report.css";
 
 type LeaderboardStat = components["schemas"]["LeaderboardStat"];
-type LeaderboardRow = components["schemas"]["LeaderboardRow"];
+type LeaderboardRow = components["schemas"]["Leaderboard"]["rows"][number];
 type SubjectKind = components["schemas"]["SubjectKind"];
 
 const route = getRouteApi("/leaderboard");
@@ -268,11 +268,11 @@ function RankingTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ rank, subject, value }) => (
+          {rows.map(({ rank, subject, value, kind: rowKind }) => (
             <tr key={subject.id}>
               <td className="subject-number">{rank}</td>
               <th scope="row">
-                {"players" in subject ? (
+                {rowKind === "team" ? (
                   <Link className="report-link" to="/teams/$teamId" params={{ teamId: subject.id }}>
                     {reportTeamLabel(subject)}
                   </Link>

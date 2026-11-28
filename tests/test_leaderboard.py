@@ -65,6 +65,7 @@ def test_default_endpoint_lists_rankable_stats_and_hides_small_samples(client: T
 def test_players_rank_by_pooled_estimate_and_include_the_exact_minimum(client: TestClient) -> None:
     result = client.get("/api/leaderboard", params={"stat": "hit_share", "minimum": 15}).json()
     assert result["hidden_count"] == 3
+    assert {row["kind"] for row in result["rows"]} == {"player"}
     assert [
         (row["rank"], row["subject"]["name"], row["value"]["count"], row["value"]["of"])
         for row in result["rows"]
@@ -110,11 +111,31 @@ def test_single_bucket_pools_attempts_before_calculating_the_interval(client: Te
     assert (brook["low"], brook["high"]) == pytest.approx([bound * 100 for bound in interval])
 
 
+def test_buckets_account_for_every_attempt_including_unknown_court_half(client: TestClient) -> None:
+    params = {"stat": "hit_share", "minimum": 1}
+    overall = client.get("/api/leaderboard", params=params).json()
+    alex = next(row for row in overall["rows"] if row["subject"]["name"] == "Alex One")
+    values_by_bucket = {}
+    for bucket in overall["buckets"]["court_half"]:
+        result = client.get(
+            "/api/leaderboard", params={**params, "by": "court_half", "bucket": bucket}
+        ).json()
+        for row in result["rows"]:
+            if row["subject"]["id"] == alex["subject"]["id"]:
+                values_by_bucket[bucket] = row["value"]
+
+    assert values_by_bucket["Unknown"]["of"] == 1
+    assert values_by_bucket["Left"]["of"] == 19
+    for field in ("count", "of"):
+        assert sum(value[field] for value in values_by_bucket.values()) == alex["value"][field]
+
+
 def test_team_only_rate_pools_disjoint_serving_and_receiving_rows(client: TestClient) -> None:
     result = client.get(
         "/api/leaderboard", params={"kind": "team", "stat": "opening_win", "minimum": 1}
     ).json()
     assert result["hidden_count"] == 1
+    assert {row["kind"] for row in result["rows"]} == {"team"}
     assert [(row["value"]["count"], row["value"]["of"]) for row in result["rows"]] == [
         (2, 3),
         (4, 8),

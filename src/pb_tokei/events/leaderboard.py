@@ -1,7 +1,7 @@
 """Rank Players or Teams on one stat from the selected Matches."""
 
 from dataclasses import dataclass
-from typing import Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -57,10 +57,24 @@ class LeaderboardQuery(MatchFilters):
         return self.bucket or (None if self.by is None else LEADERBOARD_BUCKETS[self.by][0])
 
 
-class LeaderboardRow(BaseModel):
+class _RankedRate(BaseModel):
     rank: int
-    subject: ReportPlayer | ReportTeam
     value: ReportRate
+
+
+class LeaderboardPlayerRow(_RankedRate):
+    kind: Literal[SubjectKind.PLAYER]
+    subject: ReportPlayer
+
+
+class LeaderboardTeamRow(_RankedRate):
+    kind: Literal[SubjectKind.TEAM]
+    subject: ReportTeam
+
+
+type LeaderboardRow = Annotated[
+    LeaderboardPlayerRow | LeaderboardTeamRow, Field(discriminator="kind")
+]
 
 
 class Leaderboard(BaseModel):
@@ -87,22 +101,13 @@ def load_leaderboard_matches(log: RallyLog, filters: MatchFilters) -> Leaderboar
         rosters = log.list_match_rosters()
         metadata = log.load_match_metadata([roster.match_id for roster in rosters])
         tournament_ids = {match.tournament_id for match in metadata.values()}
-        tournaments = [t for t in log.list_tournaments() if t.id in tournament_ids]
-        included = {t.id for t in tournaments if filters.includes_tournament(t)}
-        selected = []
-        undated = 0
-        for match in metadata.values():
-            if match.tournament_id not in included:
-                continue
-            if filters.includes_date(match.date):
-                selected.append(match)
-            elif match.date is None:
-                undated += 1
+        tournaments = {t.id: t for t in log.list_tournaments() if t.id in tournament_ids}
+        selected, undated = filters.select_matches(metadata.values(), tournaments)
         matches = log.load_match_games_from_metadata(selected)
     return LeaderboardMatches(
         matches=[(matches[r.match_id], r) for r in rosters if r.match_id in matches],
         filter_options=MatchFilterOptions(
-            tournaments=[FilterTournament.from_tournament(t) for t in tournaments]
+            tournaments=[FilterTournament.from_tournament(t) for t in tournaments.values()]
         ),
         undated_matches_excluded=undated,
     )
@@ -126,12 +131,21 @@ def build_leaderboard(snapshot: LeaderboardMatches, query: LeaderboardQuery) -> 
         if value is not None and value.of >= query.minimum and value.estimate is not None:
             scores.append((value.estimate, subject, value))
     scores.sort(key=lambda score: score[0], reverse=True)
-    rows = []
+    rows: list[LeaderboardRow] = []
     rank, previous_estimate = 0, None
     for position, (estimate, subject, value) in enumerate(scores, start=1):
         if estimate != previous_estimate:
             rank, previous_estimate = position, estimate
-        rows.append(LeaderboardRow(rank=rank, subject=subject, value=value))
+        if isinstance(subject, ReportTeam):
+            rows.append(
+                LeaderboardTeamRow(kind=SubjectKind.TEAM, rank=rank, subject=subject, value=value)
+            )
+        else:
+            rows.append(
+                LeaderboardPlayerRow(
+                    kind=SubjectKind.PLAYER, rank=rank, subject=subject, value=value
+                )
+            )
 
     return Leaderboard(
         stat=stat.id,

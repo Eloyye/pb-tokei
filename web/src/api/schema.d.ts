@@ -1051,14 +1051,21 @@ export interface components {
       /** Undated Matches Excluded */
       undated_matches_excluded: number;
     };
-    /** LeaderboardRow */
-    LeaderboardRow: {
+    /** LeaderboardPlayerRow */
+    LeaderboardPlayerRow: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "player";
       /** Rank */
       rank: number;
-      /** Subject */
-      subject: components["schemas"]["ReportPlayer"] | components["schemas"]["ReportTeam"];
+      subject: components["schemas"]["ReportPlayer"];
       value: components["schemas"]["ReportRate"];
     };
+    LeaderboardRow:
+      | components["schemas"]["LeaderboardPlayerRow"]
+      | components["schemas"]["LeaderboardTeamRow"];
     /** LeaderboardStat */
     LeaderboardStat: {
       applies_to: components["schemas"]["ReportSubject"];
@@ -1069,6 +1076,18 @@ export interface components {
       label: string;
       /** Splits By */
       splits_by: components["schemas"]["ReportSplit"][];
+    };
+    /** LeaderboardTeamRow */
+    LeaderboardTeamRow: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "team";
+      /** Rank */
+      rank: number;
+      subject: components["schemas"]["ReportTeam"];
+      value: components["schemas"]["ReportRate"];
     };
     /**
      * LensOut

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { getLeaderboard } from "../api/client";
+import { ApiError, getLeaderboard } from "../api/client";
 import type { components } from "../api/schema";
 import { router as appRouter } from "../router";
 
@@ -58,6 +58,8 @@ function renderLeaderboard(path: string) {
 beforeEach(() => {
   vi.mocked(getLeaderboard).mockImplementation(async ({ kind, stat, minimum = 30, by, bucket }) => {
     const buckets = { shot_number: ["1", "2", "3"], court_half: ["Left", "Right"] };
+    const ranked =
+      kind === "team" ? { kind, subject: TEAM } : { kind: "player" as const, subject: ALEX };
     return {
       stat: STATS.find((option) => option.id === stat)?.id ?? SERVE_IN.id,
       stats: STATS,
@@ -76,7 +78,7 @@ beforeEach(() => {
           : [
               {
                 rank: 1,
-                subject: kind === "team" ? TEAM : ALEX,
+                ...ranked,
                 value: { count: 34, of: 51, estimate: 34 / 51, low: 0.55, high: 0.77, left_out: 0 },
               },
             ],
@@ -186,4 +188,46 @@ it("round-trips the selected stat, kind, minimum, bucket and Match filters throu
   expect((restored.getByRole("combobox", { name: "Tour" }) as HTMLSelectElement).value).toBe("mlp");
   expect((restored.getByLabelText("Date from") as HTMLInputElement).value).toBe(DATE);
   expect((restored.getByLabelText("Date to") as HTMLInputElement).value).toBe(DATE);
+});
+
+it("clears invalid dates from a shared URL while keeping the ranking settings", async () => {
+  const history = renderLeaderboard(
+    "/leaderboard?kind=team&minimum=1&date_from=2026-06-04&date_to=2026-06-03",
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Date from must be on or before Date to.");
+  expect(getLeaderboard).not.toHaveBeenCalled();
+  fireEvent.click(within(alert).getByRole("button", { name: "Clear filters" }));
+
+  await screen.findByRole("table", { name: "Leaderboard results" });
+  expect(Object.fromEntries(new URLSearchParams(history.location.search))).toEqual({
+    kind: "team",
+    minimum: "1",
+  });
+});
+
+it("resets the URL when a shared link requests a stat that is unavailable", async () => {
+  vi.mocked(getLeaderboard).mockRejectedValueOnce(new ApiError(422, "Unavailable stat"));
+  const history = renderLeaderboard("/leaderboard?kind=team&minimum=1&stat=old_stat");
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("These Leaderboard settings are unavailable.");
+  fireEvent.click(within(alert).getByRole("button", { name: "Reset Leaderboard" }));
+
+  await screen.findByText("4 Players hidden below 30 attempts");
+  expect(history.location.search).toBe("");
+});
+
+it("retries a failed Leaderboard load without changing the ranking settings", async () => {
+  vi.mocked(getLeaderboard).mockRejectedValueOnce(new ApiError(404, "Leaderboard unavailable"));
+  const history = renderLeaderboard("/leaderboard?kind=team&minimum=1");
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Leaderboard unavailable");
+  fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+
+  await screen.findByRole("link", { name: "Alex One / Avery Two" });
+  expect(getLeaderboard).toHaveBeenCalledTimes(2);
+  expect(Object.fromEntries(new URLSearchParams(history.location.search))).toEqual({
+    kind: "team",
+    minimum: "1",
+  });
 });
