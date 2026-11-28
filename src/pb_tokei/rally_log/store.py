@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import os
 from collections import defaultdict
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Collection, Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC
 from enum import StrEnum
@@ -679,19 +679,26 @@ class RallyLog:
 
     def load_match_games(self, match_ids: Sequence[MatchId]) -> dict[MatchId, MatchGames]:
         """Read the Games and metadata for the selected Match IDs in one batch."""
-        metadata = self.load_match_metadata(match_ids)
+        return self.load_match_games_from_metadata(self.load_match_metadata(match_ids).values())
+
+    def load_match_games_from_metadata(
+        self, metadata: Collection[MatchMetadata]
+    ) -> dict[MatchId, MatchGames]:
+        """Load Games for Matches whose metadata was already read in this transaction."""
         if not metadata:
             return {}
-        games = self._load_games_by_match("match_id IN (SELECT unnest(?::UUID[]))", list(metadata))
+        games = self._load_games_by_match(
+            "match_id IN (SELECT unnest(?::UUID[]))", [match.id for match in metadata]
+        )
         return {
-            match_id: MatchGames(
-                id=match_id,
+            match.id: MatchGames(
+                id=match.id,
                 tournament_id=match.tournament_id,
                 franchise_match_id=match.franchise_match_id,
                 date=match.date,
-                games=games.get(match_id, ()),
+                games=games.get(match.id, ()),
             )
-            for match_id, match in metadata.items()
+            for match in metadata
         }
 
     def get_match_roster(self, match_id: MatchId) -> MatchRoster:

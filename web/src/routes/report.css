@@ -424,6 +424,11 @@
   font: 400 1em var(--ui);
 }
 
+.match-filter-error {
+  margin: 8px 0 0;
+  color: var(--fail);
+}
+
 .match-filter-actions {
   display: flex;
   gap: 8px;

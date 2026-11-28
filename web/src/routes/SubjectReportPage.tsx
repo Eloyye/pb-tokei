@@ -1,7 +1,14 @@
 import { getRouteApi, Link } from "@tanstack/react-router";
-import { getPlayerReport, getTeamReport, type PlayerMatchFilters } from "../api/client";
+import {
+  ApiError,
+  getPlayerReport,
+  getTeamReport,
+  type PlayerMatchFilters,
+  type TeamMatchFilters,
+} from "../api/client";
 import type { components } from "../api/schema";
 import { MatchFilterForm } from "./MatchFilterForm";
+import { hasMatchFilters, matchFilterDateError } from "./matchFilters";
 import { asReportSplit, matchCountLabel, type ReportSplit } from "./reportOptions";
 import { ReportLoadError, useReportQuery } from "./reportQuery";
 import { ReportCoverage, ReportTables, teamReportColumns, type ReportColumn } from "./ReportTables";
@@ -14,19 +21,34 @@ type SubjectMatch = components["schemas"]["SubjectMatch"];
 const playerRoute = getRouteApi("/players/$playerId");
 const teamRoute = getRouteApi("/teams/$teamId");
 
+function loadValidReport<T>(filters: TeamMatchFilters, load: () => Promise<T>): Promise<T> {
+  const dateError = matchFilterDateError(filters);
+  if (dateError) return Promise.reject(new ApiError(422, dateError));
+  return load();
+}
+
 export function PlayerReportPage() {
   const { playerId } = playerRoute.useParams();
   const { by, ...filters } = playerRoute.useSearch();
   const navigate = playerRoute.useNavigate();
   const report = useReportQuery(
     ["players", playerId, filters],
-    (signal) => getPlayerReport(playerId, filters, signal),
+    (signal) => loadValidReport(filters, () => getPlayerReport(playerId, filters, signal)),
     (previous) => (previous?.profile.id === playerId ? previous : undefined),
   );
+  function applyFilters(value: PlayerMatchFilters) {
+    void navigate({ search: (previous) => ({ ...value, by: previous.by }) });
+  }
+
   if (report.isPending) return <p className="match-report notice">Loading Player report…</p>;
   if (report.isError) {
     return (
-      <ReportLoadError error={report.error} retry={() => void report.refetch()} index="/players" />
+      <ReportLoadError
+        error={report.error}
+        retry={() => void report.refetch()}
+        index="/players"
+        clearFilters={hasMatchFilters(filters) ? () => applyFilters({}) : undefined}
+      />
     );
   }
   return (
@@ -36,9 +58,7 @@ export function PlayerReportPage() {
       by={by}
       filters={filters}
       updating={report.isPlaceholderData}
-      onFiltersChange={(value) =>
-        void navigate({ search: (previous) => ({ ...value, by: previous.by }) })
-      }
+      onFiltersChange={applyFilters}
       onSplitChange={(value) =>
         void navigate({ search: (previous) => ({ ...previous, by: asReportSplit(value) }) })
       }
@@ -52,13 +72,22 @@ export function TeamReportPage() {
   const navigate = teamRoute.useNavigate();
   const report = useReportQuery(
     ["teams", teamId, filters],
-    (signal) => getTeamReport(teamId, filters, signal),
+    (signal) => loadValidReport(filters, () => getTeamReport(teamId, filters, signal)),
     (previous) => (previous?.profile.id === teamId ? previous : undefined),
   );
+  function applyFilters(value: TeamMatchFilters) {
+    void navigate({ search: (previous) => ({ ...value, by: previous.by }) });
+  }
+
   if (report.isPending) return <p className="match-report notice">Loading Team report…</p>;
   if (report.isError) {
     return (
-      <ReportLoadError error={report.error} retry={() => void report.refetch()} index="/teams" />
+      <ReportLoadError
+        error={report.error}
+        retry={() => void report.refetch()}
+        index="/teams"
+        clearFilters={hasMatchFilters(filters) ? () => applyFilters({}) : undefined}
+      />
     );
   }
   return (
@@ -68,9 +97,7 @@ export function TeamReportPage() {
       by={by}
       filters={filters}
       updating={report.isPlaceholderData}
-      onFiltersChange={(value) =>
-        void navigate({ search: (previous) => ({ ...value, by: previous.by }) })
-      }
+      onFiltersChange={applyFilters}
       onSplitChange={(value) =>
         void navigate({ search: (previous) => ({ ...previous, by: asReportSplit(value) }) })
       }
@@ -95,7 +122,7 @@ function SubjectReport({
 }) {
   const { header, matches, profile, stats, undated_matches_excluded: undated } = report;
   const player = "partners" in report ? report : null;
-  const filtered = Object.values(filters).some(Boolean);
+  const filtered = hasMatchFilters(filters);
   const teamProfile = "players" in profile;
   const title = teamProfile ? reportTeamLabel(profile) : profile.name;
   const columns: ReportColumn[] = teamProfile

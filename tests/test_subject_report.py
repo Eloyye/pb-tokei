@@ -299,6 +299,12 @@ def test_details_validate_filter_query_parameters(
                 response = client.get(endpoint, params={key: value})
                 assert response.status_code == 422
                 assert response.json()["detail"][0]["loc"][:2] == ["query", key]
+            reversed_range = client.get(
+                endpoint, params={"date_from": str(DEMO_MLP_DATE), "date_to": str(DEMO_DATE)}
+            )
+            assert reversed_range.status_code == 422
+            detail = reversed_range.json()["detail"][0]
+            assert "Date from must be on or before Date to." in detail["msg"]
 
 
 @pytest.mark.parametrize("status", [RallyStatus.EMPTY, RallyStatus.IN_PROGRESS])
@@ -330,6 +336,8 @@ def test_batch_game_reads_keep_rallies_shots_and_positions_separate_across_match
     with RallyLog.open(db) as log, log.transaction():
         selected = (undated, first, empty)
         snapshots = log.load_match_games(selected)
+        metadata = log.load_match_metadata(selected)
+        assert log.load_match_games_from_metadata(metadata.values()) == snapshots
         assert set(snapshots) == set(selected)
         for match_id in selected:
             assert snapshots[match_id].games == log.get_games(match_id)

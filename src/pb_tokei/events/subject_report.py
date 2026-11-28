@@ -197,7 +197,7 @@ def _load_matches(
             continue
         selected.append(roster)
 
-    matches = log.load_match_games([roster.match_id for roster in selected])
+    matches = log.load_match_games_from_metadata([metadata[roster.match_id] for roster in selected])
     franchise_matches = {}
     franchises = {}
     if player_id is not None and any(m.franchise_match_id is not None for m in matches.values()):

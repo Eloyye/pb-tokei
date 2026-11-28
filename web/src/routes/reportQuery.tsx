@@ -28,10 +28,12 @@ export function ReportLoadError({
   error,
   retry,
   index,
+  clearFilters,
 }: {
   error: Error;
   retry: () => void;
   index?: "/players" | "/teams";
+  clearFilters?: () => void;
 }) {
   const openPicker = useOpenRallyLogPicker();
   const status = error instanceof ApiError ? error.status : undefined;
@@ -47,6 +49,14 @@ export function ReportLoadError({
         <button type="button" className="button" onClick={conflict ? openPicker : retry}>
           {conflict ? "Choose a Rally Log" : "Retry"}
         </button>
+      )}
+      {clearFilters && !conflict && status !== 404 && (
+        <>
+          {" "}
+          <button type="button" className="button" onClick={clearFilters}>
+            Clear filters
+          </button>
+        </>
       )}
     </p>
   );

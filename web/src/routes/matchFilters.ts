@@ -18,6 +18,16 @@ function asDate(value: unknown) {
   return typeof value === "string" && isValidMatchDate(value) ? value : undefined;
 }
 
+export function hasMatchFilters(filters: PlayerMatchFilters): boolean {
+  return Object.values(filters).some(Boolean);
+}
+
+export function matchFilterDateError({ date_from, date_to }: TeamMatchFilters): string | undefined {
+  if (date_from && date_to && date_from > date_to) {
+    return "Date from must be on or before Date to.";
+  }
+}
+
 export function teamMatchFilters(search: Record<string, unknown>): TeamMatchFilters {
   const rawTournaments = Array.isArray(search.tournament) ? search.tournament : [search.tournament];
   const tournaments = [

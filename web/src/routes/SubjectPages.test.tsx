@@ -303,8 +303,9 @@ it("shows why a filtered Team report is empty and can clear the filters", async 
         }
       : TEAM_REPORT,
   );
+  const unavailableTournament = "10000000-0000-4000-8000-000000000005";
   const history = renderDashboard(
-    `/teams/team?by=shot_number&date_to=2026-06-01&opponent=${BLAKE.id}`,
+    `/teams/team?by=shot_number&date_to=2026-06-01&opponent=${BLAKE.id}&tour=app&tournament=${unavailableTournament}`,
   );
   await screen.findByText("No Matches match these filters");
   expect(screen.getByText("1 Match left out because of missing dates.")).toBeTruthy();
@@ -313,16 +314,85 @@ it("shows why a filtered Team report is empty and can clear the filters", async 
   ).toBeTruthy();
   expect(screen.queryByRole("combobox", { name: "Partner" })).toBeNull();
   expect(screen.queryByRole("table")).toBeNull();
+  expect(screen.getByRole("option", { name: "APP (unavailable)", selected: true })).toBeTruthy();
+  expect(
+    screen.getByRole("checkbox", { name: "Unavailable Tournament", checked: true }),
+  ).toBeTruthy();
+  expect(screen.queryByText(unavailableTournament, { exact: false })).toBeNull();
   expect(getTeamReport).toHaveBeenLastCalledWith(
     TEAM.id,
-    expect.objectContaining({ date_to: "2026-06-01", opponent: BLAKE.id }),
+    expect.objectContaining({
+      date_to: "2026-06-01",
+      opponent: BLAKE.id,
+      tour: "app",
+      tournament: [unavailableTournament],
+    }),
     expect.any(AbortSignal),
   );
   fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
   await screen.findByRole("table", { name: "Matches" });
   expect(history.location.search).toBe("?by=shot_number");
   expect((screen.getByLabelText("Date to") as HTMLInputElement).value).toBe("");
+  const tour = within(screen.getByRole("combobox", { name: "Tour" }));
+  expect(tour.getAllByRole("option").map((option) => option.textContent)).toEqual([
+    "All Tours",
+    "PPA",
+    "MLP",
+  ]);
   expect(screen.queryByText(/left out because of missing dates/)).toBeNull();
+});
+
+it("lets the Player clear filters from a report request error", async () => {
+  vi.mocked(getPlayerReport).mockImplementation(async (_, filters) => {
+    if (filters.tour) throw new ApiError(422, "The report request failed");
+    return PLAYER_REPORT;
+  });
+  const history = renderDashboard("/players/alex?by=shot_number");
+  const form = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  fireEvent.change(form.getByRole("combobox", { name: "Tour" }), { target: { value: "ppa" } });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("The report request failed");
+  fireEvent.click(within(alert).getByRole("button", { name: "Clear filters" }));
+  await screen.findByRole("table", { name: "Matches" });
+  expect(history.location.search).toBe("?by=shot_number");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps the applied report visible until the draft date range is valid", async () => {
+  const history = renderDashboard("/players/alex");
+  const form = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  fireEvent.change(form.getByLabelText("Date from"), { target: { value: "2026-06-04" } });
+  fireEvent.change(form.getByLabelText("Date to"), { target: { value: "2026-06-01" } });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+  expect(form.getByRole("alert").textContent).toBe("Date from must be on or before Date to.");
+  expect(history.location.search).toBe("");
+  expect(getPlayerReport).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("table", { name: "Matches" })).toBeTruthy();
+
+  fireEvent.change(form.getByLabelText("Date to"), { target: { value: "2026-06-04" } });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+  await waitFor(() =>
+    expect(getPlayerReport).toHaveBeenLastCalledWith(
+      ALEX.id,
+      expect.objectContaining({ date_from: "2026-06-04", date_to: "2026-06-04" }),
+      expect.any(AbortSignal),
+    ),
+  );
+  expect(form.queryByRole("alert")).toBeNull();
+});
+
+it("explains an inverted date range from a shared Team URL and lets it be cleared", async () => {
+  const history = renderDashboard(
+    "/teams/team?by=shot_number&date_from=2026-06-04&date_to=2026-06-01",
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Date from must be on or before Date to.");
+  expect(getTeamReport).toHaveBeenCalledTimes(0);
+  fireEvent.click(within(alert).getByRole("button", { name: "Clear filters" }));
+  await screen.findByRole("table", { name: "Matches" });
+  expect(history.location.search).toBe("?by=shot_number");
+  expect(getTeamReport).toHaveBeenCalledTimes(1);
 });
 
 it("keeps the Player's Match visible when it has no Rallies", async () => {
