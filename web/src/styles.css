@@ -261,7 +261,7 @@ h1 {
 }
 
 .match-table {
-  min-width: 1320px;
+  min-width: 1376px;
   overflow: hidden;
   background: var(--panel);
   border-radius: 4px;
@@ -272,7 +272,7 @@ h1 {
   grid-template-columns: 126px minmax(140px, 1fr) minmax(260px, 2.2fr) minmax(
       140px,
       1.2fr
-    ) 136px 68px 140px 60px 50px 60px;
+    ) 136px 68px 140px 60px 50px 116px;
   gap: 16px;
   align-items: center;
   padding: 7px 12px;
@@ -346,6 +346,12 @@ h1 {
   border: 1px solid var(--fail);
   border-radius: 3px;
   background: var(--fail-soft);
+}
+
+.match-row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .match-report-link {
@@ -575,6 +581,217 @@ h1 {
 
 .new-match-actions .button {
   padding: 6px 12px;
+}
+
+/* --- Edit Match ----------------------------------------------------------------------- */
+
+.edit-match-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.edit-match-head h1 {
+  margin-bottom: 0;
+}
+
+.edit-match-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.edit-match-banner {
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.edit-match-status {
+  display: block;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--ok);
+  border-radius: 4px;
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.edit-match-section {
+  margin-bottom: 24px;
+}
+
+.edit-section-head {
+  margin-bottom: 12px;
+}
+
+.edit-section-head h2 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.edit-section-hint {
+  margin: 0;
+  color: var(--dim);
+}
+
+.edit-field-with-action {
+  position: relative;
+  min-width: 0;
+}
+
+.edit-rename-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.edit-rename-button:hover {
+  text-decoration: underline;
+}
+
+.edit-franchise-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.edit-franchise-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.edit-franchise-tools {
+  display: flex;
+  gap: 6px;
+}
+
+.edit-player-slot + .edit-player-slot {
+  margin-top: 12px;
+}
+
+.edit-player-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.edit-slot-error {
+  margin: 8px 0 0;
+}
+
+.edit-match-danger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 28px;
+  padding: 14px 16px;
+  border: 1px solid rgb(236 76 86 / 45%);
+  border-radius: 4px;
+  background: var(--fail-soft);
+}
+
+.edit-match-danger h2 {
+  margin: 0 0 4px;
+  color: var(--fail);
+  font-size: 14px;
+}
+
+.edit-match-danger p {
+  margin: 0;
+  color: var(--dim);
+}
+
+.button.danger {
+  background: var(--fail);
+  border-color: var(--fail);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.edit-dialog {
+  width: min(480px, calc(100% - 32px));
+}
+
+.danger-dialog {
+  border-color: rgb(236 76 86 / 55%);
+}
+
+.edit-dialog-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+
+.edit-dialog-scope {
+  margin: 0;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.edit-dialog-fields {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.edit-dialog-confirm {
+  display: grid;
+  gap: 10px;
+}
+
+.edit-dialog-confirm p {
+  margin: 0;
+}
+
+.edit-dialog-warning {
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.delete-match-summary {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.edit-dialog-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.statusbar .sb-reload {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--fail);
+  border-radius: 2px;
+  background: var(--fail-soft);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.statusbar .sb-reload:hover {
+  background: var(--fail);
+  color: #ffffff;
 }
 
 @media (max-width: 650px) {

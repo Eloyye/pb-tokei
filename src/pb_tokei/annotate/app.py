@@ -39,8 +39,19 @@ from pb_tokei.annotate.games import GameIO, frames_in, games_from_domain
 from pb_tokei.annotate.match_setup import (
     CreatedMatchOut,
     CreateMatchIn,
+    DeletedMatchOut,
+    FranchiseEditOut,
+    MergeIn,
+    NewPlayerIn,
+    NewTournamentIn,
+    PlayerEditOut,
+    ReplacePlayerIn,
     RosterOut,
+    TournamentEditOut,
+    UpdateFranchiseIn,
     UpdateMatchIn,
+    UpdatePlayerIn,
+    UpdateTournamentIn,
     roster_catalog,
 )
 from pb_tokei.annotate.motion import (
@@ -74,6 +85,7 @@ from pb_tokei.events.subject_report import (
     load_team_matches,
 )
 from pb_tokei.footage import (
+    DEFAULT_FOOTAGE_DIR,
     CommandRunner,
     FootageDownloadError,
     StreamRunner,
@@ -87,11 +99,14 @@ from pb_tokei.rally_log import (
     AnnotationMode,
     Calibration,
     CameraView,
+    FranchiseId,
+    Handedness,
     Landmark,
     Match,
     MatchId,
     MatchNotFound,
     MatchRoster,
+    MatchSetup,
     MatchSummary,
     OperatorSession,
     OperatorTimeSummary,
@@ -101,12 +116,34 @@ from pb_tokei.rally_log import (
     PlayerId,
     PlaySegment,
     RallyLog,
+    RecordNotFound,
+    RosterMismatchError,
     SourceVideo,
     TeamEnd,
     TeamId,
+    Tour,
+    TournamentId,
     resolve_video_path,
 )
-from pb_tokei.roster import set_up_match
+from pb_tokei.roster import (
+    UNSET,
+    ExactNameConflictError,
+    RosterFranchiseMatch,
+    RosterPlayer,
+    Unset,
+    edit_franchise,
+    edit_match_setup,
+    edit_player,
+    edit_tournament,
+    merge_franchise,
+    merge_player,
+    merge_tournament,
+    replace_match_player,
+    set_up_match,
+)
+from pb_tokei.roster import (
+    delete_match as delete_match_record,
+)
 from pb_tokei.state import (
     read_cookies_from_browser,
     read_recent_rally_logs,
@@ -122,6 +159,7 @@ MUTATING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
 # Names the Rally Log a request means; see `_open_rally_log`.
 RALLY_LOG_HEADER = "X-Rally-Log"
 RALLY_LOG_SUFFIX = ".duckdb"
+STALE_MATCH_MESSAGE = "This Match was edited elsewhere; reload"
 
 
 def _allowed_origins_for_host(host_header: str) -> frozenset[str]:
@@ -255,6 +293,7 @@ class MatchPlayerOut(BaseModel):
 
     id: UUID
     name: str
+    handedness: Handedness
     team_id: UUID
     team: Literal["a", "b"]
 
@@ -265,6 +304,13 @@ class MatchDetailOut(MatchOut):
     fix_command: str | None
     source_url: str | None
     original_present: bool
+    footage_dir: str
+    source_video_path: str | None
+    tournament_id: UUID
+    tour: Tour
+    franchise_match_id: UUID | None
+    franchise_a_id: UUID | None
+    franchise_b_id: UUID | None
     team_a_id: UUID
     team_b_id: UUID
     players: list[MatchPlayerOut]
@@ -274,26 +320,49 @@ class MatchDetailOut(MatchOut):
         cls,
         match: MatchOut,
         roster: MatchRoster,
+        setup: MatchSetup,
         fix_command: str | None,
         *,
         source_url: str | None,
         original_present: bool,
+        footage_dir: Path,
+        source_video_path: Path | None,
     ) -> MatchDetailOut:
         players = [
             *(
-                MatchPlayerOut(id=p.id, name=p.name, team_id=roster.team_a_id, team="a")
+                MatchPlayerOut(
+                    id=p.id,
+                    name=p.name,
+                    handedness=p.handedness,
+                    team_id=roster.team_a_id,
+                    team="a",
+                )
                 for p in roster.team_a_players
             ),
             *(
-                MatchPlayerOut(id=p.id, name=p.name, team_id=roster.team_b_id, team="b")
+                MatchPlayerOut(
+                    id=p.id,
+                    name=p.name,
+                    handedness=p.handedness,
+                    team_id=roster.team_b_id,
+                    team="b",
+                )
                 for p in roster.team_b_players
             ),
         ]
+        fm = setup.franchise_match
         return MatchDetailOut(
             **match.model_dump(),
             fix_command=fix_command,
             source_url=source_url,
             original_present=original_present,
+            footage_dir=str(footage_dir),
+            source_video_path=None if source_video_path is None else str(source_video_path),
+            tournament_id=setup.tournament.id,
+            tour=setup.tournament.tour,
+            franchise_match_id=None if fm is None else fm.id,
+            franchise_a_id=None if fm is None else fm.franchise_a_id,
+            franchise_b_id=None if fm is None else fm.franchise_b_id,
             team_a_id=roster.team_a_id,
             team_b_id=roster.team_b_id,
             players=players,
@@ -537,6 +606,31 @@ class _OpenRallyLog:
         summary = self.run(lambda log: _match_summary(log, match_id))
         return summary, self.video(summary.source_video)
 
+    def lookup_for_write(self, match_id: UUID) -> tuple[MatchSummary, _VideoState]:
+        summary = self.run_match_write(lambda log: _match_summary_for_write(log, match_id))
+        return summary, self.video(summary.source_video)
+
+    def match_detail(self, match_id: UUID) -> MatchDetailOut:
+        mid = MatchId(match_id)
+
+        def load(log: RallyLog) -> tuple[MatchSummary, MatchRoster, MatchSetup]:
+            with log.transaction():
+                summary = _match_summary(log, match_id)
+                return summary, log.get_match_roster(mid), log.get_match_setup(mid)
+
+        summary, roster, setup = self.run(load)
+        [(match, video)] = self.match_views([summary])
+        return MatchDetailOut.from_match(
+            match,
+            roster,
+            setup,
+            video.fix_command(summary.id, self.db_file),
+            source_url=None if summary.source_video is None else summary.source_video.url,
+            original_present=video.original_present,
+            footage_dir=self.db_file.parent / DEFAULT_FOOTAGE_DIR,
+            source_video_path=video.source_path,
+        )
+
     def motion_inputs(
         self, match_id: UUID
     ) -> tuple[MatchId, Path | None, tuple[PlaySegment, ...], tuple[Calibration, ...]]:
@@ -592,12 +686,30 @@ class _OpenRallyLog:
         return mid, video_path, roster, segments, calibrations, anchors, team_ends
 
     def run[T](self, action: Callable[[RallyLog], T]) -> T:
-        """Runs an action on the Rally Log: 404 for a missing Match, 422 for invalid data."""
+        """Runs an action on the Rally Log: 404 for a missing record, 409 for an exact-name
+        conflict, 422 for invalid data."""
         with RallyLog.open(self.db_file) as log:
             try:
                 return action(log)
-            except MatchNotFound as exc:
+            except RecordNotFound as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from None
+            except ExactNameConflictError:
+                raise
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    def run_match_write[T](self, action: Callable[[RallyLog], T]) -> T:
+        """Runs a workspace Rally Log write: rejects deleted Matches (404) or stale Player/Team
+        ids (422) with the stale-workspace reload message (ADR 0016)."""
+        with RallyLog.open(self.db_file) as log:
+            try:
+                return action(log)
+            except MatchNotFound:
+                raise HTTPException(status_code=404, detail=STALE_MATCH_MESSAGE) from None
+            except RosterMismatchError as exc:
+                raise HTTPException(
+                    status_code=422, detail=f"{STALE_MATCH_MESSAGE} ({exc})"
+                ) from None
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from None
 
@@ -625,6 +737,13 @@ def _match_summary(log: RallyLog, match_id: UUID) -> MatchSummary:
         return log.get_match_summary(MatchId(match_id))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Match not found: {match_id}") from None
+
+
+def _match_summary_for_write(log: RallyLog, match_id: UUID) -> MatchSummary:
+    try:
+        return log.get_match_summary(MatchId(match_id))
+    except KeyError:
+        raise MatchNotFound(MatchId(match_id)) from None
 
 
 class _RallyLogs:
@@ -770,6 +889,17 @@ def create_app(
         # Most often the CLI is writing to the file at that moment; a retry will succeed.
         return JSONResponse(status_code=503, content={"detail": f"Rally Log unavailable: {exc}"})
 
+    @app.exception_handler(ExactNameConflictError)
+    async def exact_name_conflict(_request: Request, exc: ExactNameConflictError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "existing_id": str(exc.existing_id),
+                "existing_name": exc.existing_name,
+            },
+        )
+
     # --- Rally Log -----------------------------------------------------------------------
 
     def rally_log_out() -> RallyLogOut:
@@ -838,6 +968,103 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return build_player_report(*snapshot)
 
+    @app.patch("/api/players/{player_id}", operation_id="updatePlayer")
+    def update_player(
+        player_id: UUID, body: UpdatePlayerIn, rally_log: OpenLog, dry_run: bool = False
+    ) -> PlayerEditOut:
+        """Renames a Player or fixes handedness across all Matches."""
+        player, affected = rally_log.run(
+            lambda log: edit_player(
+                log,
+                PlayerId(player_id),
+                name=(
+                    body.name
+                    if "name" in body.model_fields_set and body.name is not None
+                    else UNSET
+                ),
+                handedness=(
+                    body.handedness
+                    if "handedness" in body.model_fields_set and body.handedness is not None
+                    else UNSET
+                ),
+                dry_run=dry_run,
+            )
+        )
+        return PlayerEditOut(player=player, affected_matches=affected, dry_run=dry_run)
+
+    @app.post("/api/players/{player_id}/merge", operation_id="mergePlayer")
+    def merge_player_route(
+        player_id: UUID, body: MergeIn, rally_log: OpenLog, dry_run: bool = False
+    ) -> PlayerEditOut:
+        """Replaces a Player with another across every Match and deletes the old one."""
+        player, affected = rally_log.run(
+            lambda log: merge_player(log, PlayerId(player_id), PlayerId(body.into), dry_run=dry_run)
+        )
+        return PlayerEditOut(player=player, affected_matches=affected, dry_run=dry_run)
+
+    @app.patch("/api/tournaments/{tournament_id}", operation_id="updateTournament")
+    def update_tournament(
+        tournament_id: UUID,
+        body: UpdateTournamentIn,
+        rally_log: OpenLog,
+        dry_run: bool = False,
+    ) -> TournamentEditOut:
+        """Renames a Tournament or fixes its Tour across all Matches."""
+        tournament, affected = rally_log.run(
+            lambda log: edit_tournament(
+                log,
+                TournamentId(tournament_id),
+                name=(
+                    body.name
+                    if "name" in body.model_fields_set and body.name is not None
+                    else UNSET
+                ),
+                tour=(
+                    body.tour
+                    if "tour" in body.model_fields_set and body.tour is not None
+                    else UNSET
+                ),
+                dry_run=dry_run,
+            )
+        )
+        return TournamentEditOut(tournament=tournament, affected_matches=affected, dry_run=dry_run)
+
+    @app.post("/api/tournaments/{tournament_id}/merge", operation_id="mergeTournament")
+    def merge_tournament_route(
+        tournament_id: UUID, body: MergeIn, rally_log: OpenLog, dry_run: bool = False
+    ) -> TournamentEditOut:
+        """Moves every Match and Franchise Match onto another Tournament and deletes the old one."""
+        tournament, affected = rally_log.run(
+            lambda log: merge_tournament(
+                log, TournamentId(tournament_id), TournamentId(body.into), dry_run=dry_run
+            )
+        )
+        return TournamentEditOut(tournament=tournament, affected_matches=affected, dry_run=dry_run)
+
+    @app.patch("/api/franchises/{franchise_id}", operation_id="updateFranchise")
+    def update_franchise(
+        franchise_id: UUID, body: UpdateFranchiseIn, rally_log: OpenLog, dry_run: bool = False
+    ) -> FranchiseEditOut:
+        """Renames a Franchise across all Franchise Matches."""
+        franchise, affected = rally_log.run(
+            lambda log: edit_franchise(
+                log, FranchiseId(franchise_id), name=body.name, dry_run=dry_run
+            )
+        )
+        return FranchiseEditOut(franchise=franchise, affected_matches=affected, dry_run=dry_run)
+
+    @app.post("/api/franchises/{franchise_id}/merge", operation_id="mergeFranchise")
+    def merge_franchise_route(
+        franchise_id: UUID, body: MergeIn, rally_log: OpenLog, dry_run: bool = False
+    ) -> FranchiseEditOut:
+        """Moves every Franchise Match onto another Franchise and deletes the old one."""
+        franchise, affected = rally_log.run(
+            lambda log: merge_franchise(
+                log, FranchiseId(franchise_id), FranchiseId(body.into), dry_run=dry_run
+            )
+        )
+        return FranchiseEditOut(franchise=franchise, affected_matches=affected, dry_run=dry_run)
+
     @app.get("/api/teams", operation_id="listTeams")
     def get_teams(response: Response, rally_log: OpenLog) -> list[TeamListEntry]:
         response.headers["Cache-Control"] = "no-store"
@@ -879,35 +1106,73 @@ def create_app(
 
     @app.get("/api/matches/{match_id}", operation_id="getMatch")
     def get_match(match_id: UUID, rally_log: OpenLog) -> MatchDetailOut:
-        mid = MatchId(match_id)
-
-        def load(log: RallyLog) -> tuple[MatchSummary, MatchRoster]:
-            summary = _match_summary(log, match_id)
-            return summary, log.get_match_roster(mid)
-
-        summary, roster = rally_log.run(load)
-        [(match, video)] = rally_log.match_views([summary])
-        return MatchDetailOut.from_match(
-            match,
-            roster,
-            video.fix_command(summary.id, rally_log.db_file),
-            source_url=None if summary.source_video is None else summary.source_video.url,
-            original_present=video.original_present,
-        )
+        return rally_log.match_detail(match_id)
 
     @app.patch("/api/matches/{match_id}", operation_id="updateMatch")
-    def update_match(match_id: UUID, body: UpdateMatchIn, rally_log: OpenLog) -> MatchOut:
-        """Updates a Match's date and returns the updated Match summary."""
+    def update_match(match_id: UUID, body: UpdateMatchIn, rally_log: OpenLog) -> MatchDetailOut:
+        """Updates a Match's date, Tournament, and/or Franchise Match."""
         mid = MatchId(match_id)
+        date_arg: datetime.date | Unset = (
+            body.date if "date" in body.model_fields_set and body.date is not None else UNSET
+        )
+        tournament_arg: TournamentId | tuple[str, Tour] | Unset
+        if "tournament" not in body.model_fields_set or body.tournament is None:
+            tournament_arg = UNSET
+        elif isinstance(body.tournament, NewTournamentIn):
+            tournament_arg = (body.tournament.name, body.tournament.tour)
+        else:
+            tournament_arg = TournamentId(body.tournament)
 
-        def change(log: RallyLog) -> MatchSummary:
-            with log.transaction():
-                log.set_match_date(mid, body.date)
-                return log.get_match_summary(mid)
+        fm_arg: RosterFranchiseMatch | None | Unset
+        if "franchise_match" not in body.model_fields_set:
+            fm_arg = UNSET
+            create_new_fm = False
+        elif body.franchise_match is None:
+            fm_arg = None
+            create_new_fm = False
+        else:
+            fm_arg = body.franchise_match.to_edit_roster()
+            create_new_fm = body.franchise_match.create_new
 
-        summary = rally_log.run(change)
-        [(match, _video)] = rally_log.match_views([summary])
-        return match
+        rally_log.run(
+            lambda log: edit_match_setup(
+                log,
+                mid,
+                date=date_arg,
+                tournament=tournament_arg,
+                franchise_match=fm_arg,
+                create_new_franchise_match=create_new_fm,
+            )
+        )
+        return rally_log.match_detail(match_id)
+
+    @app.delete("/api/matches/{match_id}", operation_id="deleteMatch")
+    def delete_match(match_id: UUID, rally_log: OpenLog) -> DeletedMatchOut:
+        """Cancels any footage/tracking jobs for a Match and hard-deletes it and any orphans."""
+        mid = MatchId(match_id)
+        rally_log.lookup(match_id)
+        rally_log.footage.cancel(mid)
+        rally_log.footage.wait_for(mid, timeout=5.0)
+        rally_log.motion.cancel(mid)
+        rally_log.players.cancel_match(mid)
+        rally_log.run(lambda log: delete_match_record(log, mid))
+        return DeletedMatchOut(id=match_id)
+
+    @app.post("/api/matches/{match_id}/replace-player", operation_id="replaceMatchPlayer")
+    def replace_match_player_route(
+        match_id: UUID, body: ReplacePlayerIn, rally_log: OpenLog
+    ) -> MatchDetailOut:
+        """Replaces one Player in a Match and rewrites every annotation reference."""
+        mid = MatchId(match_id)
+        target = (
+            RosterPlayer(body.to.name, body.to.handedness)
+            if isinstance(body.to, NewPlayerIn)
+            else PlayerId(body.to)
+        )
+        rally_log.run(
+            lambda log: replace_match_player(log, mid, PlayerId(body.from_player_id), target)
+        )
+        return rally_log.match_detail(match_id)
 
     @app.get(
         "/api/matches/{match_id}/report",
@@ -941,7 +1206,7 @@ def create_app(
             )
             return log.upsert_operator_session(MatchId(match_id), session)
 
-        return OperatorTimeOut.from_summary(rally_log.run(save))
+        return OperatorTimeOut.from_summary(rally_log.run_match_write(save))
 
     @app.get("/api/matches/{match_id}/footage", operation_id="getMatchFootage")
     def get_match_footage(match_id: UUID, rally_log: OpenLog) -> FootageJobOut:
@@ -1057,7 +1322,7 @@ def create_app(
             log.replace_play_segments(MatchId(match_id), [s.to_domain() for s in body])
             return log.get_play_segments(MatchId(match_id))
 
-        return [PlaySegmentIO.from_domain(s) for s in rally_log.run(change)]
+        return [PlaySegmentIO.from_domain(s) for s in rally_log.run_match_write(change)]
 
     @app.get("/api/matches/{match_id}/calibrations", operation_id="getCalibrations")
     def get_calibrations(match_id: UUID, rally_log: OpenLog) -> list[CalibrationOut]:
@@ -1082,7 +1347,7 @@ def create_app(
     ) -> list[CalibrationOut]:
         """Replaces a Match's Calibrations of one Camera View, returning them with their fits."""
         mid = MatchId(match_id)
-        summary, video = rally_log.lookup(match_id)
+        summary, video = rally_log.lookup_for_write(match_id)
         if video.status is VideoStatus.READY and video.converted_path is not None:
             frame_count = video_frame_count(video.converted_path)
             if frame_count is not None:
@@ -1114,7 +1379,7 @@ def create_app(
             segments = log.get_play_segments(mid)
             return [c for c in saved if c.camera_view is camera_view], segments
 
-        saved_of_view, segments = rally_log.run(change)
+        saved_of_view, segments = rally_log.run_match_write(change)
         return rally_log.fit_calibrations(saved_of_view, segments, summary.source_video)
 
     # --- Games, Rallies and Shots ----------------------------------------------------------
@@ -1129,7 +1394,7 @@ def create_app(
         Segments, Calibrations, Player anchors and Team ends. 422 if a frame is outside the video
         or a Team or Player isn't in the Match."""
         mid = MatchId(match_id)
-        _summary, video = rally_log.lookup(match_id)
+        _summary, video = rally_log.lookup_for_write(match_id)
         if video.status is VideoStatus.READY and video.converted_path is not None:
             frame_count = video_frame_count(video.converted_path)
             if frame_count is not None:
@@ -1147,7 +1412,7 @@ def create_app(
             log.replace_games(mid, [g.to_domain() for g in body])
             return games_from_domain(log.get_games(mid))
 
-        return rally_log.run(change)
+        return rally_log.run_match_write(change)
 
     # --- Camera Motion -------------------------------------------------------------------
 
@@ -1193,7 +1458,7 @@ def create_app(
     ) -> list[PlayerAnchorIO]:
         """Replaces all operator-placed Player anchors for a Match."""
         mid = MatchId(match_id)
-        _summary, video = rally_log.lookup(match_id)
+        _summary, video = rally_log.lookup_for_write(match_id)
         if video.status is VideoStatus.READY and video.converted_path is not None:
             frame_count = video_frame_count(video.converted_path)
             if frame_count is not None:
@@ -1211,7 +1476,7 @@ def create_app(
             log.replace_player_anchors(mid, [a.to_domain() for a in body])
             return log.get_player_anchors(mid)
 
-        return [PlayerAnchorIO.from_domain(a) for a in rally_log.run(change)]
+        return [PlayerAnchorIO.from_domain(a) for a in rally_log.run_match_write(change)]
 
     @app.get("/api/matches/{match_id}/team-ends", operation_id="getTeamEnds")
     def get_team_ends(match_id: UUID, rally_log: OpenLog) -> list[TeamEndIO]:
@@ -1224,7 +1489,7 @@ def create_app(
     ) -> list[TeamEndIO]:
         """Replaces all `team_ends` records for a Match."""
         mid = MatchId(match_id)
-        _summary, video = rally_log.lookup(match_id)
+        _summary, video = rally_log.lookup_for_write(match_id)
         if video.status is VideoStatus.READY and video.converted_path is not None:
             frame_count = video_frame_count(video.converted_path)
             if frame_count is not None:
@@ -1242,7 +1507,7 @@ def create_app(
             log.replace_team_ends(mid, [te.to_domain() for te in body])
             return log.get_team_ends(mid)
 
-        return [TeamEndIO.from_domain(te) for te in rally_log.run(change)]
+        return [TeamEndIO.from_domain(te) for te in rally_log.run_match_write(change)]
 
     @app.get("/api/matches/{match_id}/player-tracking", operation_id="getPlayerTracking")
     def get_player_tracking(match_id: UUID, rally_log: OpenLog) -> PlayerTrackingOut:

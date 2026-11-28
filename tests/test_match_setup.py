@@ -152,12 +152,13 @@ def test_roster_catalog_includes_matches_grouped_by_franchise_match(
 
     assert response.status_code == 200, response.text
     catalog = response.json()
-    assert catalog["players"] == [
+    assert [{"name": p["name"], "handedness": p["handedness"]} for p in catalog["players"]] == [
         {"name": "Anna Bright", "handedness": "right"},
         {"name": "Ben Johns", "handedness": "right"},
         {"name": "Cara Lee", "handedness": "left"},
         {"name": "Dan Kim", "handedness": "right"},
     ]
+    assert all(UUID(p["id"]) for p in catalog["players"])
     assert {item["tour"] for item in catalog["tournaments"]} == {"ppa", "mlp"}
     franchises = {item["name"]: item["id"] for item in catalog["franchises"]}
     assert catalog["franchise_matches"] == [

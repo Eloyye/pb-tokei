@@ -432,6 +432,13 @@ class PlayerTrackingService:
         thread.start()
         return self.status(match_id, video_path, ordered)
 
+    def cancel_match(self, match_id: MatchId) -> None:
+        """Cancels an active Player Tracking job for `match_id` (used when deleting a Match)."""
+        with self._lock:
+            job = self._jobs.pop(match_id, None)
+            if job is not None and job.running:
+                job.cancel.set()
+
     def cancel(
         self,
         match_id: MatchId,

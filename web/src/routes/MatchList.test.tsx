@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type Match } from "../api/client";
+import { ApiError, type Match, type MatchDetail } from "../api/client";
 import { MatchList } from "./MatchList";
 
 type Client = typeof import("../api/client");
@@ -49,6 +49,30 @@ function makeMatch(id: string, overrides: Partial<Match> = {}): Match {
   };
 }
 
+function makeMatchDetail(match: Match): MatchDetail {
+  return {
+    ...match,
+    fix_command: null,
+    source_url: null,
+    original_present: false,
+    footage_dir: "/data/footage",
+    source_video_path: null,
+    tournament_id: "t-1",
+    tour: "ppa",
+    franchise_match_id: null,
+    franchise_a_id: null,
+    franchise_b_id: null,
+    team_a_id: "team-a",
+    team_b_id: "team-b",
+    players: [
+      { id: "a1", name: match.team_a[0]!, handedness: "right", team_id: "team-a", team: "a" },
+      { id: "a2", name: match.team_a[1]!, handedness: "right", team_id: "team-a", team: "a" },
+      { id: "b1", name: match.team_b[0]!, handedness: "left", team_id: "team-b", team: "b" },
+      { id: "b2", name: match.team_b[1]!, handedness: "right", team_id: "team-b", team: "b" },
+    ],
+  };
+}
+
 function renderList() {
   const rootRoute = createRootRoute();
   const indexRoute = createRoute({
@@ -56,13 +80,18 @@ function renderList() {
     path: "/",
     component: MatchList,
   });
+  const editRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/matches/$matchId/edit",
+    component: () => <div>Edit Match</div>,
+  });
   const matchRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/matches/$matchId/$workspace",
     component: () => <div>Match</div>,
   });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute, matchRoute]),
+    routeTree: rootRoute.addChildren([indexRoute, editRoute, matchRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -79,13 +108,16 @@ afterEach(() => {
 });
 
 describe("MatchList Video pills", () => {
-  it("links each Match to its report", async () => {
+  it("links each Match to its Edit page and Report", async () => {
     vi.mocked(listMatches).mockResolvedValue([makeMatch("m1"), makeMatch("m2")]);
     renderList();
     expect(
-      (await screen.findAllByRole("link", { name: "Report" })).map((link) =>
+      (await screen.findAllByRole("link", { name: "Edit" })).map((link) =>
         link.getAttribute("href"),
       ),
+    ).toEqual(["/matches/m1/edit", "/matches/m2/edit"]);
+    expect(
+      screen.getAllByRole("link", { name: "Report" }).map((link) => link.getAttribute("href")),
     ).toEqual(["/matches/m1/report", "/matches/m2/report"]);
   });
 
@@ -208,7 +240,7 @@ describe("MatchList editable date", () => {
     vi.mocked(listMatches)
       .mockResolvedValueOnce([dated, undated])
       .mockResolvedValueOnce([updatedUndated, dated]);
-    vi.mocked(updateMatch).mockResolvedValue(updatedUndated);
+    vi.mocked(updateMatch).mockResolvedValue(makeMatchDetail(updatedUndated));
 
     renderList();
 
@@ -268,7 +300,7 @@ describe("MatchList editable date", () => {
     vi.mocked(listMatches).mockResolvedValueOnce([match]).mockResolvedValueOnce([updated]);
     vi.mocked(updateMatch)
       .mockRejectedValueOnce(new ApiError(503, "Rally Log unavailable"))
-      .mockResolvedValueOnce(updated);
+      .mockResolvedValueOnce(makeMatchDetail(updated));
 
     renderList();
 

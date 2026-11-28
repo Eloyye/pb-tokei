@@ -57,6 +57,19 @@ export function formatActiveTime(seconds: number): string {
   return formatLength(Math.floor(seconds) * FPS);
 }
 
+/** Human-readable active time for prose (e.g. "4 h 10 m", "15 m", "0 m"). */
+export function formatOperatorDuration(seconds: number): string {
+  const rounded = Math.max(0, Math.round(seconds));
+  if (rounded === 0) return "0 m";
+  if (rounded < 60) return `${rounded} s`;
+  const totalMinutes = Math.round(rounded / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) return `${hours} h ${minutes} m`;
+  if (hours > 0) return `${hours} h`;
+  return `${minutes} m`;
+}
+
 export function formatRatio(ratio: number | null): string {
   return ratio === null ? "—" : ratio.toFixed(2);
 }

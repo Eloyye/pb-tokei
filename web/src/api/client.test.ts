@@ -179,4 +179,54 @@ describe("the tab's Rally Log", () => {
       client.updateMatch("match-1", { date: "2026-04-18" }, { rallyLog: ONE }),
     ).rejects.toMatchObject({ status, message: detail });
   });
+
+  it("sends dry_run query params and parses 409 exact-name conflict targets", async () => {
+    const client = await freshClient();
+    await client.getRallyLog();
+
+    await client.updatePlayer("p-1", { name: "Anna B." }, { dryRun: true });
+    let request = requests.at(-1)!;
+    expect(new URL(request.url).pathname).toBe("/api/players/p-1");
+    expect(new URL(request.url).searchParams.get("dry_run")).toBe("true");
+    expect(request.method).toBe("PATCH");
+
+    await client.mergePlayer("p-1", { into: "p-2" }, { dryRun: true });
+    request = requests.at(-1)!;
+    expect(new URL(request.url).pathname).toBe("/api/players/p-1/merge");
+    expect(new URL(request.url).searchParams.get("dry_run")).toBe("true");
+    expect(await request.json()).toEqual({ into: "p-2" });
+
+    await client.replaceMatchPlayer("m-1", { from: "p-1", to: "p-2" });
+    request = requests.at(-1)!;
+    expect(new URL(request.url).pathname).toBe("/api/matches/m-1/replace-player");
+    expect(await request.json()).toEqual({ from: "p-1", to: "p-2" });
+
+    await client.deleteMatch("m-1");
+    request = requests.at(-1)!;
+    expect(new URL(request.url).pathname).toBe("/api/matches/m-1");
+    expect(request.method).toBe("DELETE");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              detail: "Player 'Anna Bright' already exists",
+              existing_id: "p-real",
+              existing_name: "Anna Bright",
+            }),
+            { status: 409, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    );
+    const conflictClient = await freshClient();
+    await expect(
+      conflictClient.updatePlayer("p-1", { name: "Anna Bright" }, { dryRun: true }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Player 'Anna Bright' already exists",
+      conflict: { id: "p-real", name: "Anna Bright" },
+    });
+  });
 });

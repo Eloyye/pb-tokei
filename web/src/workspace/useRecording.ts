@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiError,
   type Calibration,
   type CalibrationOut,
   type CameraView,
@@ -10,6 +11,7 @@ import {
   getPlaySegments,
   getTeamEnds,
   isRetryable,
+  isStaleMatchError,
   type PlayerAnchor,
   type PlaySegment,
   replaceCalibrations,
@@ -17,6 +19,7 @@ import {
   replacePlayerAnchors,
   replacePlaySegments,
   replaceTeamEnds,
+  STALE_MATCH_MESSAGE,
   type TeamEnd,
   toCalibration,
 } from "../api/client";
@@ -139,7 +142,22 @@ export function useRecording(matchId: string): [RecordingState, RecordingControl
       });
     };
     const queue = <T>(save: (value: T) => Promise<unknown>) =>
-      createSaveQueue(save, { retryable: isRetryable, onStatus });
+      createSaveQueue(
+        async (value: T) => {
+          try {
+            return await save(value);
+          } catch (error) {
+            if (isStaleMatchError(error)) {
+              throw new ApiError(
+                error instanceof ApiError ? error.status : 409,
+                STALE_MATCH_MESSAGE,
+              );
+            }
+            throw error;
+          }
+        },
+        { retryable: isRetryable, onStatus },
+      );
     const queues: Queues = {
       segments: queue((segments: PlaySegment[]) => replacePlaySegments(matchId, segments)),
       calibrations: {

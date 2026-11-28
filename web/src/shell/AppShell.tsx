@@ -104,6 +104,11 @@ function TopBar({
 }) {
   const { matchId, workspace } = useParams({ strict: false });
   const isNewMatch = useMatch({ from: "/matches/new", shouldThrow: false, select: () => true });
+  const isEditMatch = useMatch({
+    from: "/matches/$matchId/edit",
+    shouldThrow: false,
+    select: () => true,
+  });
   const match = useQuery({
     queryKey: ["matches", matchId],
     queryFn: () => getMatch(matchId ?? ""),
@@ -124,7 +129,13 @@ function TopBar({
                 <span className="sep">›</span>
                 <span>{match.data.tournament}</span>
                 <span className="sep">›</span>
-                <span className="here">{teamsLabel(match.data)}</span>
+                <span className={isEditMatch ? undefined : "here"}>{teamsLabel(match.data)}</span>
+                {isEditMatch && (
+                  <>
+                    <span className="sep">›</span>
+                    <span className="here">Edit</span>
+                  </>
+                )}
               </>
             )}
           </nav>

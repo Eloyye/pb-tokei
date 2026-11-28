@@ -5,13 +5,15 @@ from __future__ import annotations
 import datetime
 import os
 from collections import defaultdict
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
+from uuid import UUID
 
 import duckdb
 
@@ -54,6 +56,7 @@ from .model import (
     Rally,
     RallyStatus,
     RefereeCall,
+    RosterMismatchError,
     Ruling,
     Score,
     Shot,
@@ -74,6 +77,7 @@ from .model import (
     check_player_anchors,
     check_team_ends,
     check_video_frames,
+    new_id,
 )
 from .schema import GAME_TABLES, MATCH_CONTENT_TABLES, STATEMENTS, migrate
 
@@ -125,15 +129,36 @@ def resolve_video_path(stored_path: Path, db_path: Path) -> Path:
     return Path(os.path.abspath(db_path.resolve().parent / stored_path))
 
 
-class MatchNotFound(KeyError):
+class RecordNotFound(KeyError):
+    """No record with this id is in the Rally Log."""
+
+    def __init__(self, kind: str, record_id: UUID) -> None:
+        super().__init__(record_id)
+        self.kind = kind
+        self.record_id = record_id
+
+    def __str__(self) -> str:
+        return f"{self.kind} not found: {self.record_id}"
+
+
+class MatchNotFound(RecordNotFound):
     """No Match with this id is in the Rally Log."""
 
     def __init__(self, match_id: MatchId) -> None:
-        super().__init__(match_id)
+        super().__init__("Match", match_id)
         self.match_id = match_id
 
-    def __str__(self) -> str:
-        return f"Match not found: {self.match_id}"
+
+@dataclass(frozen=True, slots=True)
+class MatchSetup:
+    """A Match's competition and roster links, without loading its Games or annotations."""
+
+    id: MatchId
+    date: datetime.date | None
+    tournament: Tournament
+    team_a_id: TeamId
+    team_b_id: TeamId
+    franchise_match: FranchiseMatch | None
 
 
 class RallyLog:
@@ -410,6 +435,328 @@ class RallyLog:
         check_match_date(match_date, required=True)
         self._require_match(match_id)
         self._db.execute("UPDATE matches SET date = ? WHERE id = ?", [match_date, match_id])
+
+    def get_match_setup(self, match_id: MatchId) -> MatchSetup:
+        """Returns a Match's date, Tournament, Teams, and optional Franchise Match."""
+        row = self._db.execute(
+            """
+            SELECT m.date, m.team_a_id, m.team_b_id,
+                t.id, t.name, t.tour,
+                fm.id, fm.tournament_id, fm.franchise_a_id, fm.franchise_b_id
+            FROM matches m
+            JOIN tournaments t ON t.id = m.tournament_id
+            LEFT JOIN franchise_matches fm ON fm.id = m.franchise_match_id
+            WHERE m.id = ?
+            """,
+            [match_id],
+        ).fetchone()
+        if row is None:
+            raise MatchNotFound(match_id)
+        (
+            match_date,
+            team_a_id,
+            team_b_id,
+            t_id,
+            t_name,
+            t_tour,
+            fm_id,
+            fm_tournament_id,
+            fm_a_id,
+            fm_b_id,
+        ) = row
+        franchise_match = (
+            None
+            if fm_id is None
+            else FranchiseMatch(
+                FranchiseMatchId(fm_id),
+                TournamentId(fm_tournament_id),
+                FranchiseId(fm_a_id),
+                FranchiseId(fm_b_id),
+            )
+        )
+        return MatchSetup(
+            id=match_id,
+            date=match_date,
+            tournament=Tournament(TournamentId(t_id), t_name, Tour(t_tour)),
+            team_a_id=TeamId(team_a_id),
+            team_b_id=TeamId(team_b_id),
+            franchise_match=franchise_match,
+        )
+
+    def update_match_setup(
+        self,
+        match_id: MatchId,
+        *,
+        date: datetime.date | None,
+        tournament_id: TournamentId,
+        team_a_id: TeamId,
+        team_b_id: TeamId,
+        franchise_match_id: FranchiseMatchId | None,
+    ) -> None:
+        """Updates a Match's set-up columns without touching its Games or other annotations."""
+        check_match_date(date)
+        self._require_match(match_id)
+        self._db.execute(
+            """
+            UPDATE matches
+            SET date = ?, tournament_id = ?, team_a_id = ?, team_b_id = ?, franchise_match_id = ?
+            WHERE id = ?
+            """,
+            [date, tournament_id, team_a_id, team_b_id, franchise_match_id, match_id],
+        )
+
+    def count_matches_for_player(self, player_id: PlayerId) -> int:
+        (count,) = self._one(
+            """
+            SELECT count(*)
+            FROM matches m
+            JOIN teams ta ON ta.id = m.team_a_id
+            JOIN teams tb ON tb.id = m.team_b_id
+            WHERE ? IN (ta.player_low_id, ta.player_high_id, tb.player_low_id, tb.player_high_id)
+            """,
+            player_id,
+        )
+        return int(count)
+
+    def count_matches_for_tournament(self, tournament_id: TournamentId) -> int:
+        (count,) = self._one("SELECT count(*) FROM matches WHERE tournament_id = ?", tournament_id)
+        return int(count)
+
+    def count_matches_for_franchise(self, franchise_id: FranchiseId) -> int:
+        (count,) = self._one(
+            """
+            SELECT count(*)
+            FROM matches m
+            JOIN franchise_matches fm ON fm.id = m.franchise_match_id
+            WHERE fm.franchise_a_id = ? OR fm.franchise_b_id = ?
+            """,
+            franchise_id,
+            franchise_id,
+        )
+        return int(count)
+
+    def count_matches_for_franchise_match(self, franchise_match_id: FranchiseMatchId) -> int:
+        (count,) = self._one(
+            "SELECT count(*) FROM matches WHERE franchise_match_id = ?", franchise_match_id
+        )
+        return int(count)
+
+    def franchise_match_has_both(self, franchise_a: FranchiseId, franchise_b: FranchiseId) -> bool:
+        row = self._db.execute(
+            """
+            SELECT 1 FROM franchise_matches
+            WHERE (franchise_a_id = ? AND franchise_b_id = ?)
+               OR (franchise_a_id = ? AND franchise_b_id = ?)
+            LIMIT 1
+            """,
+            [franchise_a, franchise_b, franchise_b, franchise_a],
+        ).fetchone()
+        return row is not None
+
+    def rewrite_match_player(
+        self, match_id: MatchId, old_player_id: PlayerId, new_player_id: PlayerId
+    ) -> TeamId:
+        """Replaces `old_player_id` with `new_player_id` across every reference in one Match.
+
+        Returns the old Team id so the caller can clean up orphans in the same transaction.
+        """
+        with self.transaction():
+            roster = self.get_match_roster(match_id)
+            if old_player_id not in roster.player_ids:
+                raise ValueError(f"Player {old_player_id} is not in Match {match_id}")
+            if new_player_id in roster.player_ids:
+                raise ValueError("a Player can't appear twice in a Match")
+
+            if any(p.id == old_player_id for p in roster.team_a_players):
+                old_team_id = roster.team_a_id
+                partner_id = next(p.id for p in roster.team_a_players if p.id != old_player_id)
+                team_column = "team_a_id"
+            else:
+                old_team_id = roster.team_b_id
+                partner_id = next(p.id for p in roster.team_b_players if p.id != old_player_id)
+                team_column = "team_b_id"
+
+            new_team = self.find_team(new_player_id, partner_id)
+            if new_team is None:
+                new_team = Team(TeamId(new_id()), (new_player_id, partner_id))
+                self.save_team(new_team)
+
+            for column in ("server_id", "returner_id", "challenger_id"):
+                self._db.execute(
+                    f"UPDATE rallies SET {column} = ? WHERE match_id = ? AND {column} = ?",
+                    [new_player_id, match_id, old_player_id],
+                )
+            for column in ("serving_team_id", "winner_id", "scoreboard_winner_id"):
+                self._db.execute(
+                    f"UPDATE rallies SET {column} = ? WHERE match_id = ? AND {column} = ?",
+                    [new_team.id, match_id, old_team_id],
+                )
+            for column in ("hitter_id", "error_player_id"):
+                self._db.execute(
+                    f"UPDATE shots SET {column} = ? WHERE match_id = ? AND {column} = ?",
+                    [new_player_id, match_id, old_player_id],
+                )
+            self._db.execute(
+                "UPDATE shot_positions SET player_id = ? WHERE match_id = ? AND player_id = ?",
+                [new_player_id, match_id, old_player_id],
+            )
+            self._db.execute(
+                "UPDATE player_anchors SET player_id = ? WHERE match_id = ? AND player_id = ?",
+                [new_player_id, match_id, old_player_id],
+            )
+            self._db.execute(
+                "UPDATE team_ends SET near_team_id = ? WHERE match_id = ? AND near_team_id = ?",
+                [new_team.id, match_id, old_team_id],
+            )
+            self._db.execute(
+                f"UPDATE matches SET {team_column} = ? WHERE id = ?",
+                [new_team.id, match_id],
+            )
+            return old_team_id
+
+    def delete_match(self, match_id: MatchId) -> None:
+        """Hard-deletes a Match, all of its annotation content and sessions, and any orphans."""
+        with self.transaction():
+            setup = self.get_match_setup(match_id)
+            roster = self.get_match_roster(match_id)
+            for table in MATCH_CONTENT_TABLES:
+                self._db.execute(f"DELETE FROM {table} WHERE match_id = ?", [match_id])
+            self._db.execute("DELETE FROM operator_sessions WHERE match_id = ?", [match_id])
+            self._db.execute("DELETE FROM matches WHERE id = ?", [match_id])
+            fm = setup.franchise_match
+            self.delete_orphans(
+                tournament_ids=[setup.tournament.id],
+                team_ids=[roster.team_a_id, roster.team_b_id],
+                player_ids=[p.id for p in roster.players],
+                franchise_match_ids=[] if fm is None else [fm.id],
+                franchise_ids=[] if fm is None else [fm.franchise_a_id, fm.franchise_b_id],
+            )
+
+    def clear_tournament_franchise_matches(
+        self, tournament_id: TournamentId
+    ) -> tuple[list[FranchiseMatchId], list[FranchiseId]]:
+        """Clears Franchise Matches on a Tournament's Matches; returns orphan candidates."""
+        rows = self._all(
+            "SELECT id, franchise_a_id, franchise_b_id FROM franchise_matches "
+            "WHERE tournament_id = ?",
+            tournament_id,
+        )
+        fm_ids = [FranchiseMatchId(fm_id) for fm_id, _, _ in rows]
+        franchise_ids = [FranchiseId(fid) for _, fa, fb in rows for fid in (fa, fb)]
+        self._db.execute(
+            "UPDATE matches SET franchise_match_id = NULL WHERE tournament_id = ?",
+            [tournament_id],
+        )
+        return fm_ids, franchise_ids
+
+    def move_tournament_records(self, source_id: TournamentId, target_id: TournamentId) -> None:
+        """Moves every Match and Franchise Match from `source_id` onto `target_id`."""
+        self._db.execute(
+            "UPDATE matches SET tournament_id = ? WHERE tournament_id = ?",
+            [target_id, source_id],
+        )
+        self._db.execute(
+            "UPDATE franchise_matches SET tournament_id = ? WHERE tournament_id = ?",
+            [target_id, source_id],
+        )
+
+    def move_franchise_records(self, source_id: FranchiseId, target_id: FranchiseId) -> None:
+        """Moves every Franchise Match reference from `source_id` onto `target_id`."""
+        self._db.execute(
+            "UPDATE franchise_matches SET franchise_a_id = ? WHERE franchise_a_id = ?",
+            [target_id, source_id],
+        )
+        self._db.execute(
+            "UPDATE franchise_matches SET franchise_b_id = ? WHERE franchise_b_id = ?",
+            [target_id, source_id],
+        )
+
+    def delete_orphans(
+        self,
+        *,
+        tournament_ids: Iterable[TournamentId] = (),
+        player_ids: Iterable[PlayerId] = (),
+        team_ids: Iterable[TeamId] = (),
+        franchise_ids: Iterable[FranchiseId] = (),
+        franchise_match_ids: Iterable[FranchiseMatchId] = (),
+    ) -> None:
+        """Deletes any candidate roster records no longer used by any Match, in dependency order."""
+        fm_list = list(dict.fromkeys(franchise_match_ids))
+        if fm_list:
+            self._db.execute(
+                """
+                DELETE FROM franchise_matches fm
+                WHERE fm.id IN (SELECT unnest(?::UUID[]))
+                  AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.franchise_match_id = fm.id)
+                """,
+                [fm_list],
+            )
+        f_list = list(dict.fromkeys(franchise_ids))
+        if f_list:
+            self._db.execute(
+                """
+                DELETE FROM franchises f
+                WHERE f.id IN (SELECT unnest(?::UUID[]))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM franchise_matches fm
+                      WHERE fm.franchise_a_id = f.id OR fm.franchise_b_id = f.id
+                  )
+                """,
+                [f_list],
+            )
+        t_list = list(dict.fromkeys(tournament_ids))
+        if t_list:
+            self._db.execute(
+                """
+                DELETE FROM tournaments t
+                WHERE t.id IN (SELECT unnest(?::UUID[]))
+                  AND NOT EXISTS (SELECT 1 FROM matches m WHERE m.tournament_id = t.id)
+                  AND NOT EXISTS (SELECT 1 FROM franchise_matches fm WHERE fm.tournament_id = t.id)
+                """,
+                [t_list],
+            )
+        tm_list = list(dict.fromkeys(team_ids))
+        if tm_list:
+            self._db.execute(
+                """
+                DELETE FROM teams tm
+                WHERE tm.id IN (SELECT unnest(?::UUID[]))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM matches m WHERE m.team_a_id = tm.id OR m.team_b_id = tm.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM rallies r
+                      WHERE r.serving_team_id = tm.id
+                         OR r.winner_id = tm.id
+                         OR r.scoreboard_winner_id = tm.id
+                  )
+                  AND NOT EXISTS (SELECT 1 FROM team_ends te WHERE te.near_team_id = tm.id)
+                """,
+                [tm_list],
+            )
+        p_list = list(dict.fromkeys(player_ids))
+        if p_list:
+            self._db.execute(
+                """
+                DELETE FROM players p
+                WHERE p.id IN (SELECT unnest(?::UUID[]))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM teams tm
+                      WHERE tm.player_low_id = p.id OR tm.player_high_id = p.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM rallies r
+                      WHERE r.server_id = p.id OR r.returner_id = p.id OR r.challenger_id = p.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM shots s
+                      WHERE s.hitter_id = p.id OR s.error_player_id = p.id
+                  )
+                  AND NOT EXISTS (SELECT 1 FROM shot_positions sp WHERE sp.player_id = p.id)
+                  AND NOT EXISTS (SELECT 1 FROM player_anchors pa WHERE pa.player_id = p.id)
+                """,
+                [p_list],
+            )
 
     def set_match_source_video(
         self, match_id: MatchId, source_video: SourceVideo, *, frames: int | None = None
@@ -792,7 +1139,9 @@ class RallyLog:
             valid_players = roster.player_ids
             for anchor in anchors:
                 if anchor.player_id not in valid_players:
-                    raise ValueError(f"Player {anchor.player_id} is not in Match {match_id}")
+                    raise RosterMismatchError(
+                        f"Player {anchor.player_id} is not in Match {match_id}"
+                    )
             self._db.execute("DELETE FROM player_anchors WHERE match_id = ?", [match_id])
             self._insert_player_anchors(match_id, anchors)
 
@@ -809,7 +1158,9 @@ class RallyLog:
             valid_teams = (roster.team_a_id, roster.team_b_id)
             for team_end in team_ends:
                 if team_end.near_team_id not in valid_teams:
-                    raise ValueError(f"Team {team_end.near_team_id} is not in Match {match_id}")
+                    raise RosterMismatchError(
+                        f"Team {team_end.near_team_id} is not in Match {match_id}"
+                    )
             self._db.execute("DELETE FROM team_ends WHERE match_id = ?", [match_id])
             self._insert_team_ends(match_id, team_ends)
 
