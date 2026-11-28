@@ -338,3 +338,43 @@ it("clears an inverted date range without asking the server", async () => {
   const search = new URLSearchParams(history.location.search);
   expect([search.get("a"), search.get("date_from")]).toEqual([ALEX.id, null]);
 });
+
+it("filters Player Compare by Discipline and shows unclassified Match exclusion notices", async () => {
+  vi.mocked(getComparison).mockImplementation(async ({ a, b, discipline }) => ({
+    kind: "player",
+    choices: [ALEX, AVERY, BLAKE],
+    a: a
+      ? {
+          ...side(ALEX),
+          undated_matches_excluded: 0,
+          unclassified_matches_excluded: discipline ? 1 : 0,
+        }
+      : null,
+    b: b
+      ? {
+          ...side(AVERY),
+          undated_matches_excluded: 0,
+          unclassified_matches_excluded: 0,
+        }
+      : null,
+    stats: a && b ? stats(a, b) : [],
+    filter_options: { tournaments: [] },
+  }));
+
+  const history = renderCompare(`/compare?a=${ALEX.id}&b=${AVERY.id}`);
+  const filters = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  fireEvent.change(filters.getByRole("combobox", { name: "Discipline" }), {
+    target: { value: "mens_doubles" },
+  });
+  fireEvent.click(filters.getByRole("button", { name: "Apply filters" }));
+
+  await waitFor(() =>
+    expect(getComparison).toHaveBeenLastCalledWith(
+      { kind: "player", a: ALEX.id, b: AVERY.id, discipline: "mens_doubles" },
+      expect.any(AbortSignal),
+    ),
+  );
+  expect(new URLSearchParams(history.location.search).get("discipline")).toBe("mens_doubles");
+  const coverage = within(screen.getByRole("region", { name: "Coverage" }));
+  expect(coverage.getAllByText("1 Match left out because of unknown Discipline.")).toHaveLength(1);
+});

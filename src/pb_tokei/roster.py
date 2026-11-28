@@ -45,9 +45,9 @@ from pb_tokei.rally_log import (
     check_match_date,
     check_match_lineup,
     is_calendar_date,
+    lineup_conflict,
     new_id,
     parse_match_date,
-    team_discipline,
 )
 
 
@@ -672,21 +672,14 @@ def _reject_normalized_name(
 
 def _check_roster_lineups(
     log: RallyLog,
-    proposed: Sequence[
-        tuple[
-            MatchRoster,
-            tuple[Gender | None, Gender | None],
-            tuple[Gender | None, Gender | None],
-        ]
-    ],
+    proposed: Sequence[tuple[MatchRoster, Mapping[PlayerId, Gender | None]]],
 ) -> None:
     """Rejects any proposed change that leaves a fully-gendered Match with an invalid Discipline."""
     conflicts: list[tuple[MatchRoster, Discipline, Discipline]] = []
-    for roster, team_a_genders, team_b_genders in proposed:
-        disc_a = team_discipline(team_a_genders)
-        disc_b = team_discipline(team_b_genders)
-        if disc_a is not None and disc_b is not None and disc_a is not disc_b:
-            conflicts.append((roster, disc_a, disc_b))
+    for roster, overrides in proposed:
+        conflict = lineup_conflict(*roster.team_genders(overrides))
+        if conflict is not None:
+            conflicts.append((roster, *conflict))
     if not conflicts:
         return
     metadata = log.load_match_metadata([roster.match_id for roster, _, _ in conflicts])
@@ -718,44 +711,14 @@ def _check_existing_matches_for_gender_updates(
             rosters_by_id.setdefault(roster.match_id, roster)
     if not rosters_by_id:
         return
-    proposed = [
-        (
-            roster,
-            (
-                gender_updates.get(roster.team_a_players[0].id, roster.team_a_players[0].gender),
-                gender_updates.get(roster.team_a_players[1].id, roster.team_a_players[1].gender),
-            ),
-            (
-                gender_updates.get(roster.team_b_players[0].id, roster.team_b_players[0].gender),
-                gender_updates.get(roster.team_b_players[1].id, roster.team_b_players[1].gender),
-            ),
-        )
-        for roster in rosters_by_id.values()
-    ]
-    _check_roster_lineups(log, proposed)
+    _check_roster_lineups(log, [(roster, gender_updates) for roster in rosters_by_id.values()])
 
 
 def _check_single_match_replacement(
     roster: MatchRoster, from_player_id: PlayerId, replacement_gender: Gender | None
 ) -> None:
-    team_a = (
-        replacement_gender
-        if roster.team_a_players[0].id == from_player_id
-        else roster.team_a_players[0].gender,
-        replacement_gender
-        if roster.team_a_players[1].id == from_player_id
-        else roster.team_a_players[1].gender,
-    )
-    team_b = (
-        replacement_gender
-        if roster.team_b_players[0].id == from_player_id
-        else roster.team_b_players[0].gender,
-        replacement_gender
-        if roster.team_b_players[1].id == from_player_id
-        else roster.team_b_players[1].gender,
-    )
     try:
-        check_match_lineup(team_a, team_b)
+        check_match_lineup(*roster.team_genders({from_player_id: replacement_gender}))
     except ValueError as exc:
         raise RosterError(str(exc)) from None
 
@@ -1102,8 +1065,10 @@ def merge_player(
     dry_run: bool = False,
 ) -> tuple[Player, int]:
     """Replaces `source_id` with `target_id` in every Match `source_id` plays in, then deletes
-    `source_id` (and any orphaned Teams). Refused if both play in the same Match or if replacing
-    would leave any fully-gendered Match with an invalid Discipline."""
+    `source_id` (and any orphaned Teams). When `target` has no gender yet and `source` has one,
+    carries `source`'s gender over to `target` so derived Match Disciplines are preserved.
+    Refused if both play in the same Match or if merging would leave any fully-gendered Match
+    with an invalid Discipline."""
     with _setup_lock, log.transaction():
         try:
             source = log.get_player(source_id)
@@ -1122,38 +1087,28 @@ def merge_player(
                 raise RosterError(
                     f"Cannot merge {source.name} into {target.name}: both play in the same Match"
                 )
-        proposed = [
-            (
-                roster,
-                (
-                    target.gender
-                    if roster.team_a_players[0].id == source.id
-                    else roster.team_a_players[0].gender,
-                    target.gender
-                    if roster.team_a_players[1].id == source.id
-                    else roster.team_a_players[1].gender,
-                ),
-                (
-                    target.gender
-                    if roster.team_b_players[0].id == source.id
-                    else roster.team_b_players[0].gender,
-                    target.gender
-                    if roster.team_b_players[1].id == source.id
-                    else roster.team_b_players[1].gender,
-                ),
-            )
-            for roster in rosters
+        carry_gender = target.gender is None and source.gender is not None
+        effective_target = replace(target, gender=source.gender) if carry_gender else target
+        proposed: list[tuple[MatchRoster, Mapping[PlayerId, Gender | None]]] = [
+            (roster, {source.id: effective_target.gender}) for roster in rosters
         ]
+        if carry_gender:
+            proposed.extend(
+                (roster, {target.id: effective_target.gender})
+                for roster in log.list_match_rosters(player_id=target.id)
+            )
         _check_roster_lineups(log, proposed)
         affected = len(rosters)
         if dry_run:
-            return target, affected
+            return effective_target, affected
 
+        if carry_gender:
+            log.save_player(effective_target)
         old_teams = [
             log.rewrite_match_player(roster.match_id, source.id, target.id) for roster in rosters
         ]
         log.delete_orphans(team_ids=old_teams, player_ids=[source.id])
-        return target, affected
+        return effective_target, affected
 
 
 def edit_tournament(

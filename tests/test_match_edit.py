@@ -1318,3 +1318,86 @@ def test_replace_player_and_merge_enforce_match_discipline_invariant(
     with RallyLog.open(db) as log:
         assert log.get_player(legacy_sub).gender is Gender.FEMALE
         assert log.get_match_summary(m1).discipline is Discipline.MIXED_DOUBLES
+
+
+def test_merge_player_carries_gender_into_unclassified_target_and_checks_target_matches(
+    client: TestClient, db: Path
+) -> None:
+    m1 = _add_match(
+        db,
+        tournament={"name": "PPA Mixed Source 2026", "tour": "ppa"},
+        team_a=(("Anna Brigth", "right", "female"), ("Ben Johns", "right", "male")),
+        team_b=(("Cara Lee", "left", "female"), ("Dan Kim", "right", "male")),
+    )
+    m2 = _add_match(
+        db,
+        tournament={"name": "PPA Mixed Target 2026", "tour": "ppa"},
+        team_a=(("Anna Bright", "right", "female"), ("Frank Wu", "right", "male")),
+        team_b=(("Grace Lin", "right", "female"), ("Henry Cho", "right", "male")),
+    )
+    with RallyLog.open(db) as log:
+        typo = log.find_player("Anna Brigth")
+        real = log.find_player("Anna Bright")
+        assert typo is not None and real is not None
+        log.save_player(replace(real, gender=None))
+        assert log.get_match_summary(m2).discipline is None
+
+    # Dry-run previews carrying source.gender onto target without writing.
+    dry = client.post(
+        f"/api/players/{typo.id}/merge",
+        params={"dry_run": "true"},
+        json={"into": str(real.id)},
+    )
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["player"]["gender"] == "female"
+    assert dry.json()["affected_matches"] == 1
+    assert dry.json()["dry_run"] is True
+    with RallyLog.open(db) as log:
+        assert log.get_player(real.id).gender is None
+        assert log.get_match_summary(m2).discipline is None
+
+    # Real merge carries female onto target, preserving m1's Discipline and classifying m2.
+    merged = client.post(f"/api/players/{typo.id}/merge", json={"into": str(real.id)})
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["player"]["gender"] == "female"
+    assert merged.json()["affected_matches"] == 1
+    with RallyLog.open(db) as log:
+        with pytest.raises(KeyError):
+            log.get_player(typo.id)
+        assert log.get_player(real.id).gender is Gender.FEMALE
+        assert log.get_match_summary(m1).discipline is Discipline.MIXED_DOUBLES
+        assert log.get_match_summary(m2).discipline is Discipline.MIXED_DOUBLES
+
+    # Refuses merging a gendered source into a gender=None target when carrying source.gender over
+    # would break one of target's own existing Matches (on both dry_run=true and dry_run=false).
+    m3 = _add_match(
+        db,
+        tournament={"name": "PPA Mens Source 2026", "tour": "ppa"},
+        team_a=(("Max Typo", "right", "male"), ("Partner M", "right", "male")),
+        team_b=(("Opp M1", "right", "male"), ("Opp M2", "right", "male")),
+    )
+    _add_match(
+        db,
+        tournament={"name": "PPA Womens Target 2026", "tour": "ppa"},
+        team_a=(("Max Real", "right", "female"), ("Woman Partner", "right", "female")),
+        team_b=(("Woman Opp1", "right", "female"), ("Woman Opp2", "right", "female")),
+    )
+    with RallyLog.open(db) as log:
+        max_typo = log.find_player("Max Typo")
+        max_real = log.find_player("Max Real")
+        assert max_typo is not None and max_real is not None
+        log.save_player(replace(max_real, gender=None))
+
+    for dry_flag in ("true", "false"):
+        bad = client.post(
+            f"/api/players/{max_typo.id}/merge",
+            params={"dry_run": dry_flag},
+            json={"into": str(max_real.id)},
+        )
+        assert bad.status_code == 422
+        assert "PPA Womens Target 2026" in bad.json()["detail"]
+
+    with RallyLog.open(db) as log:
+        assert log.get_player(max_typo.id).gender is Gender.MALE
+        assert log.get_player(max_real.id).gender is None
+        assert log.get_match_summary(m3).discipline is Discipline.MENS_DOUBLES

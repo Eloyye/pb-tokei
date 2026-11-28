@@ -23,7 +23,7 @@ import datetime
 import itertools
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC
 from enum import StrEnum
@@ -127,16 +127,20 @@ def team_discipline(genders: tuple[Gender | None, Gender | None]) -> Discipline 
     return Discipline.MIXED_DOUBLES
 
 
-def match_discipline(
+def lineup_conflict(
     team_a: tuple[Gender | None, Gender | None],
     team_b: tuple[Gender | None, Gender | None],
-) -> Discipline | None:
-    """Derives a Match's Discipline when all four Players have compatible genders, else None."""
+) -> tuple[Discipline, Discipline] | None:
+    """Returns `(disc_a, disc_b)` when both Teams are fully gendered with incompatible Disciplines.
+
+    Partial lineups (where at least one Player has `gender = None`, including e.g. `(male, male)`
+    vs `(female, None)`) return `None` until all four Players are gendered.
+    """
     disc_a = team_discipline(team_a)
     disc_b = team_discipline(team_b)
-    if disc_a is None or disc_b is None or disc_a is not disc_b:
+    if disc_a is None or disc_b is None or disc_a is disc_b:
         return None
-    return disc_a
+    return (disc_a, disc_b)
 
 
 def check_match_lineup(
@@ -146,19 +150,32 @@ def check_match_lineup(
     """Validates a Match's four-Player gender lineup.
 
     Returns the derived Discipline when all four Players have compatible genders, returns None
-    when any Player has `gender = None`, and raises `ValueError` when a fully-gendered Match does
-    not form Men's Doubles, Women's Doubles, or Mixed Doubles.
+    for any partial lineup (when at least one Player has `gender = None`, including e.g.
+    `(male, male)` vs `(female, None)`, until all four Players are gendered), and raises
+    `ValueError` when a fully-gendered Match does not form Men's Doubles, Women's Doubles, or
+    Mixed Doubles.
     """
-    disc_a = team_discipline(team_a)
-    disc_b = team_discipline(team_b)
-    if disc_a is None or disc_b is None:
-        return None
-    if disc_a is not disc_b:
+    conflict = lineup_conflict(team_a, team_b)
+    if conflict is not None:
+        disc_a, disc_b = conflict
         raise ValueError(
             f"Invalid Match lineup: {disc_a.label} vs {disc_b.label} "
             "(must be Men's Doubles, Women's Doubles, or Mixed Doubles)"
         )
-    return disc_a
+    disc_a = team_discipline(team_a)
+    disc_b = team_discipline(team_b)
+    return disc_a if disc_a is not None and disc_b is not None else None
+
+
+def match_discipline(
+    team_a: tuple[Gender | None, Gender | None],
+    team_b: tuple[Gender | None, Gender | None],
+) -> Discipline | None:
+    """Derives a Match's Discipline when all four Players have compatible genders, else None."""
+    try:
+        return check_match_lineup(team_a, team_b)
+    except ValueError:
+        return None
 
 
 class Zone(StrEnum):
@@ -821,12 +838,29 @@ class MatchRoster:
     def player_ids(self) -> frozenset[PlayerId]:
         return frozenset(p.id for p in self.players)
 
+    def team_genders(
+        self, overrides: Mapping[PlayerId, Gender | None] | None = None
+    ) -> tuple[tuple[Gender | None, Gender | None], tuple[Gender | None, Gender | None]]:
+        """Returns `(team_a_genders, team_b_genders)` with optional per-Player gender overrides."""
+        if not overrides:
+            return (
+                (self.team_a_players[0].gender, self.team_a_players[1].gender),
+                (self.team_b_players[0].gender, self.team_b_players[1].gender),
+            )
+        return (
+            (
+                overrides.get(self.team_a_players[0].id, self.team_a_players[0].gender),
+                overrides.get(self.team_a_players[1].id, self.team_a_players[1].gender),
+            ),
+            (
+                overrides.get(self.team_b_players[0].id, self.team_b_players[0].gender),
+                overrides.get(self.team_b_players[1].id, self.team_b_players[1].gender),
+            ),
+        )
+
     @property
     def discipline(self) -> Discipline | None:
-        return match_discipline(
-            (self.team_a_players[0].gender, self.team_a_players[1].gender),
-            (self.team_b_players[0].gender, self.team_b_players[1].gender),
-        )
+        return match_discipline(*self.team_genders())
 
     def team_id_for(self, player_id: PlayerId) -> TeamId:
         if any(p.id == player_id for p in self.team_a_players):

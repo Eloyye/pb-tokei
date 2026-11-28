@@ -1,4 +1,7 @@
+import datetime
 from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -6,7 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pb_tokei.annotate.app import create_app
-from pb_tokei.demo_match import DEMO_MLP_DATE, DEMO_MLP_TOURNAMENT, write_demo_matches
+from pb_tokei.demo_match import (
+    DEMO_MLP_DATE,
+    DEMO_MLP_TOURNAMENT,
+    demo_games,
+    write_demo_matches,
+)
 from pb_tokei.events.compare import compare_stats, intervals_separated
 from pb_tokei.events.report import (
     ReportCount,
@@ -20,7 +28,8 @@ from pb_tokei.events.report import (
     ReportSubject,
     ReportSubRow,
 )
-from pb_tokei.rally_log import RallyLog
+from pb_tokei.rally_log import Gender, Handedness, MatchId, RallyLog, Tour, new_id
+from pb_tokei.roster import Roster, RosterPlayer, set_up_match
 
 type Json = dict[str, Any]
 
@@ -174,6 +183,7 @@ def test_endpoint_lists_choices_and_waits_for_two_subjects(client: TestClient) -
     teams = client.get("/api/compare", params={"kind": "team"}).json()
     assert teams["kind"] == "team"
     assert all(len(choice["players"]) == 2 for choice in teams["choices"])
+    assert all(choice["discipline"] == "mixed_doubles" for choice in teams["choices"])
 
 
 def test_players_compare_side_by_side_with_marks_only_on_disjoint_rates(
@@ -295,10 +305,103 @@ def test_a_side_without_rallies_lines_up_empty_against_the_other(client: TestCli
         {"a": "not-a-uuid"},
         {"date_from": "2026-06-02", "date_to": "2026-06-01"},
         {"partner": "x", "a": "also-not-a-uuid"},
+        {"discipline": "singles"},
     ],
 )
 def test_rejects_invalid_parameters(client: TestClient, params: dict[str, str]) -> None:
     assert client.get("/api/compare", params=params).status_code == 422
+
+
+def test_discipline_filter_and_unclassified_matches_excluded(tmp_path: Path) -> None:
+    db = tmp_path / "compare_discipline.duckdb"
+    alex = RosterPlayer("Alex One", Handedness.RIGHT, Gender.MALE)
+    blake = RosterPlayer("Blake One", Handedness.RIGHT, Gender.MALE)
+    with RallyLog.open(db) as log, log.transaction():
+        mens = set_up_match(
+            log,
+            Roster(
+                match_id=MatchId(new_id()),
+                date=datetime.date(2026, 5, 1),
+                tournament="PPA Mens",
+                tour=Tour.PPA,
+                team_a=(alex, RosterPlayer("Partner M", Handedness.RIGHT, Gender.MALE)),
+                team_b=(blake, RosterPlayer("Opp M", Handedness.RIGHT, Gender.MALE)),
+            ),
+        )
+        log.replace_games(mens.id, demo_games(log.get_match_roster(mens.id)))
+
+        mixed = set_up_match(
+            log,
+            Roster(
+                match_id=MatchId(new_id()),
+                date=datetime.date(2026, 5, 2),
+                tournament="PPA Mixed",
+                tour=Tour.PPA,
+                team_a=(alex, RosterPlayer("Avery Two", Handedness.LEFT, Gender.FEMALE)),
+                team_b=(blake, RosterPlayer("Brook Two", Handedness.RIGHT, Gender.FEMALE)),
+            ),
+        )
+        log.replace_games(mixed.id, demo_games(log.get_match_roster(mixed.id)))
+
+        unclassified = set_up_match(
+            log,
+            Roster(
+                match_id=MatchId(new_id()),
+                date=datetime.date(2026, 5, 3),
+                tournament="PPA Legacy",
+                tour=Tour.PPA,
+                team_a=(alex, RosterPlayer("Legacy Partner", Handedness.LEFT, Gender.FEMALE)),
+                team_b=(
+                    RosterPlayer("Other M", Handedness.RIGHT, Gender.MALE),
+                    RosterPlayer("Other F", Handedness.RIGHT, Gender.FEMALE),
+                ),
+            ),
+        )
+        log.replace_games(unclassified.id, demo_games(log.get_match_roster(unclassified.id)))
+        legacy = log.find_player("Legacy Partner")
+        assert legacy is not None
+        log.save_player(replace(legacy, gender=None))
+
+    with TestClient(create_app(db), base_url="http://127.0.0.1") as local_client:
+        teams = local_client.get("/api/compare", params={"kind": "team"}).json()["choices"]
+        by_label = {
+            " / ".join(player["name"] for player in choice["players"]): choice["discipline"]
+            for choice in teams
+        }
+        assert by_label["Alex One / Partner M"] == "mens_doubles"
+        assert by_label["Alex One / Avery Two"] == "mixed_doubles"
+        assert by_label["Alex One / Legacy Partner"] is None
+
+        unfiltered = _compare(local_client, "player", "Alex One", "Blake One")
+        assert unfiltered["a"]["header"]["match_count"] == 3
+        assert unfiltered["b"]["header"]["match_count"] == 2
+        assert unfiltered["a"]["unclassified_matches_excluded"] == 0
+        assert unfiltered["b"]["unclassified_matches_excluded"] == 0
+
+        mens_only = _compare(
+            local_client, "player", "Alex One", "Blake One", discipline="mens_doubles"
+        )
+        assert mens_only["a"]["header"]["match_count"] == 1
+        assert mens_only["a"]["unclassified_matches_excluded"] == 1
+        assert mens_only["b"]["header"]["match_count"] == 1
+        assert mens_only["b"]["unclassified_matches_excluded"] == 0
+        for side in ("a", "b"):
+            subject = mens_only[side]["subject"]["id"]
+            report = local_client.get(
+                f"/api/players/{subject}", params={"discipline": "mens_doubles"}
+            ).json()
+            assert mens_only[side]["header"] == report["header"]
+            hit_share = next(stat for stat in report["stats"] if stat["id"] == "hit_share")
+            assert _stat(mens_only, "hit_share")["values"][subject] == hit_share["values"][subject]
+
+        womens_only = _compare(
+            local_client, "player", "Alex One", "Blake One", discipline="womens_doubles"
+        )
+        assert womens_only["a"]["header"]["match_count"] == 0
+        assert womens_only["a"]["unclassified_matches_excluded"] == 1
+        assert womens_only["b"]["header"]["match_count"] == 0
+        assert womens_only["b"]["unclassified_matches_excluded"] == 0
+        assert womens_only["stats"] == []
 
 
 def test_rejects_the_same_subject_twice_and_unknown_subjects(client: TestClient) -> None:
