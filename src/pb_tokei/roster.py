@@ -341,8 +341,10 @@ handedness = "right"
 # --- Setting up a Match -------------------------------------------------------------------
 
 # The server gives concurrent requests separate DuckDB connections. A transaction alone cannot
-# stop both from adding the same normalized name under different ids.
+# stop both from adding the same normalized name under different ids, nor stop a workspace write
+# started on an old snapshot from committing against a Player or Match being replaced or deleted.
 _setup_lock = Lock()
+match_write_lock = _setup_lock
 
 
 def set_up_match(log: RallyLog, roster: Roster, *, source_video_frames: int | None = None) -> Match:
@@ -818,12 +820,18 @@ def edit_tournament(
             others = [t for t in log.list_tournaments() if t.id != tournament.id]
             exact = next((t for t in others if t.name == new_name), None)
             if exact is not None:
-                if exact.tour is tournament.tour:
-                    raise ExactNameConflictError(
-                        f"Tournament {exact.name!r} already exists; "
-                        f"merge into {exact.name!r} instead",
-                        existing_id=exact.id,
-                        existing_name=exact.name,
+                if exact.tour is new_tour:
+                    if new_tour is tournament.tour:
+                        raise ExactNameConflictError(
+                            f"Tournament {exact.name!r} already exists; "
+                            f"merge into {exact.name!r} instead",
+                            existing_id=exact.id,
+                            existing_name=exact.name,
+                        )
+                    raise RosterError(
+                        f"Tournament {exact.name!r} already exists on the"
+                        f" {exact.tour.upper()} Tour; change this Tournament's Tour first,"
+                        f" then merge into {exact.name!r}"
                     )
                 raise RosterError(f"Tournament {exact.name!r} is on the {exact.tour.upper()} Tour")
             _reject_normalized_name(others, new_name, "Tournament")

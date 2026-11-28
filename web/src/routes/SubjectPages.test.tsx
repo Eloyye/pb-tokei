@@ -26,15 +26,15 @@ vi.mock("../api/client", async (importOriginal) => ({
 }));
 
 const ALEX = { id: "alex", name: "Alex One" };
-const AVERY = { id: "avery", name: "Avery Two" };
+const AVERY = { id: "10000000-0000-4000-8000-000000000001", name: "Avery Two" };
+const BLAKE = { id: "10000000-0000-4000-8000-000000000002", name: "Blake One" };
 const TEAM: components["schemas"]["ReportTeam"] = { id: "team", players: [ALEX, AVERY] };
 const OPPONENTS = {
   id: "opponents",
-  players: [
-    { id: "blake", name: "Blake One" },
-    { id: "brook", name: "Brook Two" },
-  ],
+  players: [BLAKE, { id: "brook", name: "Brook Two" }],
 } satisfies components["schemas"]["ReportTeam"];
+const MLP_OPEN = "10000000-0000-4000-8000-000000000003";
+const DOUBLES_OPEN = "10000000-0000-4000-8000-000000000004";
 
 const RALLIES = { counted: 6, done: 4, in_progress: 1, empty: 1 };
 const NO_RALLIES = { counted: 0, done: 0, in_progress: 0, empty: 0 };
@@ -55,6 +55,15 @@ const KITCHEN_FAULTS: ReportStat = {
 const PLAYER_REPORT: PlayerReport = {
   profile: { ...ALEX, handedness: "left" },
   header: { match_count: 2, rallies: RALLIES, uncredited: 2 },
+  filter_options: {
+    tournaments: [
+      { id: DOUBLES_OPEN, name: "Synthetic Doubles Open", tour: "ppa" },
+      { id: MLP_OPEN, name: "Synthetic MLP Open", tour: "mlp" },
+    ],
+    partners: [AVERY],
+    opponents: OPPONENTS.players,
+  },
+  undated_matches_excluded: 0,
   stats: [KITCHEN_FAULTS],
   partners: [{ team: TEAM, player: AVERY, match_count: 2 }],
   played_for: [
@@ -88,6 +97,8 @@ const PLAYER_REPORT: PlayerReport = {
 const TEAM_REPORT: TeamReport = {
   profile: TEAM,
   header: PLAYER_REPORT.header,
+  filter_options: { ...PLAYER_REPORT.filter_options, partners: [] },
+  undated_matches_excluded: 0,
   stats: [KITCHEN_FAULTS],
   matches: PLAYER_REPORT.matches.map((match) => ({ ...match, partner: null })),
 };
@@ -205,6 +216,183 @@ it("shows the Team and two Player columns, with only opponents in the history", 
     2,
   );
   expect(screen.queryByRole("heading", { name: "Played for" })).toBeNull();
+});
+
+it("applies and restores combined Player filters alongside the stats breakdown", async () => {
+  const filtered: PlayerReport = {
+    ...PLAYER_REPORT,
+    header: { match_count: 1, rallies: RALLIES, uncredited: 0 },
+    matches: PLAYER_REPORT.matches.slice(0, 1),
+    stats: [
+      {
+        ...KITCHEN_FAULTS,
+        values: { alex: { count: 1, matches: 1, average: 1, left_out: 0 } },
+        breakdowns: {
+          shot_number: { "3": { alex: { count: 1, matches: 1, average: 1, left_out: 0 } } },
+        },
+      },
+    ],
+  };
+  vi.mocked(getPlayerReport).mockImplementation(async (_, filters) =>
+    filters.tour === "mlp" ? filtered : PLAYER_REPORT,
+  );
+  const history = renderDashboard("/players/alex?by=shot_number");
+  const form = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  fireEvent.click(form.getByRole("checkbox", { name: "Synthetic Doubles Open (PPA)" }));
+  fireEvent.click(form.getByRole("checkbox", { name: "Synthetic MLP Open (MLP)" }));
+  fireEvent.change(form.getByRole("combobox", { name: "Tour" }), { target: { value: "mlp" } });
+  fireEvent.change(form.getByLabelText("Date from"), { target: { value: "2026-06-01" } });
+  fireEvent.change(form.getByLabelText("Date to"), { target: { value: "2026-06-04" } });
+  fireEvent.change(form.getByRole("combobox", { name: "Partner" }), {
+    target: { value: AVERY.id },
+  });
+  fireEvent.change(form.getByRole("combobox", { name: "Opponent" }), {
+    target: { value: BLAKE.id },
+  });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+
+  await screen.findByText("1 Match · 6 Rallies counted · 4 Done, 1 In progress, 1 Empty");
+  const matches = within(screen.getByRole("table", { name: "Matches" }));
+  expect(matches.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
+    "/matches/mlp-match/report",
+  ]);
+  expect(
+    within(screen.getByRole("table", { name: "Other" })).getByText("1 per Match (1 in 1)"),
+  ).toBeTruthy();
+  const filters = {
+    tournament: [MLP_OPEN, DOUBLES_OPEN],
+    tour: "mlp",
+    date_from: "2026-06-01",
+    date_to: "2026-06-04",
+    partner: AVERY.id,
+    opponent: BLAKE.id,
+  };
+  expect(getPlayerReport).toHaveBeenLastCalledWith(ALEX.id, filters, expect.any(AbortSignal));
+  const search = new URLSearchParams(history.location.search);
+  expect(Object.fromEntries(search)).toEqual({
+    ...filters,
+    by: "shot_number",
+    tournament: JSON.stringify(filters.tournament),
+  });
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Break down by" }), {
+    target: { value: "" },
+  });
+  await waitFor(() => expect(new URLSearchParams(history.location.search).has("by")).toBe(false));
+  expect(getPlayerReport).toHaveBeenCalledTimes(2);
+
+  const shareableUrl = history.location.href;
+  cleanup();
+  renderDashboard(shareableUrl);
+  const restored = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  expect(restored.getAllByRole("checkbox", { checked: true })).toHaveLength(2);
+  expect((restored.getByRole("combobox", { name: "Tour" }) as HTMLSelectElement).value).toBe("mlp");
+  expect((restored.getByLabelText("Date to") as HTMLInputElement).value).toBe("2026-06-04");
+  expect(getPlayerReport).toHaveBeenLastCalledWith(ALEX.id, filters, expect.any(AbortSignal));
+});
+
+it("shows why a filtered Team report is empty and can clear the filters", async () => {
+  vi.mocked(getTeamReport).mockImplementation(async (_, filters) =>
+    filters.date_to
+      ? {
+          ...TEAM_REPORT,
+          header: { match_count: 0, rallies: NO_RALLIES, uncredited: 0 },
+          matches: [],
+          stats: [],
+          undated_matches_excluded: 1,
+        }
+      : TEAM_REPORT,
+  );
+  const unavailableTournament = "10000000-0000-4000-8000-000000000005";
+  const history = renderDashboard(
+    `/teams/team?by=shot_number&date_to=2026-06-01&opponent=${BLAKE.id}&tour=app&tournament=${unavailableTournament}`,
+  );
+  await screen.findByText("No Matches match these filters");
+  expect(screen.getByText("1 Match left out because of missing dates.")).toBeTruthy();
+  expect(
+    screen.getByText("0 Matches · 0 Rallies counted · 0 Done, 0 In progress, 0 Empty"),
+  ).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "Partner" })).toBeNull();
+  expect(screen.queryByRole("table")).toBeNull();
+  expect(screen.getByRole("option", { name: "APP (unavailable)", selected: true })).toBeTruthy();
+  expect(
+    screen.getByRole("checkbox", { name: "Unavailable Tournament", checked: true }),
+  ).toBeTruthy();
+  expect(screen.queryByText(unavailableTournament, { exact: false })).toBeNull();
+  expect(getTeamReport).toHaveBeenLastCalledWith(
+    TEAM.id,
+    expect.objectContaining({
+      date_to: "2026-06-01",
+      opponent: BLAKE.id,
+      tour: "app",
+      tournament: [unavailableTournament],
+    }),
+    expect.any(AbortSignal),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await screen.findByRole("table", { name: "Matches" });
+  expect(history.location.search).toBe("?by=shot_number");
+  expect((screen.getByLabelText("Date to") as HTMLInputElement).value).toBe("");
+  const tour = within(screen.getByRole("combobox", { name: "Tour" }));
+  expect(tour.getAllByRole("option").map((option) => option.textContent)).toEqual([
+    "All Tours",
+    "PPA",
+    "MLP",
+  ]);
+  expect(screen.queryByText(/left out because of missing dates/)).toBeNull();
+});
+
+it("lets the Player clear filters from a report request error", async () => {
+  vi.mocked(getPlayerReport).mockImplementation(async (_, filters) => {
+    if (filters.tour) throw new ApiError(422, "The report request failed");
+    return PLAYER_REPORT;
+  });
+  const history = renderDashboard("/players/alex?by=shot_number");
+  const form = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  fireEvent.change(form.getByRole("combobox", { name: "Tour" }), { target: { value: "ppa" } });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("The report request failed");
+  fireEvent.click(within(alert).getByRole("button", { name: "Clear filters" }));
+  await screen.findByRole("table", { name: "Matches" });
+  expect(history.location.search).toBe("?by=shot_number");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps the applied report visible until the draft date range is valid", async () => {
+  const history = renderDashboard("/players/alex");
+  const form = within(await screen.findByRole("group", { name: "Filter Matches" }));
+  fireEvent.change(form.getByLabelText("Date from"), { target: { value: "2026-06-04" } });
+  fireEvent.change(form.getByLabelText("Date to"), { target: { value: "2026-06-01" } });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+  expect(form.getByRole("alert").textContent).toBe("Date from must be on or before Date to.");
+  expect(history.location.search).toBe("");
+  expect(getPlayerReport).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("table", { name: "Matches" })).toBeTruthy();
+
+  fireEvent.change(form.getByLabelText("Date to"), { target: { value: "2026-06-04" } });
+  fireEvent.click(form.getByRole("button", { name: "Apply filters" }));
+  await waitFor(() =>
+    expect(getPlayerReport).toHaveBeenLastCalledWith(
+      ALEX.id,
+      expect.objectContaining({ date_from: "2026-06-04", date_to: "2026-06-04" }),
+      expect.any(AbortSignal),
+    ),
+  );
+  expect(form.queryByRole("alert")).toBeNull();
+});
+
+it("explains an inverted date range from a shared Team URL and lets it be cleared", async () => {
+  const history = renderDashboard(
+    "/teams/team?by=shot_number&date_from=2026-06-04&date_to=2026-06-01",
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Date from must be on or before Date to.");
+  expect(getTeamReport).toHaveBeenCalledTimes(0);
+  fireEvent.click(within(alert).getByRole("button", { name: "Clear filters" }));
+  await screen.findByRole("table", { name: "Matches" });
+  expect(history.location.search).toBe("?by=shot_number");
+  expect(getTeamReport).toHaveBeenCalledTimes(1);
 });
 
 it("keeps the Player's Match visible when it has no Rallies", async () => {

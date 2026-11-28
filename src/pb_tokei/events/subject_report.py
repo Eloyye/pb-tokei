@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from uuid import UUID
@@ -22,6 +23,7 @@ from pb_tokei.rally_log import (
     Tournament,
 )
 
+from .match_filters import PlayerMatchFilters, TeamMatchFilters
 from .report import (
     MultiMatchReport,
     ReportGame,
@@ -75,16 +77,32 @@ class SubjectMatch(BaseModel):
     rallies: ReportRallies
 
 
-class PlayerReport(MultiMatchReport):
+class FilterTournament(BaseModel):
+    id: UUID
+    name: str
+    tour: Tour
+
+
+class SubjectFilterOptions(BaseModel):
+    tournaments: list[FilterTournament]
+    partners: list[ReportPlayer]
+    opponents: list[ReportPlayer]
+
+
+class SubjectReport(MultiMatchReport):
+    matches: list[SubjectMatch]
+    filter_options: SubjectFilterOptions
+    undated_matches_excluded: int
+
+
+class PlayerReport(SubjectReport):
     profile: PlayerProfile
     played_for: list[PlayedForFranchise]
     partners: list[ReportPartner]
-    matches: list[SubjectMatch]
 
 
-class TeamReport(MultiMatchReport):
+class TeamReport(SubjectReport):
     profile: ReportTeam
-    matches: list[SubjectMatch]
 
 
 def list_players(log: RallyLog) -> list[PlayerListEntry]:
@@ -122,13 +140,64 @@ class SubjectMatchSource:
     franchise: Franchise | None
 
 
+@dataclass(frozen=True, slots=True)
+class SubjectMatchSelection:
+    sources: list[SubjectMatchSource]
+    filter_options: SubjectFilterOptions
+    undated_matches_excluded: int
+
+
+def _partner(roster: MatchRoster, team_id: TeamId, player_id: PlayerId) -> Player:
+    return next(player for player in roster.team_players(team_id) if player.id != player_id)
+
+
+def _player_options(players: set[Player]) -> list[ReportPlayer]:
+    return [ReportPlayer.from_player(p) for p in sorted(players, key=lambda p: (p.name, p.id))]
+
+
 def _load_matches(
-    log: RallyLog, rosters: list[MatchRoster], *, player_id: PlayerId | None = None
-) -> list[SubjectMatchSource]:
-    if not rosters:
-        return []
-    matches = log.load_match_games([roster.match_id for roster in rosters])
-    tournaments = {t.id: t for t in log.list_tournaments()}
+    log: RallyLog,
+    rosters: list[MatchRoster],
+    filters: TeamMatchFilters,
+    team_for: Callable[[MatchRoster], TeamId],
+    *,
+    player_id: PlayerId | None = None,
+    partner_id: PlayerId | None = None,
+) -> SubjectMatchSelection:
+    metadata = log.load_match_metadata([roster.match_id for roster in rosters])
+    tournaments = {t.id: t for t in log.list_tournaments()} if metadata else {}
+    available_tournaments: set[Tournament] = set()
+    available_partners: set[Player] = set()
+    available_opponents: set[Player] = set()
+    selected = []
+    undated_excluded = 0
+
+    # Keep the choices available even when filters leave no Matches. Only load Games for
+    # Matches that pass all filters, and count undated Matches among the other filters' results.
+    for roster in rosters:
+        match = metadata[roster.match_id]
+        tournament = tournaments[match.tournament_id]
+        team_id = team_for(roster)
+        opponents = roster.team_players(roster.other_team_id(team_id))
+        partner = _partner(roster, team_id, player_id) if player_id is not None else None
+        available_tournaments.add(tournament)
+        available_opponents.update(opponents)
+        if partner is not None:
+            available_partners.add(partner)
+
+        if not filters.includes_tournament(tournament):
+            continue
+        if partner_id is not None and (partner is None or partner.id != partner_id):
+            continue
+        if filters.opponent is not None and all(p.id != filters.opponent for p in opponents):
+            continue
+        if not filters.includes_date(match.date):
+            if match.date is None:
+                undated_excluded += 1
+            continue
+        selected.append(roster)
+
+    matches = log.load_match_games_from_metadata([metadata[roster.match_id] for roster in selected])
     franchise_matches = {}
     franchises = {}
     if player_id is not None and any(m.franchise_match_id is not None for m in matches.values()):
@@ -136,7 +205,7 @@ def _load_matches(
         franchises = {f.id: f for f in log.list_franchises()}
 
     sources = []
-    for roster in rosters:
+    for roster in selected:
         match = matches[roster.match_id]
         tournament = tournaments[match.tournament_id]
         franchise = None
@@ -148,29 +217,47 @@ def _load_matches(
             franchise_match = franchise_matches[match.franchise_match_id]
             franchise_id = (
                 franchise_match.franchise_a_id
-                if roster.team_id_for(player_id) == roster.team_a_id
+                if team_for(roster) == roster.team_a_id
                 else franchise_match.franchise_b_id
             )
             franchise = franchises[franchise_id]
         sources.append(SubjectMatchSource(match, roster, tournament, franchise))
-    return sources
+    return SubjectMatchSelection(
+        sources=sources,
+        filter_options=SubjectFilterOptions(
+            tournaments=[
+                FilterTournament(id=t.id, name=t.name, tour=t.tour)
+                for t in sorted(available_tournaments, key=lambda t: (t.name, t.tour, t.id))
+            ],
+            partners=_player_options(available_partners),
+            opponents=_player_options(available_opponents),
+        ),
+        undated_matches_excluded=undated_excluded,
+    )
 
 
 def load_player_matches(
-    log: RallyLog, player_id: PlayerId
-) -> tuple[Player, list[SubjectMatchSource]] | None:
+    log: RallyLog, player_id: PlayerId, filters: PlayerMatchFilters
+) -> tuple[Player, SubjectMatchSelection] | None:
     with log.transaction():
         try:
             player = log.get_player(player_id)
         except KeyError:
             return None
         rosters = log.list_match_rosters(player_id=player_id)
-        return player, _load_matches(log, rosters, player_id=player_id)
+        return player, _load_matches(
+            log,
+            rosters,
+            filters,
+            lambda roster: roster.team_id_for(player_id),
+            player_id=player_id,
+            partner_id=filters.partner,
+        )
 
 
 def load_team_matches(
-    log: RallyLog, team_id: TeamId
-) -> tuple[ReportTeam, list[SubjectMatchSource]] | None:
+    log: RallyLog, team_id: TeamId, filters: TeamMatchFilters
+) -> tuple[ReportTeam, SubjectMatchSelection] | None:
     with log.transaction():
         try:
             team = log.get_team(team_id)
@@ -178,7 +265,9 @@ def load_team_matches(
             return None
         first, second = team.player_ids
         profile = ReportTeam.from_players(team.id, (log.get_player(first), log.get_player(second)))
-        return profile, _load_matches(log, log.list_match_rosters(team_id=team_id))
+        return profile, _load_matches(
+            log, log.list_match_rosters(team_id=team_id), filters, lambda _: team_id
+        )
 
 
 def _match_row(
@@ -197,7 +286,8 @@ def _match_row(
     )
 
 
-def build_player_report(player: Player, sources: list[SubjectMatchSource]) -> PlayerReport:
+def build_player_report(player: Player, selection: SubjectMatchSelection) -> PlayerReport:
+    sources = selection.sources
     report = build_multi_match_report(
         [(source.match, source.roster) for source in sources], {player.id: SubjectKind.PLAYER}
     )
@@ -208,7 +298,7 @@ def build_player_report(player: Player, sources: list[SubjectMatchSource]) -> Pl
         roster = source.roster
         team_id = roster.team_id_for(player.id)
         teammates = roster.team_players(team_id)
-        partner = ReportPlayer.from_player(next(p for p in teammates if p.id != player.id))
+        partner = ReportPlayer.from_player(_partner(roster, team_id, player.id))
         if team_id not in partners:
             partners[team_id] = ReportPartner(
                 team=ReportTeam.from_players(team_id, teammates), player=partner, match_count=0
@@ -237,10 +327,13 @@ def build_player_report(player: Player, sources: list[SubjectMatchSource]) -> Pl
         ],
         partners=ordered_partners,
         matches=matches,
+        filter_options=selection.filter_options,
+        undated_matches_excluded=selection.undated_matches_excluded,
     )
 
 
-def build_team_report(team: ReportTeam, sources: list[SubjectMatchSource]) -> TeamReport:
+def build_team_report(team: ReportTeam, selection: SubjectMatchSelection) -> TeamReport:
+    sources = selection.sources
     subjects = {player.id: SubjectKind.PLAYER for player in team.players}
     subjects[team.id] = SubjectKind.TEAM
     report = build_multi_match_report([(s.match, s.roster) for s in sources], subjects)
@@ -249,4 +342,6 @@ def build_team_report(team: ReportTeam, sources: list[SubjectMatchSource]) -> Te
         stats=report.stats,
         profile=team,
         matches=[_match_row(source, TeamId(team.id)) for source in sources],
+        filter_options=selection.filter_options,
+        undated_matches_excluded=selection.undated_matches_excluded,
     )

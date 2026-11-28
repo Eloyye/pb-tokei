@@ -1,5 +1,5 @@
 import createClient from "openapi-fetch";
-import type { components, paths } from "./schema";
+import type { components, operations, paths } from "./schema";
 
 const api = createClient<paths>();
 const RALLY_LOG_HEADER = "X-Rally-Log";
@@ -285,12 +285,16 @@ export async function listTeams(signal?: AbortSignal): Promise<Schemas["TeamList
   return data as Schemas["TeamListEntry"][];
 }
 
+export type TeamMatchFilters = NonNullable<operations["getTeam"]["parameters"]["query"]>;
+export type PlayerMatchFilters = NonNullable<operations["getPlayer"]["parameters"]["query"]>;
+
 export async function getPlayerReport(
   playerId: string,
+  filters: PlayerMatchFilters,
   signal?: AbortSignal,
 ): Promise<Schemas["PlayerReport"]> {
   const { data, error, response } = await api.GET("/api/players/{player_id}", {
-    params: { path: { player_id: playerId } },
+    params: { path: { player_id: playerId }, query: filters },
     cache: "no-store",
     signal,
   });
@@ -300,10 +304,11 @@ export async function getPlayerReport(
 
 export async function getTeamReport(
   teamId: string,
+  filters: TeamMatchFilters,
   signal?: AbortSignal,
 ): Promise<Schemas["TeamReport"]> {
   const { data, error, response } = await api.GET("/api/teams/{team_id}", {
-    params: { path: { team_id: teamId } },
+    params: { path: { team_id: teamId }, query: filters },
     cache: "no-store",
     signal,
   });

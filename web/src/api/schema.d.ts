@@ -78,7 +78,7 @@ export interface paths {
     post?: never;
     /**
      * Delete Match
-     * @description Cancels any footage/tracking jobs for a Match and hard-deletes it and any orphans.
+     * @description Hard-deletes a Match and any orphans, then cancels any footage/tracking jobs for it.
      */
     delete: operations["deleteMatch"];
     options?: never;
@@ -943,6 +943,17 @@ export interface components {
       /** Url */
       url?: string | null;
     };
+    /** FilterTournament */
+    FilterTournament: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      tour: components["schemas"]["Tour"];
+    };
     /**
      * FootageJobOut
      * @description Full footage job state for one Match, plus the remembered browser cookie setting.
@@ -1522,6 +1533,7 @@ export interface components {
     };
     /** PlayerReport */
     PlayerReport: {
+      filter_options: components["schemas"]["SubjectFilterOptions"];
       header: components["schemas"]["MultiMatchHeader"];
       /** Matches */
       matches: components["schemas"]["SubjectMatch"][];
@@ -1532,6 +1544,8 @@ export interface components {
       profile: components["schemas"]["PlayerProfile"];
       /** Stats */
       stats: components["schemas"]["ReportStat"][];
+      /** Undated Matches Excluded */
+      undated_matches_excluded: number;
     };
     /**
      * PlayerTrackingFrameOut
@@ -1918,6 +1932,15 @@ export interface components {
        */
       type: "shot";
     };
+    /** SubjectFilterOptions */
+    SubjectFilterOptions: {
+      /** Opponents */
+      opponents: components["schemas"]["ReportPlayer"][];
+      /** Partners */
+      partners: components["schemas"]["ReportPlayer"][];
+      /** Tournaments */
+      tournaments: components["schemas"]["FilterTournament"][];
+    };
     /** SubjectMatch */
     SubjectMatch: {
       /** Date */
@@ -1962,12 +1985,15 @@ export interface components {
     };
     /** TeamReport */
     TeamReport: {
+      filter_options: components["schemas"]["SubjectFilterOptions"];
       header: components["schemas"]["MultiMatchHeader"];
       /** Matches */
       matches: components["schemas"]["SubjectMatch"][];
       profile: components["schemas"]["ReportTeam"];
       /** Stats */
       stats: components["schemas"]["ReportStat"][];
+      /** Undated Matches Excluded */
+      undated_matches_excluded: number;
     };
     /**
      * Tour
@@ -3158,7 +3184,14 @@ export interface operations {
   };
   getPlayer: {
     parameters: {
-      query?: never;
+      query?: {
+        tournament?: string[];
+        tour?: components["schemas"]["Tour"] | null;
+        date_from?: string | null;
+        date_to?: string | null;
+        opponent?: string | null;
+        partner?: string | null;
+      };
       header?: never;
       path: {
         player_id: string;
@@ -3356,7 +3389,13 @@ export interface operations {
   };
   getTeam: {
     parameters: {
-      query?: never;
+      query?: {
+        tournament?: string[];
+        tour?: components["schemas"]["Tour"] | null;
+        date_from?: string | null;
+        date_to?: string | null;
+        opponent?: string | null;
+      };
       header?: never;
       path: {
         team_id: string;

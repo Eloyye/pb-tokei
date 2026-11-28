@@ -1,6 +1,14 @@
 import { getRouteApi, Link } from "@tanstack/react-router";
-import { getPlayerReport, getTeamReport } from "../api/client";
+import {
+  ApiError,
+  getPlayerReport,
+  getTeamReport,
+  type PlayerMatchFilters,
+  type TeamMatchFilters,
+} from "../api/client";
 import type { components } from "../api/schema";
+import { MatchFilterForm } from "./MatchFilterForm";
+import { hasMatchFilters, matchFilterDateError } from "./matchFilters";
 import { asReportSplit, matchCountLabel, type ReportSplit } from "./reportOptions";
 import { ReportLoadError, useReportQuery } from "./reportQuery";
 import { ReportCoverage, ReportTables, teamReportColumns, type ReportColumn } from "./ReportTables";
@@ -13,17 +21,34 @@ type SubjectMatch = components["schemas"]["SubjectMatch"];
 const playerRoute = getRouteApi("/players/$playerId");
 const teamRoute = getRouteApi("/teams/$teamId");
 
+function loadValidReport<T>(filters: TeamMatchFilters, load: () => Promise<T>): Promise<T> {
+  const dateError = matchFilterDateError(filters);
+  if (dateError) return Promise.reject(new ApiError(422, dateError));
+  return load();
+}
+
 export function PlayerReportPage() {
   const { playerId } = playerRoute.useParams();
-  const { by } = playerRoute.useSearch();
+  const { by, ...filters } = playerRoute.useSearch();
   const navigate = playerRoute.useNavigate();
-  const report = useReportQuery(["players", playerId], (signal) =>
-    getPlayerReport(playerId, signal),
+  const report = useReportQuery(
+    ["players", playerId, filters],
+    (signal) => loadValidReport(filters, () => getPlayerReport(playerId, filters, signal)),
+    (previous) => (previous?.profile.id === playerId ? previous : undefined),
   );
+  function applyFilters(value: PlayerMatchFilters) {
+    void navigate({ search: (previous) => ({ ...value, by: previous.by }) });
+  }
+
   if (report.isPending) return <p className="match-report notice">Loading Player report…</p>;
   if (report.isError) {
     return (
-      <ReportLoadError error={report.error} retry={() => void report.refetch()} index="/players" />
+      <ReportLoadError
+        error={report.error}
+        retry={() => void report.refetch()}
+        index="/players"
+        clearFilters={hasMatchFilters(filters) ? () => applyFilters({}) : undefined}
+      />
     );
   }
   return (
@@ -31,20 +56,38 @@ export function PlayerReportPage() {
       key={playerId}
       report={report.data}
       by={by}
-      onSplitChange={(value) => void navigate({ search: { by: asReportSplit(value) } })}
+      filters={filters}
+      updating={report.isPlaceholderData}
+      onFiltersChange={applyFilters}
+      onSplitChange={(value) =>
+        void navigate({ search: (previous) => ({ ...previous, by: asReportSplit(value) }) })
+      }
     />
   );
 }
 
 export function TeamReportPage() {
   const { teamId } = teamRoute.useParams();
-  const { by } = teamRoute.useSearch();
+  const { by, ...filters } = teamRoute.useSearch();
   const navigate = teamRoute.useNavigate();
-  const report = useReportQuery(["teams", teamId], (signal) => getTeamReport(teamId, signal));
+  const report = useReportQuery(
+    ["teams", teamId, filters],
+    (signal) => loadValidReport(filters, () => getTeamReport(teamId, filters, signal)),
+    (previous) => (previous?.profile.id === teamId ? previous : undefined),
+  );
+  function applyFilters(value: TeamMatchFilters) {
+    void navigate({ search: (previous) => ({ ...value, by: previous.by }) });
+  }
+
   if (report.isPending) return <p className="match-report notice">Loading Team report…</p>;
   if (report.isError) {
     return (
-      <ReportLoadError error={report.error} retry={() => void report.refetch()} index="/teams" />
+      <ReportLoadError
+        error={report.error}
+        retry={() => void report.refetch()}
+        index="/teams"
+        clearFilters={hasMatchFilters(filters) ? () => applyFilters({}) : undefined}
+      />
     );
   }
   return (
@@ -52,7 +95,12 @@ export function TeamReportPage() {
       key={teamId}
       report={report.data}
       by={by}
-      onSplitChange={(value) => void navigate({ search: { by: asReportSplit(value) } })}
+      filters={filters}
+      updating={report.isPlaceholderData}
+      onFiltersChange={applyFilters}
+      onSplitChange={(value) =>
+        void navigate({ search: (previous) => ({ ...previous, by: asReportSplit(value) }) })
+      }
     />
   );
 }
@@ -60,14 +108,21 @@ export function TeamReportPage() {
 function SubjectReport({
   report,
   by,
+  filters,
+  updating,
+  onFiltersChange,
   onSplitChange,
 }: {
   report: PlayerReport | TeamReport;
   by?: ReportSplit;
+  filters: PlayerMatchFilters;
+  updating: boolean;
+  onFiltersChange: (value: PlayerMatchFilters) => void;
   onSplitChange: (value: string) => void;
 }) {
-  const { header, matches, profile, stats } = report;
+  const { header, matches, profile, stats, undated_matches_excluded: undated } = report;
   const player = "partners" in report ? report : null;
+  const filtered = hasMatchFilters(filters);
   const teamProfile = "players" in profile;
   const title = teamProfile ? reportTeamLabel(profile) : profile.name;
   const columns: ReportColumn[] = teamProfile
@@ -81,19 +136,42 @@ function SubjectReport({
           <div className="report-matchup">
             <h1>{title}</h1>
             {player && <p>{player.profile.handedness === "left" ? "Left" : "Right"}-handed</p>}
-            <ReportCoverage
-              matchCount={header.match_count}
-              rallies={header.rallies}
-              uncredited={header.uncredited}
-            />
+            {!updating && (
+              <>
+                <ReportCoverage
+                  matchCount={header.match_count}
+                  rallies={header.rallies}
+                  uncredited={header.uncredited}
+                />
+                {undated > 0 && (
+                  <p>{matchCountLabel(undated)} left out because of missing dates.</p>
+                )}
+              </>
+            )}
           </div>
-          {player && <PlayerConnections player={player} />}
+          {player && !updating && <PlayerConnections player={player} />}
         </header>
-        <SubjectMatches matches={matches} showPartner={player !== null} />
-        {header.rallies.counted === 0 ? (
-          <p className="report-empty">No Rallies yet. Add Rallies in Annotate to see stats.</p>
+        <MatchFilterForm
+          filters={filters}
+          options={report.filter_options}
+          showPartner={player !== null}
+          onApply={onFiltersChange}
+        />
+        {updating ? (
+          <output className="report-empty">Updating report…</output>
         ) : (
-          <ReportTables stats={stats} columns={columns} by={by} onSplitChange={onSplitChange} />
+          <>
+            <SubjectMatches matches={matches} showPartner={player !== null} filtered={filtered} />
+            {header.rallies.counted > 0 ? (
+              <ReportTables stats={stats} columns={columns} by={by} onSplitChange={onSplitChange} />
+            ) : (
+              (!filtered || matches.length > 0) && (
+                <p className="report-empty">
+                  No Rallies yet. Add Rallies in Annotate to see stats.
+                </p>
+              )
+            )}
+          </>
         )}
       </div>
     </main>
@@ -147,15 +225,19 @@ function PlayerConnections({ player }: { player: PlayerReport }) {
 function SubjectMatches({
   matches,
   showPartner,
+  filtered,
 }: {
   matches: SubjectMatch[];
   showPartner: boolean;
+  filtered: boolean;
 }) {
   return (
     <section className="subject-matches" aria-labelledby="subject-matches-title">
       <h2 id="subject-matches-title">Matches</h2>
       {matches.length === 0 ? (
-        <p className="report-empty">No Matches yet.</p>
+        <p className="report-empty">
+          {filtered ? "No Matches match these filters" : "No Matches yet."}
+        </p>
       ) : (
         <div className="subject-list-scroll">
           <table className="subject-list" aria-labelledby="subject-matches-title">

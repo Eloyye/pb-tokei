@@ -482,4 +482,20 @@ describe("EditMatchPage", () => {
     await screen.findByRole("heading", { name: "Matches Home" });
     expect(router.state.location.pathname).toBe("/");
   });
+
+  it("mentions a source video in a sibling directory sharing the footage_dir prefix", async () => {
+    vi.mocked(getMatch).mockResolvedValue(
+      makeDetail({
+        footage_dir: "/data/footage",
+        source_video_path: "/data/footage-old/match.mp4",
+      }),
+    );
+    renderEditPage();
+    await screen.findByRole("heading", { name: "Edit Match" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Match" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByText("/data/footage")).toBeTruthy();
+    expect(dialog.getByText(/\/data\/footage-old\/match\.mp4/)).toBeTruthy();
+  });
 });

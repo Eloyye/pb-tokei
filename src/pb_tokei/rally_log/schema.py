@@ -495,11 +495,20 @@ def _migrate_drop_foreign_keys(db: duckdb.DuckDBPyConnection) -> None:
     for table, ddl in ordered:
         if table not in fk_tables:
             continue
+        columns = [
+            col
+            for (col,) in db.execute(
+                "SELECT column_name FROM duckdb_columns() "
+                "WHERE table_name = ? ORDER BY column_index",
+                [table],
+            ).fetchall()
+        ]
+        cols = ", ".join(columns)
         migrated = f"{table}_migrated"
         db.execute("BEGIN TRANSACTION")
         try:
             db.execute(ddl(migrated))
-            db.execute(f"INSERT INTO {migrated} SELECT * FROM {table}")
+            db.execute(f"INSERT INTO {migrated} ({cols}) SELECT {cols} FROM {table}")
             db.execute(f"DROP TABLE {table}")
             db.execute(f"ALTER TABLE {migrated} RENAME TO {table}")
         except BaseException:

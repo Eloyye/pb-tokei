@@ -70,6 +70,7 @@ from pb_tokei.annotate.players import (
 from pb_tokei.calibration import Matrix, assess
 from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
+from pb_tokei.events.match_filters import PlayerMatchFilters, TeamMatchFilters
 from pb_tokei.events.report import MatchReport, build_report
 from pb_tokei.events.stats import compute_stats
 from pb_tokei.events.subject_report import (
@@ -135,6 +136,7 @@ from pb_tokei.roster import (
     edit_match_setup,
     edit_player,
     edit_tournament,
+    match_write_lock,
     merge_franchise,
     merge_player,
     merge_tournament,
@@ -699,9 +701,9 @@ class _OpenRallyLog:
                 raise HTTPException(status_code=422, detail=str(exc)) from None
 
     def run_match_write[T](self, action: Callable[[RallyLog], T]) -> T:
-        """Runs a workspace Rally Log write: rejects deleted Matches (404) or stale Player/Team
-        ids (422) with the stale-workspace reload message (ADR 0016)."""
-        with RallyLog.open(self.db_file) as log:
+        """Runs a workspace Rally Log write serialized with Match set-up edits and deletes so a
+        stale snapshot cannot commit against a replaced Player or deleted Match (ADR 0016)."""
+        with match_write_lock, RallyLog.open(self.db_file) as log:
             try:
                 return action(log)
             except MatchNotFound:
@@ -961,8 +963,13 @@ def create_app(
     @app.get(
         "/api/players/{player_id}", operation_id="getPlayer", response_model_exclude_unset=True
     )
-    def get_player(player_id: UUID, response: Response, rally_log: OpenLog) -> PlayerReport:
-        snapshot = rally_log.run(lambda log: load_player_matches(log, PlayerId(player_id)))
+    def get_player(
+        player_id: UUID,
+        response: Response,
+        rally_log: OpenLog,
+        filters: Annotated[PlayerMatchFilters, Query()],
+    ) -> PlayerReport:
+        snapshot = rally_log.run(lambda log: load_player_matches(log, PlayerId(player_id), filters))
         if snapshot is None:
             raise HTTPException(status_code=404, detail=f"Player not found: {player_id}")
         response.headers["Cache-Control"] = "no-store"
@@ -1071,8 +1078,13 @@ def create_app(
         return rally_log.run(list_teams)
 
     @app.get("/api/teams/{team_id}", operation_id="getTeam", response_model_exclude_unset=True)
-    def get_team(team_id: UUID, response: Response, rally_log: OpenLog) -> TeamReport:
-        snapshot = rally_log.run(lambda log: load_team_matches(log, TeamId(team_id)))
+    def get_team(
+        team_id: UUID,
+        response: Response,
+        rally_log: OpenLog,
+        filters: Annotated[TeamMatchFilters, Query()],
+    ) -> TeamReport:
+        snapshot = rally_log.run(lambda log: load_team_matches(log, TeamId(team_id), filters))
         if snapshot is None:
             raise HTTPException(status_code=404, detail=f"Team not found: {team_id}")
         response.headers["Cache-Control"] = "no-store"
@@ -1148,14 +1160,13 @@ def create_app(
 
     @app.delete("/api/matches/{match_id}", operation_id="deleteMatch")
     def delete_match(match_id: UUID, rally_log: OpenLog) -> DeletedMatchOut:
-        """Cancels any footage/tracking jobs for a Match and hard-deletes it and any orphans."""
+        """Hard-deletes a Match and any orphans, then cancels any footage/tracking jobs for it."""
         mid = MatchId(match_id)
-        rally_log.lookup(match_id)
+        rally_log.run(lambda log: delete_match_record(log, mid))
         rally_log.footage.cancel(mid)
         rally_log.footage.wait_for(mid, timeout=5.0)
         rally_log.motion.cancel(mid)
         rally_log.players.cancel_match(mid)
-        rally_log.run(lambda log: delete_match_record(log, mid))
         return DeletedMatchOut(id=match_id)
 
     @app.post("/api/matches/{match_id}/replace-player", operation_id="replaceMatchPlayer")

@@ -18,6 +18,7 @@ from test_footage_jobs import LOCAL, URL_A
 from test_roster import DALLAS_VS_MIAMI, MLP, roster_toml
 
 from pb_tokei.annotate.app import STALE_MATCH_MESSAGE, create_app
+from pb_tokei.annotate.games import games_from_domain
 from pb_tokei.footage import CommandCancelledError
 from pb_tokei.player_tracking import default_player_cache_dir
 from pb_tokei.process import LineCallback
@@ -638,6 +639,20 @@ def test_tournament_rename_tour_fix_dry_run_and_merge(client: TestClient, db: Pa
     assert conflict.status_code == 409
     assert conflict.json()["existing_id"] == str(t_full)
 
+    # Combined rename + Tour change colliding with an existing Tournament on either Tour -> 422
+    # (never offers a merge that would drop the Tour change or fail cross-Tour merge).
+    combo_old_tour = client.patch(
+        f"/api/tournaments/{t_short}",
+        json={"name": "PPA Atlanta Open 2026", "tour": "mlp"},
+    )
+    assert combo_old_tour.status_code == 422
+    combo_new_tour = client.patch(
+        f"/api/tournaments/{t_short}",
+        json={"name": MLP["name"], "tour": "mlp"},
+    )
+    assert combo_new_tour.status_code == 422
+    assert "Tour" in combo_new_tour.json()["detail"]
+
     # Exact-name on a different Tour -> 422 (cannot merge across Tours).
     cross_rename = client.patch(f"/api/tournaments/{t_short}", json={"name": "APP Chicago 2026"})
     assert cross_rename.status_code == 422
@@ -845,6 +860,35 @@ def test_delete_match_clears_all_tables_and_orphans_keeps_footage_and_cancels_jo
         assert [t.name for t in log.list_tournaments()] == ["PPA Other 2026"]
 
 
+def test_failed_delete_does_not_cancel_running_footage_job(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    m1 = _add_match(db)
+    runner = _BlockingRunner()
+    app = create_app(db, footage_runner=runner)
+
+    def fail_delete(*_args: Any, **_kwargs: Any) -> None:
+        raise duckdb.IOException("database locked by CLI")
+
+    monkeypatch.setattr("pb_tokei.annotate.app.delete_match_record", fail_delete)
+
+    with TestClient(app, base_url=LOCAL, headers={"Origin": LOCAL}) as client:
+        fetch_resp = client.post(
+            f"/api/matches/{m1}/footage/fetch",
+            json={"url": "https://www.youtube.com/watch?v=newvid00002"},
+        )
+        assert fetch_resp.status_code == 200
+        assert runner.started.wait(timeout=5.0)
+
+        failed = client.delete(f"/api/matches/{m1}")
+        assert failed.status_code == 503
+        assert not runner.cancelled.is_set()
+        assert client.get(f"/api/matches/{m1}/footage").json()["state"] == "downloading"
+        # Clean up the running job before exiting TestClient.
+        assert client.post(f"/api/matches/{m1}/footage/cancel").status_code == 200
+        assert runner.cancelled.wait(timeout=5.0)
+
+
 # --- Stale workspace writes ---------------------------------------------------------------
 
 
@@ -895,6 +939,100 @@ def test_stale_workspace_writes_are_rejected_after_replace_and_delete(
         assert res.json()["detail"] == STALE_MATCH_MESSAGE
 
 
+def test_concurrent_workspace_write_and_replace_player_never_commits_deleted_player(
+    db: Path,
+) -> None:
+    """Serializing workspace writes with set-up edits prevents DuckDB snapshot isolation from
+    committing Rallies referencing a Player replaced and orphan-deleted concurrently."""
+    app = create_app(db)
+    with TestClient(app, base_url=LOCAL, headers={"Origin": LOCAL}) as client:
+        for iteration in range(6):
+            m1 = _add_match(
+                db,
+                tournament={"name": f"PPA Race {iteration}", "tour": "ppa"},
+                team_a=((f"Old Player {iteration}", "right"), (f"Partner {iteration}", "right")),
+                team_b=((f"Opp A {iteration}", "left"), (f"Opp B {iteration}", "right")),
+            )
+            with RallyLog.open(db) as log:
+                roster = log.get_match_roster(m1)
+                old_player = next(
+                    p for p in roster.team_a_players if p.name == f"Old Player {iteration}"
+                )
+                team_a = roster.team_a_id
+
+            games_payload = [
+                g.model_dump(mode="json")
+                for g in games_from_domain(
+                    (
+                        Game(
+                            1,
+                            (
+                                Rally(
+                                    number=1,
+                                    start_frame=100,
+                                    end_frame=200,
+                                    serving_team_id=observed(team_a),
+                                    server_id=observed(old_player.id),
+                                    status=RallyStatus.IN_PROGRESS,
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            ]
+
+            barrier = threading.Barrier(2)
+            results: dict[str, Any] = {}
+
+            def save_games(
+                mid: MatchId = m1,
+                body: list[dict[str, Any]] = games_payload,
+                gate: threading.Barrier = barrier,
+                out: dict[str, Any] = results,
+            ) -> None:
+                gate.wait()
+                out["save"] = client.put(f"/api/matches/{mid}/games", json=body)
+
+            def replace_player(
+                mid: MatchId = m1,
+                pid: PlayerId = old_player.id,
+                idx: int = iteration,
+                gate: threading.Barrier = barrier,
+                out: dict[str, Any] = results,
+            ) -> None:
+                gate.wait()
+                out["replace"] = client.post(
+                    f"/api/matches/{mid}/replace-player",
+                    json={
+                        "from": str(pid),
+                        "to": {"name": f"New Player {idx}", "handedness": "left"},
+                    },
+                )
+
+            t1 = threading.Thread(target=save_games)
+            t2 = threading.Thread(target=replace_player)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+            assert results["replace"].status_code == 200
+            save_res = results["save"]
+            with RallyLog.open(db) as log:
+                assert log.find_player(f"Old Player {iteration}") is None
+                new_player = log.find_player(f"New Player {iteration}")
+                assert new_player is not None
+                loaded = log.load_match(m1)
+                if save_res.status_code == 200:
+                    # Save ran before replace: replace must have rewritten the saved Rally.
+                    assert loaded.games[0].rallies[0].server_id == observed(new_player.id)
+                else:
+                    # Replace ran before save: save must have been rejected with reload message.
+                    assert save_res.status_code == 422
+                    assert STALE_MATCH_MESSAGE in save_res.json()["detail"]
+                    assert loaded.games == ()
+
+
 # --- Legacy FK schema migration -----------------------------------------------------------
 
 
@@ -925,15 +1063,18 @@ def test_legacy_database_with_foreign_keys_migrates_for_edits_and_deletes(tmp_pa
             "franchise_a_id UUID NOT NULL REFERENCES franchises (id), "
             "franchise_b_id UUID NOT NULL REFERENCES franchises (id))"
         )
+        # Deliberately put columns in legacy ALTER TABLE ADD COLUMN order (annotation_mode and
+        # date at the end) to verify column-name copy rather than positional SELECT *.
         conn.execute(
             "CREATE TABLE matches (id UUID PRIMARY KEY, "
             "tournament_id UUID NOT NULL REFERENCES tournaments (id), "
             "team_a_id UUID NOT NULL REFERENCES teams (id), "
             "team_b_id UUID NOT NULL REFERENCES teams (id), "
             "franchise_match_id UUID REFERENCES franchise_matches (id), "
-            "date DATE, source_video_url VARCHAR, source_video_id VARCHAR, "
+            "source_video_url VARCHAR, source_video_id VARCHAR, "
             "source_video_path VARCHAR, source_video_frames INTEGER, "
-            "annotation_mode VARCHAR NOT NULL DEFAULT 'gold')"
+            "annotation_mode VARCHAR NOT NULL DEFAULT 'gold', "
+            "date DATE)"
         )
         conn.execute("INSERT INTO tournaments VALUES (?, 'MLP Legacy', 'mlp')", [t_id])
         for pid, name in ((p1, "A1"), (p2, "A2"), (p3, "B1"), (p4, "B2")):
@@ -945,13 +1086,17 @@ def test_legacy_database_with_foreign_keys_migrates_for_edits_and_deletes(tmp_pa
         conn.execute("INSERT INTO franchises VALUES (?, 'FA'), (?, 'FB')", [f_a, f_b])
         conn.execute("INSERT INTO franchise_matches VALUES (?, ?, ?, ?)", [fm_id, t_id, f_a, f_b])
         conn.execute(
-            "INSERT INTO matches (id, tournament_id, team_a_id, team_b_id, franchise_match_id) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO matches (id, tournament_id, team_a_id, team_b_id, franchise_match_id, "
+            "annotation_mode, date) VALUES (?, ?, ?, ?, ?, 'assisted', DATE '2026-04-10')",
             [match_id, t_id, team_a, team_b, fm_id],
         )
 
-    # Opening migrates away FKs so delete_match + orphan cleanup works in one transaction.
+    # Opening migrates away FKs by column name so values survive and delete_match + orphan
+    # cleanup works in one transaction.
     with RallyLog.open(path) as log:
+        summary = log.get_match_summary(MatchId(match_id))
+        assert summary.date == datetime(2026, 4, 10, tzinfo=UTC).date()
+        assert summary.annotation_mode.value == "assisted"
         log.delete_match(MatchId(match_id))
         assert log.list_matches() == []
         assert log.list_players() == []

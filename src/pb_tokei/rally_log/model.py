@@ -818,13 +818,19 @@ class Match:
 
 
 @dataclass(frozen=True, slots=True)
-class MatchGames:
-    """A read-only snapshot of a Match's Games and competition metadata."""
+class MatchMetadata:
+    """The competition metadata of a Match, without its Games."""
 
     id: MatchId
     tournament_id: TournamentId
     franchise_match_id: FranchiseMatchId | None
     date: datetime.date | None
+
+
+@dataclass(frozen=True, slots=True)
+class MatchGames(MatchMetadata):
+    """A read-only snapshot of a Match's Games and competition metadata."""
+
     games: tuple[Game, ...]
 
 

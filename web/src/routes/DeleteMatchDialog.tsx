@@ -3,6 +3,14 @@ import { deleteMatch, type MatchDetail } from "../api/client";
 import { formatOperatorDuration } from "../lib/operatorTime";
 import { teamsLabel } from "./teams";
 
+function isPathInsideDir(filePath: string, dirPath: string): boolean {
+  const normalizedDir = dirPath.replace(/[\\/]+$/, "");
+  if (!normalizedDir) {
+    return filePath.startsWith("/") || filePath.startsWith("\\");
+  }
+  return filePath.startsWith(`${normalizedDir}/`) || filePath.startsWith(`${normalizedDir}\\`);
+}
+
 /**
  * Confirmation dialog for hard-deleting a Match. Lists what will be lost, notes where footage
  * files stay on disk, and requires typing the Tournament name when the Match has any Rallies.
@@ -37,7 +45,7 @@ export function DeleteMatchDialog({
   const durationText = formatOperatorDuration(match.operator_time.active_seconds);
   const summary = `Delete ${match.tournament} · ${teamsLabel(match)}: ${ralliesText}, ${durationText} of operator time. This can't be undone.`;
   const extraVideoNote =
-    match.source_video_path !== null && !match.source_video_path.startsWith(match.footage_dir)
+    match.source_video_path !== null && !isPathInsideDir(match.source_video_path, match.footage_dir)
       ? ` (and ${match.source_video_path})`
       : "";
 
