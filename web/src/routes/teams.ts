@@ -1,7 +1,12 @@
 import type { Match } from "../api/client";
+import type { components } from "../api/schema";
 
 export function teamsLabel(match: Pick<Match, "team_a" | "team_b">): string {
   return `${match.team_a.join(" / ")} vs ${match.team_b.join(" / ")}`;
+}
+
+export function reportTeamLabel(team: components["schemas"]["ReportTeam"]): string {
+  return team.players.map((player) => player.name).join(" / ");
 }
 
 export function franchisesLabel(match: Match): string | null {

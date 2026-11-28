@@ -411,6 +411,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/players": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Players */
+    get: operations["listPlayers"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/players/{player_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Player */
+    get: operations["getPlayer"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/rally-log": {
     parameters: {
       query?: never;
@@ -447,6 +481,40 @@ export interface paths {
      * @description The records used to fill in the New Match form for this Rally Log.
      */
     get: operations["getRoster"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/teams": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Teams */
+    get: operations["listTeams"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/teams/{team_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get Team */
+    get: operations["getTeam"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1096,6 +1164,14 @@ export interface components {
       /** Team B */
       team_b: [string, string];
     };
+    /** MultiMatchHeader */
+    MultiMatchHeader: {
+      /** Match Count */
+      match_count: number;
+      rallies: components["schemas"]["ReportRallies"];
+      /** Uncredited */
+      uncredited: number;
+    };
     /**
      * OpenRallyLogIn
      * @description A Rally Log to switch to, or with `create`, a new empty one to make and switch to.
@@ -1173,6 +1249,30 @@ export interface components {
       /** Start Frame */
       start_frame: number;
     };
+    /** PlayedForFranchise */
+    PlayedForFranchise: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      /** Tournaments */
+      tournaments: components["schemas"]["PlayedForTournament"][];
+    };
+    /** PlayedForTournament */
+    PlayedForTournament: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Match Count */
+      match_count: number;
+      /** Name */
+      name: string;
+    };
     /**
      * PlayerAnchorIO
      * @description One operator-placed Player anchor on a frame, in normalised image coordinates (0 to 1).
@@ -1191,10 +1291,47 @@ export interface components {
        */
       player_id: string;
     };
+    /** PlayerListEntry */
+    PlayerListEntry: {
+      handedness: components["schemas"]["Handedness"];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Match Count */
+      match_count: number;
+      /** Name */
+      name: string;
+    };
     /** PlayerPositionIO */
     PlayerPositionIO: {
       position: components["schemas"]["FactIO_CourtPointIO_"];
       settled: components["schemas"]["FactIO_bool_"];
+    };
+    /** PlayerProfile */
+    PlayerProfile: {
+      handedness: components["schemas"]["Handedness"];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+    };
+    /** PlayerReport */
+    PlayerReport: {
+      header: components["schemas"]["MultiMatchHeader"];
+      /** Matches */
+      matches: components["schemas"]["SubjectMatch"][];
+      /** Partners */
+      partners: components["schemas"]["ReportPartner"][];
+      /** Played For */
+      played_for: components["schemas"]["PlayedForFranchise"][];
+      profile: components["schemas"]["PlayerProfile"];
+      /** Stats */
+      stats: components["schemas"]["ReportStat"][];
     };
     /**
      * PlayerTrackingFrameOut
@@ -1389,7 +1526,7 @@ export interface components {
      * ReportKind
      * @enum {string}
      */
-    ReportKind: "rate" | "per100" | "count" | "mix";
+    ReportKind: "rate" | "per100" | "count" | "per_match" | "mix";
     /** ReportMix */
     ReportMix: {
       /** Categories */
@@ -1398,6 +1535,24 @@ export interface components {
       left_out: number;
       /** Of */
       of: number;
+    };
+    /** ReportPartner */
+    ReportPartner: {
+      /** Match Count */
+      match_count: number;
+      player: components["schemas"]["ReportPlayer"];
+      team: components["schemas"]["ReportTeam"];
+    };
+    /** ReportPerMatch */
+    ReportPerMatch: {
+      /** Average */
+      average: number;
+      /** Count */
+      count: number;
+      /** Left Out */
+      left_out: number;
+      /** Matches */
+      matches: number;
     };
     /** ReportPlayer */
     ReportPlayer: {
@@ -1483,6 +1638,7 @@ export interface components {
     };
     ReportValue:
       | components["schemas"]["ReportRate"]
+      | components["schemas"]["ReportPerMatch"]
       | components["schemas"]["ReportCount"]
       | components["schemas"]["ReportMix"];
     ReportValues: {
@@ -1552,6 +1708,23 @@ export interface components {
        */
       type: "shot";
     };
+    /** SubjectMatch */
+    SubjectMatch: {
+      /** Date */
+      date: string | null;
+      /** Games */
+      games: components["schemas"]["ReportGame"][];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      opponents: components["schemas"]["ReportTeam"];
+      partner: components["schemas"]["ReportPlayer"] | null;
+      rallies: components["schemas"]["ReportRallies"];
+      /** Tournament */
+      tournament: string;
+    };
     /**
      * TeamEndIO
      * @description Which Team plays at the near end (y < 0, Main View camera end) from a frame onward.
@@ -1564,6 +1737,27 @@ export interface components {
        * Format: uuid
        */
       near_team_id: string;
+    };
+    /** TeamListEntry */
+    TeamListEntry: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Match Count */
+      match_count: number;
+      /** Players */
+      players: [components["schemas"]["ReportPlayer"], components["schemas"]["ReportPlayer"]];
+    };
+    /** TeamReport */
+    TeamReport: {
+      header: components["schemas"]["MultiMatchHeader"];
+      /** Matches */
+      matches: components["schemas"]["SubjectMatch"][];
+      profile: components["schemas"]["ReportTeam"];
+      /** Stats */
+      stats: components["schemas"]["ReportStat"][];
     };
     /**
      * Tour
@@ -2567,6 +2761,57 @@ export interface operations {
       };
     };
   };
+  listPlayers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerListEntry"][];
+        };
+      };
+    };
+  };
+  getPlayer: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        player_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlayerReport"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   getRallyLog: {
     parameters: {
       query?: never;
@@ -2636,6 +2881,57 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["RosterOut"];
+        };
+      };
+    };
+  };
+  listTeams: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TeamListEntry"][];
+        };
+      };
+    };
+  };
+  getTeam: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        team_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TeamReport"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
     };

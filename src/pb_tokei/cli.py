@@ -171,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("demo-match.duckdb"),
         help="Path to the demo Rally Log (default: ./demo-match.duckdb).",
     )
+    demo.add_argument("--many", action="store_true", help="Write four Matches for the dashboard.")
 
     track = subparsers.add_parser(
         "track",
@@ -567,18 +568,19 @@ def _match_line(summary: MatchSummary) -> str:
 
 
 def _run_demo_match(args: argparse.Namespace) -> int:
-    from pb_tokei.demo_match import write_demo_match
+    from pb_tokei.demo_match import write_demo_match, write_demo_matches
 
     db_path = _resolve_cli_db(args.db, allow_create=True)
     if db_path is None:
         return 1
     try:
         with RallyLog.open(db_path) as log:
-            match_id = write_demo_match(log)
+            match_ids = write_demo_matches(log) if args.many else (write_demo_match(log),)
     except (ValueError, duckdb.Error, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(match_id)
+    for match_id in match_ids:
+        print(match_id)
     return 0
 
 

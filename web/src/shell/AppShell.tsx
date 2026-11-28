@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useMatch, useParams } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   getMatch,
@@ -103,6 +103,7 @@ function TopBar({
   rallyLog: RallyLogQuery;
 }) {
   const { matchId, workspace } = useParams({ strict: false });
+  const isNewMatch = useMatch({ from: "/matches/new", shouldThrow: false, select: () => true });
   const match = useQuery({
     queryKey: ["matches", matchId],
     queryFn: () => getMatch(matchId ?? ""),
@@ -115,27 +116,35 @@ function TopBar({
         <Link to="/" className="brand">
           pb-tokei
         </Link>
-        <nav className="crumbs" aria-label="Breadcrumb">
-          {matchId === undefined ? (
-            <span className="here">Home</span>
-          ) : (
-            <>
-              <Link to="/">Home</Link>
-              {match.data && (
-                <>
-                  <span className="sep">›</span>
-                  <span>{match.data.tournament}</span>
-                  <span className="sep">›</span>
-                  <span className="here">{teamsLabel(match.data)}</span>
-                </>
-              )}
-            </>
-          )}
-        </nav>
+        {matchId !== undefined && (
+          <nav className="crumbs" aria-label="Breadcrumb">
+            <Link to="/">Home</Link>
+            {match.data && (
+              <>
+                <span className="sep">›</span>
+                <span>{match.data.tournament}</span>
+                <span className="sep">›</span>
+                <span className="here">{teamsLabel(match.data)}</span>
+              </>
+            )}
+          </nav>
+        )}
       </div>
-      <nav className="workspace-tabs" aria-label="Workspaces">
-        {matchId !== undefined &&
-          WORKSPACES.map((w) => (
+      {matchId === undefined ? (
+        <nav className="workspace-tabs dashboard-tabs" aria-label="Dashboard">
+          <Link
+            to="/"
+            activeOptions={{ exact: true }}
+            inactiveProps={isNewMatch ? { "aria-current": "page" } : undefined}
+          >
+            Matches
+          </Link>
+          <Link to="/players">Players</Link>
+          <Link to="/teams">Teams</Link>
+        </nav>
+      ) : (
+        <nav className="workspace-tabs" aria-label="Workspaces">
+          {WORKSPACES.map((w) => (
             <Link
               key={w}
               to="/matches/$matchId/$workspace"
@@ -145,7 +154,8 @@ function TopBar({
               {WORKSPACE_LABELS[w]}
             </Link>
           ))}
-      </nav>
+        </nav>
+      )}
       <div className="topbar-right">
         <RallyLogButton rallyLog={rallyLog} onPicker={onPicker} />
         <button

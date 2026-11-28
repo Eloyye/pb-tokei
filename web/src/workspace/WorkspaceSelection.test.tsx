@@ -666,9 +666,11 @@ describe("Monitor landing clicks and leaving Player placement (#94)", () => {
     fireEvent.click(rallyRow);
     // Step 1 frame forward from contact frame 120 -> bounce frame 121.
     fireEvent.keyDown(window, { key: "ArrowRight" });
-    await waitFor(() =>
-      expect(container.querySelector(".player-layer.landing-click")).not.toBeNull(),
-    );
+    // A static Calibration can show the crosshair before the tracked window starts loading.
+    await waitFor(() => {
+      expect(apiMocks.getCameraMotionFrames).toHaveBeenCalled();
+      expect(container.querySelector(".player-layer.landing-click")).not.toBeNull();
+    });
 
     const layer = container.querySelector<HTMLElement>(".player-layer")!;
     mockLayerRect(layer);

@@ -328,7 +328,7 @@ def test_demo_exercises_every_display_kind_and_split_bucket(
 ) -> None:
     match, roster = demo
     report = build_report(match, roster, DEMO_TOURNAMENT, compute_stats(((match, roster),)))
-    assert {stat.kind for stat in report.stats} == set(ReportKind)
+    assert {stat.kind for stat in report.stats} == set(ReportKind) - {ReportKind.PER_MATCH}
     assert {stat.group for stat in report.stats} == set(ReportGroup)
     assert report.header.uncredited > 0
     left_out = Counter()

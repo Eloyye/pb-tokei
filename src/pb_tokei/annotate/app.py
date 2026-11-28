@@ -61,6 +61,18 @@ from pb_tokei.camera_motion import default_cache_dir, video_frame_count
 from pb_tokei.convert import FootageConversionError, converted_path_for
 from pb_tokei.events.report import MatchReport, build_report
 from pb_tokei.events.stats import compute_stats
+from pb_tokei.events.subject_report import (
+    PlayerListEntry,
+    PlayerReport,
+    TeamListEntry,
+    TeamReport,
+    build_player_report,
+    build_team_report,
+    list_players,
+    list_teams,
+    load_player_matches,
+    load_team_matches,
+)
 from pb_tokei.footage import (
     CommandRunner,
     FootageDownloadError,
@@ -86,10 +98,12 @@ from pb_tokei.rally_log import (
     OperatorWorkspace,
     PlacedLandmark,
     PlayerAnchor,
+    PlayerId,
     PlaySegment,
     RallyLog,
     SourceVideo,
     TeamEnd,
+    TeamId,
     resolve_video_path,
 )
 from pb_tokei.roster import set_up_match
@@ -806,6 +820,36 @@ def create_app(
         rally_logs.switch(target)
         write_last_rally_log(target)
         return rally_log_out()
+
+    # --- Players and Teams ---------------------------------------------------------------
+
+    @app.get("/api/players", operation_id="listPlayers")
+    def get_players(response: Response, rally_log: OpenLog) -> list[PlayerListEntry]:
+        response.headers["Cache-Control"] = "no-store"
+        return rally_log.run(list_players)
+
+    @app.get(
+        "/api/players/{player_id}", operation_id="getPlayer", response_model_exclude_unset=True
+    )
+    def get_player(player_id: UUID, response: Response, rally_log: OpenLog) -> PlayerReport:
+        snapshot = rally_log.run(lambda log: load_player_matches(log, PlayerId(player_id)))
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"Player not found: {player_id}")
+        response.headers["Cache-Control"] = "no-store"
+        return build_player_report(*snapshot)
+
+    @app.get("/api/teams", operation_id="listTeams")
+    def get_teams(response: Response, rally_log: OpenLog) -> list[TeamListEntry]:
+        response.headers["Cache-Control"] = "no-store"
+        return rally_log.run(list_teams)
+
+    @app.get("/api/teams/{team_id}", operation_id="getTeam", response_model_exclude_unset=True)
+    def get_team(team_id: UUID, response: Response, rally_log: OpenLog) -> TeamReport:
+        snapshot = rally_log.run(lambda log: load_team_matches(log, TeamId(team_id)))
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"Team not found: {team_id}")
+        response.headers["Cache-Control"] = "no-store"
+        return build_team_report(*snapshot)
 
     # --- Matches -------------------------------------------------------------------------
 

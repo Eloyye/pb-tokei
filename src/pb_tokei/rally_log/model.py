@@ -809,6 +809,17 @@ class Match:
         raise ValueError(f"Team {team_id} is not in Match {self.id}")
 
 
+@dataclass(frozen=True, slots=True)
+class MatchGames:
+    """A read-only snapshot of a Match's Games and competition metadata."""
+
+    id: MatchId
+    tournament_id: TournamentId
+    franchise_match_id: FranchiseMatchId | None
+    date: datetime.date | None
+    games: tuple[Game, ...]
+
+
 @dataclass(frozen=True)
 class MatchSummary:
     """A Match's roster, by name, without its Games: one line of a Match listing."""

@@ -1,4 +1,4 @@
-"""The synthetic three-Game Match shared by the demo command and stat tests."""
+"""Synthetic Matches shared by the demo command and stat tests."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import replace
 
 from pb_tokei.rally_log import (
     UNKNOWN,
+    AnnotationMode,
     Challenge,
     CourtPoint,
     Error,
@@ -32,10 +33,12 @@ from pb_tokei.rally_log import (
     new_id,
     observed,
 )
-from pb_tokei.roster import Roster, RosterPlayer, set_up_match
+from pb_tokei.roster import Roster, RosterFranchiseMatch, RosterPlayer, set_up_match
 
 DEMO_TOURNAMENT = "Synthetic Doubles Open"
 DEMO_DATE = datetime.date(2026, 4, 15)
+DEMO_MLP_TOURNAMENT = "Synthetic MLP Open"
+DEMO_MLP_DATE = datetime.date(2026, 6, 4)
 
 
 def demo_games(roster: MatchRoster) -> tuple[Game, ...]:
@@ -169,9 +172,8 @@ def demo_games(roster: MatchRoster) -> tuple[Game, ...]:
     )
 
 
-def write_demo_match(log: RallyLog) -> MatchId:
-    """Append the demo to a Rally Log using a fresh Match ID."""
-    names = Roster(
+def _demo_roster() -> Roster:
+    return Roster(
         match_id=MatchId(new_id()),
         date=DEMO_DATE,
         tournament=DEMO_TOURNAMENT,
@@ -185,7 +187,51 @@ def write_demo_match(log: RallyLog) -> MatchId:
             RosterPlayer("Brook Two", Handedness.RIGHT),
         ),
     )
+
+
+def write_demo_match(log: RallyLog) -> MatchId:
+    """Append the demo to a Rally Log using a fresh Match ID."""
     with log.transaction():
-        match = set_up_match(log, names)
+        match = set_up_match(log, _demo_roster())
         log.replace_games(match.id, demo_games(log.get_match_roster(match.id)))
     return match.id
+
+
+def write_demo_matches(log: RallyLog) -> tuple[MatchId, ...]:
+    """Append four Matches spanning Tournaments, Partners and Rally coverage."""
+    base = _demo_roster()
+    new_team = base.team_a[0], RosterPlayer("Casey Three", Handedness.LEFT)
+    with log.transaction():
+        first = write_demo_match(log)
+        mlp = set_up_match(
+            log,
+            replace(
+                base,
+                date=DEMO_MLP_DATE,
+                tournament=DEMO_MLP_TOURNAMENT,
+                tour=Tour.MLP,
+                team_a=base.team_b,
+                team_b=new_team,
+                franchise_match=RosterFranchiseMatch("Synthetic Strikers", "Synthetic Volleys"),
+            ),
+        )
+        mlp_game = replace(demo_games(log.get_match_roster(mlp.id))[2], number=1)
+        log.save_match(replace(mlp, games=(mlp_game,), annotation_mode=AnnotationMode.ASSISTED))
+
+        undated = set_up_match(log, replace(base, match_id=MatchId(new_id()), team_a=new_team))
+        games = demo_games(log.get_match_roster(undated.id))[:1]
+        log.save_match(replace(undated, date=None, games=games))
+
+        empty = set_up_match(
+            log,
+            replace(
+                base,
+                match_id=MatchId(new_id()),
+                date=datetime.date(2026, 5, 20),
+                team_b=(
+                    RosterPlayer("Drew Four", Handedness.RIGHT),
+                    RosterPlayer("Devon Five", Handedness.LEFT),
+                ),
+            ),
+        )
+    return first, mlp.id, undated.id, empty.id

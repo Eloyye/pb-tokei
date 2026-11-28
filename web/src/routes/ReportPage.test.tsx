@@ -171,6 +171,10 @@ it("renders counts, rates, empty denominators, and left-out observations", async
     "Blake One",
     "Brook Two",
   ]);
+  expect(table.getByRole("link", { name: "Team: Alex One / Avery Two" }).getAttribute("href")).toBe(
+    "/teams/a",
+  );
+  expect(table.getByRole("link", { name: "Alex One" }).getAttribute("href")).toBe("/players/a1");
   expect(within(table.getByRole("row", { name: /^Serves 34/ })).getByText("34")).toBeTruthy();
   const rateCell = table.getByText("34 of 51 · 67% (55–77%)").closest("td");
   expect(rateCell?.querySelector(".report-rate-interval")).toBeTruthy();
